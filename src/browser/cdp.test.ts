@@ -10,9 +10,17 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   connectToUserChrome,
+  attachPlaywrightToCDP,
   CDPUnavailableError,
   getChromeLaunchInstructions,
 } from './cdp.js'
+
+// Mock Playwright's chromium BEFORE importing modules that use it
+vi.mock('playwright', () => ({
+  chromium: {
+    connectOverCDP: vi.fn(),
+  },
+}))
 
 describe('CDPUnavailableError', () => {
   it('is a subclass of Error', () => {
@@ -131,5 +139,51 @@ describe('connectToUserChrome', () => {
     const call = vi.mocked(globalThis.fetch).mock.calls[0]
     const init = call[1] as RequestInit | undefined
     expect(init?.signal).toBeDefined()
+  })
+})
+
+describe('attachPlaywrightToCDP', () => {
+  it('calls chromium.connectOverCDP with the wrapper cdpURL', async () => {
+    const { chromium } = await import('playwright')
+    const fakeBrowser = { contexts: () => [] }
+    vi.mocked(chromium.connectOverCDP).mockResolvedValue(fakeBrowser as any)
+
+    const wrapper: import('./cdp.js').CDPWrapper = {
+      cdpURL: 'http://127.0.0.1:9333',
+      webSocketDebuggerUrl: 'ws://127.0.0.1:9333/devtools/browser/abc',
+      isAlive: async () => true,
+    }
+
+    await attachPlaywrightToCDP(wrapper)
+    expect(chromium.connectOverCDP).toHaveBeenCalledWith('http://127.0.0.1:9333')
+  })
+
+  it('returns the Playwright Browser instance from connectOverCDP', async () => {
+    const { chromium } = await import('playwright')
+    const fakeBrowser = { contexts: () => [{ pages: () => [] }] }
+    vi.mocked(chromium.connectOverCDP).mockResolvedValue(fakeBrowser as any)
+
+    const wrapper: import('./cdp.js').CDPWrapper = {
+      cdpURL: 'http://127.0.0.1:9222',
+      webSocketDebuggerUrl: 'ws://x',
+      isAlive: async () => true,
+    }
+
+    const browser = await attachPlaywrightToCDP(wrapper)
+    expect(browser).toBe(fakeBrowser)
+  })
+
+  it('uses wrapper.cdpURL exactly (no default substitution)', async () => {
+    const { chromium } = await import('playwright')
+    vi.mocked(chromium.connectOverCDP).mockResolvedValue({ contexts: () => [] } as any)
+
+    const wrapper: import('./cdp.js').CDPWrapper = {
+      cdpURL: 'http://127.0.0.1:9333',
+      webSocketDebuggerUrl: 'ws://x',
+      isAlive: async () => true,
+    }
+    await attachPlaywrightToCDP(wrapper)
+    const arg = vi.mocked(chromium.connectOverCDP).mock.calls[0][0]
+    expect(arg).not.toContain('9222')
   })
 })

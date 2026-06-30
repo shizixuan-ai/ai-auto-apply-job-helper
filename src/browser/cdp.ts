@@ -122,3 +122,17 @@ export async function connectToUserChrome(): Promise<CDPWrapper> {
     },
   }
 }
+
+/**
+ * 把 Playwright Browser 接管到已探测好的 CDP 端点。
+ * 后续 browser/context/page 复用用户的真身份。
+ *
+ * 这是 §5.2 反爬转向的核心入口：
+ *   - 不再启新 Chromium
+ *   - 直接 connectOverCDP 到用户的真 Chrome
+ *   - 复用其 cookies / Canvas 指纹 / TLS JA3 / 登录态
+ */
+export async function attachPlaywrightToCDP(wrapper: CDPWrapper) {
+  const { chromium } = await import('playwright')
+  return await chromium.connectOverCDP(wrapper.cdpURL)
+}

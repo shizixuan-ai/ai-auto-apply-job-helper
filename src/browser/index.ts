@@ -1,15 +1,22 @@
 // ============================================================
-// Playwright / Puppeteer 浏览器自动化层
+// 浏览器自动化层 — CDP 接管 + Stealth Fallback
 // ============================================================
-// 双模式架构:
-//   launch 模式 → playwright-extra + stealth（登录、发消息）
-//   CDP 模式   → puppeteer-core（真实 Chrome，搜岗位）
+// 架构（参见 docs/research/boss-auto-apply-2026-06-research.md §5.2）：
+//
+//   CDP 接管模式（主路径）   → chromium.connectOverCDP(9222)
+//                              接管用户已登录的真 Chrome
+//                              反爬等级：与真人无差（§5.2.3 羊皮原则）
+//
+//   Stealth Launch（fallback）→ playwright-extra + stealth
+//                              仅当 CDP 不可用时启用
+//                              反爬等级：修补指纹，效果有限
 // ============================================================
 
 import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
 import { spawn } from 'node:child_process'
+import { connectToUserChrome, attachPlaywrightToCDP } from './cdp.js'
 
 // ============================================================
 // 常量
@@ -17,8 +24,6 @@ import { spawn } from 'node:child_process'
 
 const BOSS_URL = 'https://www.zhipin.com'
 const COOKIE_PATH = path.join(os.homedir(), '.bapply', 'cookies.json')
-const CDP_PORT = 9222
-const CDP_URL = `http://127.0.0.1:${CDP_PORT}`
 
 /** BOSS 直聘城市编码映射 */
 const CITY_CODES: Record<string, number> = {
@@ -100,68 +105,43 @@ async function loadCookies(): Promise<any[]> {
 }
 
 // ============================================================
-// CDP 模式 — Puppeteer-core 连接 Chrome
+// CDP 模式 — Playwright connectOverCDP 接管用户真 Chrome
 // ============================================================
-
-const CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-
-async function checkCDPRunning(): Promise<boolean> {
-  try {
-    const res = await fetch(`${CDP_URL}/json/version`, { signal: AbortSignal.timeout(2000) })
-    return res.ok
-  } catch {
-    return false
-  }
-}
-
-function launchChromeWithCDP(userDataDir?: string): void {
-  const args = [`--remote-debugging-port=${CDP_PORT}`]
-  if (userDataDir) args.push(`--user-data-dir=${userDataDir}`)
-
-  const proc = spawn(CHROME_PATH, args, {
-    stdio: 'ignore',
-    detached: true,
-  })
-  proc.unref()
-  console.log(`🚀 Chrome 已启动（端口 ${CDP_PORT}）`)
-}
-
-async function ensureCDP(): Promise<string> {
-  const running = await checkCDPRunning()
-  if (!running) {
-    const dataDir = path.join(os.homedir(), '.bapply', 'chrome-profile')
-    launchChromeWithCDP(dataDir)
-    for (let i = 0; i < 30; i++) {
-      await new Promise(r => setTimeout(r, 1000))
-      if (await checkCDPRunning()) {
-        console.log('✅ CDP 就绪')
-        return CDP_URL
-      }
-    }
-    throw new Error('Chrome 启动超时（30 秒）')
-  }
-  return CDP_URL
-}
+// 取代 puppeteer-core.connect（puppeteer-core 保留作 fallback-only）。
+// §5.2 反爬转向：主路径必须是接管，不是启新 Chromium。
+// ============================================================
 
 export async function createCDPSession() {
-  const endpointURL = await ensureCDP()
-  // Puppeteer-core CDP 连接，兼容 Chrome 149+
-  const puppeteer = await import('puppeteer-core')
-  const browser = await puppeteer.connect({ browserURL: endpointURL })
-  const page = await browser.newPage()
+  // 1. 探测 CDP 端口（带明确报错 + 启动命令提示）
+  const wrapper = await connectToUserChrome()
 
-  // 注入 navigator.webdriver 修复
-  const cdp = await page.createCDPSession()
-  await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
-    source: `Object.defineProperty(navigator, 'webdriver', { get: () => undefined });`,
-  })
-  await cdp.detach()
+  // 2. 让 Playwright 接管用户 Chrome（不复用 puppeteer）
+  const browser = await attachPlaywrightToCDP(wrapper)
 
-  return { browser, page, cdpMode: true as const }
+  // 3. 用户的真身份 context（含 BOSS session cookie、Canvas 指纹等）
+  const context = browser.contexts()[0]
+  if (!context) {
+    throw new Error(
+      'CDP 接管成功，但未找到浏览器 context。\n' +
+        '请确认 Chrome 已用 --user-data-dir 启动并至少打开过一个窗口。',
+    )
+  }
+  const page = await context.newPage()
+
+  return {
+    browser,
+    context,
+    page,
+    cdpURL: wrapper.cdpURL,
+    cdpMode: true as const,
+  }
 }
 
 // ============================================================
-// 浏览器会话管理（Playwright launch 模式）
+// Stealth Launch（fallback：CDP 不可用时的降级模式）
+// ============================================================
+// 仅当 user Chrome 未启用 remote-debug 时启用。
+// 反爬能力显著弱于 CDP 接管（修补指纹 vs 真实身份）。
 // ============================================================
 
 export async function createBrowserSession(headless = false) {
@@ -190,7 +170,7 @@ export async function createBrowserSession(headless = false) {
 }
 
 // ============================================================
-// 关闭会话（双模式兼容）
+// 关闭会话（双模式兼容：CDP 接管 / Stealth Launch）
 // ============================================================
 
 export async function closeBrowserSession(session: {
@@ -199,31 +179,34 @@ export async function closeBrowserSession(session: {
   context?: any
   cdpMode: boolean
 }) {
-  const { browser, page, context, cdpMode } = session
+  const { browser, context, cdpMode } = session
 
   // 保存 Cookie
   let cookies: any[] = []
   try {
-    if (cdpMode) {
-      // Puppeteer: page.cookies()
-      cookies = await page.cookies(...(page.url().includes('zhipin.com') ? [BOSS_URL] : []))
-    } else if (context) {
-      // Playwright: context.cookies()
+    if (context) {
+      // Playwright: context.cookies()（CDP 与 Launch 模式均用此 API）
       cookies = await context.cookies()
     }
-  } catch { /* cookie 读取失败不阻塞关闭 */ }
+  } catch {
+    /* cookie 读取失败不阻塞关闭 */
+  }
 
   if (cookies.length > 0) await saveCookies(cookies)
 
   if (cdpMode) {
-    // Puppeteer CDP: 只断开连接，不关浏览器
+    // CDP 接管：只断开与用户真 Chrome 的连接，不关浏览器
     await browser.close()
     return
   }
 
-  // Playwright: 关闭上下文和浏览器
-  try { await context?.close() } catch {}
-  try { await browser.close() } catch {}
+  // Stealth Launch（fallback）：关闭我们启动的浏览器
+  try {
+    await context?.close()
+  } catch {}
+  try {
+    await browser.close()
+  } catch {}
 }
 
 // ============================================================
