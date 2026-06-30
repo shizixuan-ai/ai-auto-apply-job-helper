@@ -8,14 +8,28 @@
 
 import { Command } from 'commander'
 import chalk from 'chalk'
+import readline from 'node:readline/promises'
+import { stdin as input, stdout as output } from 'node:process'
 import { loadConfig } from '../config/index.js'
-import { createBrowserSession, createCDPSession, closeBrowserSession, loginByQR, searchJobs, fetchJobDetail, sendGreeting } from '../browser/index.js'
+import { createBrowserSession, createCDPSession, closeBrowserSession, loginByQR, searchJobs, fetchJobDetail, sendGreeting, setWaitForUserConfirm } from '../browser/index.js'
 import { createLLM } from '../llm/index.js'
 import { buildGreetingSystemPrompt, buildGreetingPrompt, buildResumeSummary } from '../template/index.js'
 import { listRecords, createRecord, updateRecord } from '../feishu/index.js'
 import { handleChromeCommand } from './handlers/chrome-handler.js'
 
 const program = new Command()
+
+/**
+ * 注入 guard.ts 的用户确认 prompt：风控触发时让用户按回车恢复
+ */
+setWaitForUserConfirm(async () => {
+  const rl = readline.createInterface({ input, output })
+  try {
+    await rl.question(chalk.yellow('✅ 风控验证完成后，按回车继续…'))
+  } finally {
+    rl.close()
+  }
+})
 
 /** 根据模式创建浏览器会话 */
 async function createSession(cdp = false) {

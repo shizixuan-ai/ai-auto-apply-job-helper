@@ -15,8 +15,8 @@
 import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
-import { spawn } from 'node:child_process'
 import { connectToUserChrome, attachPlaywrightToCDP } from './cdp.js'
+import { withGuard, DEFAULT_GUARD_CONFIG, type GuardConfig } from './guard.js'
 
 // ============================================================
 // 常量
@@ -24,6 +24,51 @@ import { connectToUserChrome, attachPlaywrightToCDP } from './cdp.js'
 
 const BOSS_URL = 'https://www.zhipin.com'
 const COOKIE_PATH = path.join(os.homedir(), '.bapply', 'cookies.json')
+
+/** 风控监控默认选择器（§5.2.5 + review 后整合 — BOSS 前端变更时需更新） */
+const RISK_SELECTORS: Pick<
+  GuardConfig,
+  'captchaSelectors' | 'sliderSelectors' | 'rateLimitSelectors' | 'loginExpiredSelectors'
+> = {
+  captchaSelectors: [
+    '.geetest_panel',
+    '.geetest_holder',
+    '.verify-captcha-modal',
+    '[class*="captcha"]:not([style*="display: none"])',
+  ],
+  sliderSelectors: [
+    '.slider-verify',
+    '.nc-container',
+    '[class*="slide"]:not([style*="display: none"])',
+  ],
+  rateLimitSelectors: [
+    '.daily-limit-tip',
+    '.rate-limit-modal',
+    '[class*="limit"]:not([style*="display: none"])',
+  ],
+  loginExpiredSelectors: [
+    '.session-timeout-modal',
+    '.login-expired',
+    '[class*="expired"]:not([style*="display: none"])',
+  ],
+}
+
+/** 注入业务页面的风控配置（探测间隔 3s 更激进，pause 上限 10 分钟） */
+export const GUARD_CONFIG: GuardConfig = {
+  ...DEFAULT_GUARD_CONFIG,
+  probeIntervalMs: 3000,
+  ...RISK_SELECTORS,
+}
+
+/**
+ * 风控包装：业务函数外面包 withGuard（检测 + 暂停 + 恢复）
+ * waitForUserConfirm 必须在 CLI 层注入（避免 guard.ts 依赖 readline）
+ */
+let _waitForUserConfirm: () => Promise<void> = async () => {}
+
+export function setWaitForUserConfirm(fn: () => Promise<void>) {
+  _waitForUserConfirm = fn
+}
 
 /** BOSS 直聘城市编码映射 */
 const CITY_CODES: Record<string, number> = {
@@ -450,29 +495,35 @@ export async function fetchJobDetail(page: any, jobId: string): Promise<string> 
 // ============================================================
 
 export async function sendGreeting(page: any, jobId: string, message: string): Promise<boolean> {
-  try {
-    // 方案：打开聊天页 → evaluate 注入输入 + 点击发送
-    await page.goto(`https://www.zhipin.com/web/chat?jobId=${jobId}`, {
-      waitUntil: 'networkidle',
-      timeout: 30_000,
-    })
-    await page.waitForSelector('#chat-input', { timeout: 10_000 })
+  return withGuard(
+    page,
+    async () => {
+      try {
+        // 方案：打开聊天页 → evaluate 注入输入 + 点击发送
+        await page.goto(`https://www.zhipin.com/web/chat?jobId=${jobId}`, {
+          waitUntil: 'networkidle',
+          timeout: 30_000,
+        })
+        await page.waitForSelector('#chat-input', { timeout: 10_000 })
 
-    // 通过 evaluate 设置输入并发送（兼容 Playwright 和 Puppeteer）
-    await page.evaluate((msg: string) => {
-      const input = document.querySelector('#chat-input') as HTMLTextAreaElement
-      if (input) {
-        input.value = msg
-        input.dispatchEvent(new Event('input', { bubbles: true }))
+        // 通过 evaluate 设置输入并发送（兼容 Playwright 和 Puppeteer）
+        await page.evaluate((msg: string) => {
+          const input = document.querySelector('#chat-input') as HTMLTextAreaElement
+          if (input) {
+            input.value = msg
+            input.dispatchEvent(new Event('input', { bubbles: true }))
+          }
+          const sendBtn = document.querySelector('.btn-send') as HTMLElement
+          sendBtn?.click()
+        }, message)
+
+        console.log(`✅ 已向岗位 ${jobId} 发送打招呼消息`)
+        return true
+      } catch (err) {
+        console.error(`❌ 向岗位 ${jobId} 发送消息失败:`, err)
+        return false
       }
-      const sendBtn = document.querySelector('.btn-send') as HTMLElement
-      sendBtn?.click()
-    }, message)
-
-    console.log(`✅ 已向岗位 ${jobId} 发送打招呼消息`)
-    return true
-  } catch (err) {
-    console.error(`❌ 向岗位 ${jobId} 发送消息失败:`, err)
-    return false
-  }
+    },
+    { config: GUARD_CONFIG, waitForUserConfirm: _waitForUserConfirm },
+  )
 }
