@@ -17,7 +17,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { connectToUserChrome, attachPlaywrightToCDP } from './cdp.js'
 import { withGuard, DEFAULT_GUARD_CONFIG, type GuardConfig } from './guard.js'
-import { typeText } from './human.js'
+import { typeText, type TypeTextOptions } from './human.js'
 
 // ============================================================
 // 常量
@@ -495,7 +495,12 @@ export async function fetchJobDetail(page: any, jobId: string): Promise<string> 
 // 发送打招呼消息（API 直调，不依赖 DOM）
 // ============================================================
 
-export async function sendGreeting(page: any, jobId: string, message: string): Promise<boolean> {
+export async function sendGreeting(
+  page: any,
+  jobId: string,
+  message: string,
+  typeTextOptions?: TypeTextOptions,
+): Promise<boolean> {
   return withGuard(
     page,
     async () => {
@@ -508,7 +513,7 @@ export async function sendGreeting(page: any, jobId: string, message: string): P
         await page.waitForSelector('#chat-input', { timeout: 10_000 })
 
         // 用 typeText 替代直接 evaluate：触发真实键盘事件 + 随机延迟 + typo 注入
-        const result = await typeText(page, '#chat-input', message)
+        const result = await typeText(page, '#chat-input', message, typeTextOptions)
         await page.click('.btn-send')
 
         console.log(`✅ 已向岗位 ${jobId} 发送打招呼消息 (typed=${result.typed}, typos=${result.typos})`)

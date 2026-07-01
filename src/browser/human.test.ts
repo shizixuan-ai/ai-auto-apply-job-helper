@@ -12,6 +12,7 @@ import {
   generateBezierPath,
   humanDelay,
   randomBetween,
+  randomWrongChar,
   bezierMove,
   typeText,
   type Point,
@@ -89,12 +90,26 @@ describe('generateBezierPath', () => {
 // ============================================================
 
 describe('humanDelay', () => {
-  it('#4 humanDelay(100, 0.3) 实际 sleep 在 [70ms, 130ms] 范围内', async () => {
+  it('#4 humanDelay(100, 0.3) 实际 sleep 在 [70ms, 150ms] 范围内', async () => {
     const start = Date.now()
     await humanDelay(100, 0.3)
     const elapsed = Date.now() - start
     expect(elapsed).toBeGreaterThanOrEqual(70)
-    expect(elapsed).toBeLessThanOrEqual(200) // 容忍 setTimeout 漂移
+    // 收紧到 150ms（理论上限 130ms + 20ms setTimeout 漂移容忍）
+    // 比 #0eb84df 的 200ms 更严，可暴露 setTimeout 实现漂移回归
+    expect(elapsed).toBeLessThanOrEqual(150)
+  })
+
+  it('humanDelay(NaN) throws (低优先级健壮性修复)', () => {
+    expect(() => humanDelay(NaN)).toThrow(/humanDelay/)
+  })
+
+  it('humanDelay(Infinity) throws', () => {
+    expect(() => humanDelay(Infinity)).toThrow(/humanDelay/)
+  })
+
+  it('humanDelay(-1) throws (负数无意义)', () => {
+    expect(() => humanDelay(-1)).toThrow(/humanDelay/)
   })
 })
 
@@ -105,6 +120,21 @@ describe('randomBetween', () => {
       expect(v).toBeGreaterThanOrEqual(10)
       expect(v).toBeLessThanOrEqual(20)
     }
+  })
+})
+
+describe('randomWrongChar', () => {
+  it('100 次调用均返回单字符 a-z', () => {
+    for (let i = 0; i < 100; i++) {
+      const c = randomWrongChar()
+      expect(c).toMatch(/^[a-z]$/)
+    }
+  })
+
+  it('多次调用至少覆盖 5 个不同字符 (分布合理)', () => {
+    const seen = new Set<string>()
+    for (let i = 0; i < 50; i++) seen.add(randomWrongChar())
+    expect(seen.size).toBeGreaterThanOrEqual(5)
   })
 })
 
@@ -185,5 +215,15 @@ describe('typeText', () => {
     const focusOrder = page.focus.mock.invocationCallOrder[0]
     const pressOrder = page.keyboard.press.mock.invocationCallOrder[0]
     expect(focusOrder).toBeLessThan(pressOrder)
+  })
+
+  it('空字符串 text 返回 {typed:0, typos:0} 不触发任何 press', async () => {
+    const page = makeMockPage()
+    const result = await typeText(page, '#input', '')
+    expect(result.typed).toBe(0)
+    expect(result.typos).toBe(0)
+    // focus 应被调用（first action），但 press 应不被调用
+    expect(page.focus).toHaveBeenCalledWith('#input')
+    expect(page.keyboard.press).not.toHaveBeenCalled()
   })
 })

@@ -66,6 +66,11 @@ export function randomBetween(min: number, max: number): number {
  * 范围: [ms*(1-jitter), ms*(1+jitter)]
  */
 export function humanDelay(ms: number, jitter = 0.3): Promise<void> {
+  if (!Number.isFinite(ms) || ms < 0) {
+    throw new Error(
+      `[human] humanDelay ms 必须是 ≥0 的有限数（防 setTimeout NaN/Infinity 污染），当前: ${ms}`,
+    )
+  }
   const factor = 1 + (Math.random() * 2 - 1) * jitter
   const actualMs = Math.max(1, ms * factor)
   return new Promise((resolve) => setTimeout(resolve, actualMs))
@@ -119,8 +124,8 @@ export function generateBezierPath(
   return path
 }
 
-/** 随机 ASCII 字符（用于 typo 注入） */
-function randomWrongChar(): string {
+/** 随机 ASCII 字符（用于 typo 注入）— 已导出供测试 */
+export function randomWrongChar(): string {
   const alphabet = 'abcdefghijklmnopqrstuvwxyz'
   return alphabet[Math.floor(Math.random() * alphabet.length)]
 }
