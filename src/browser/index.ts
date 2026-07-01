@@ -17,6 +17,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { connectToUserChrome, attachPlaywrightToCDP } from './cdp.js'
 import { withGuard, DEFAULT_GUARD_CONFIG, type GuardConfig } from './guard.js'
+import { typeText } from './human.js'
 
 // ============================================================
 // 常量
@@ -499,25 +500,18 @@ export async function sendGreeting(page: any, jobId: string, message: string): P
     page,
     async () => {
       try {
-        // 方案：打开聊天页 → evaluate 注入输入 + 点击发送
+        // 方案：打开聊天页 → 人类节奏键入（typeText 模拟真人输入）→ 点击发送
         await page.goto(`https://www.zhipin.com/web/chat?jobId=${jobId}`, {
           waitUntil: 'networkidle',
           timeout: 30_000,
         })
         await page.waitForSelector('#chat-input', { timeout: 10_000 })
 
-        // 通过 evaluate 设置输入并发送（兼容 Playwright 和 Puppeteer）
-        await page.evaluate((msg: string) => {
-          const input = document.querySelector('#chat-input') as HTMLTextAreaElement
-          if (input) {
-            input.value = msg
-            input.dispatchEvent(new Event('input', { bubbles: true }))
-          }
-          const sendBtn = document.querySelector('.btn-send') as HTMLElement
-          sendBtn?.click()
-        }, message)
+        // 用 typeText 替代直接 evaluate：触发真实键盘事件 + 随机延迟 + typo 注入
+        const result = await typeText(page, '#chat-input', message)
+        await page.click('.btn-send')
 
-        console.log(`✅ 已向岗位 ${jobId} 发送打招呼消息`)
+        console.log(`✅ 已向岗位 ${jobId} 发送打招呼消息 (typed=${result.typed}, typos=${result.typos})`)
         return true
       } catch (err) {
         console.error(`❌ 向岗位 ${jobId} 发送消息失败:`, err)
