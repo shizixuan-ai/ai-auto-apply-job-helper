@@ -290,7 +290,7 @@ describe('withGuard', () => {
     const waitForUserConfirm = vi.fn().mockResolvedValue(undefined)
 
     const result = await withGuard(page, fn, {
-      config: makeConfig({ probeIntervalMs: 1 }),
+      config: makeConfig({ probeIntervalMs: 20 }),
       waitForUserConfirm,
     })
 
@@ -313,7 +313,7 @@ describe('withGuard', () => {
 
     await expect(
       withGuard(page, fn, {
-        config: makeConfig({ probeIntervalMs: 1, maxPauseMs: 5 }),
+        config: makeConfig({ probeIntervalMs: 20, maxPauseMs: 5 }),
       }),
     ).rejects.toBeInstanceOf(GuardError)
 
@@ -329,12 +329,83 @@ describe('withGuard', () => {
 
     await expect(
       withGuard(page, fn, {
-        config: makeConfig({ probeIntervalMs: 1 }),
+        config: makeConfig({ probeIntervalMs: 20 }),
         waitForUserConfirm,
       }),
     ).rejects.toBeInstanceOf(GuardError)
 
     expect(fn).not.toHaveBeenCalled()
+    expect(waitForUserConfirm).not.toHaveBeenCalled() // abort 不需用户确认
+  })
+
+  // ---- P0 fix: Step 2 (interval probe during fn) ----
+
+  it('Step 2: fn execution期间 interval 探针命中 PAUSE → waitForSelector → confirm → 返回 fn 结果', async () => {
+    // 设计：Step 1 同步探针返回 null（无信号），Step 2 interval 在 fn 期间命中 captcha
+    // 关键：fn 必须足够慢（sleep 100ms），probeIntervalMs=20ms 让 interval 至少触发 4 次
+    let captchaCount = 0
+    const page = {
+      $: vi.fn(async (sel: string) => {
+        if (sel === '.captcha-a') {
+          captchaCount++
+          // 第 1 次（Step 1 同步探针）→ null
+          // 第 2+ 次（Step 2 interval）→ captcha
+          return captchaCount >= 2 ? { tagName: 'DIV' } : null
+        }
+        return null
+      }),
+      waitForSelector: vi.fn(async () => undefined),
+    }
+
+    const fn = vi.fn().mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 100))
+      return 'fn_done'
+    })
+    const waitForUserConfirm = vi.fn().mockResolvedValue(undefined)
+
+    const result = await withGuard(page, fn, {
+      config: makeConfig({ probeIntervalMs: 20 }),
+      waitForUserConfirm,
+    })
+
+    expect(result).toBe('fn_done')
+    expect(fn).toHaveBeenCalledTimes(1)
+    expect(page.$).toHaveBeenCalledWith('.captcha-a') // Step 1 + Step 2 多次
+    expect(page.waitForSelector).toHaveBeenCalledWith(
+      '.captcha-a',
+      expect.objectContaining({ state: 'hidden' }),
+    )
+    expect(waitForUserConfirm).toHaveBeenCalledTimes(1)
+  })
+
+  it('Step 2: fn execution期间 interval 探针命中 ABORT_TODAY → throws GuardError, fn 结果被丢弃', async () => {
+    // 设计：Step 1 null，Step 2 interval 期间命中 rate_limit
+    let rateCount = 0
+    const page = {
+      $: vi.fn(async (sel: string) => {
+        if (sel === '.rate-a') {
+          rateCount++
+          return rateCount >= 2 ? { tagName: 'DIV' } : null
+        }
+        return null
+      }),
+      waitForSelector: vi.fn(async () => undefined),
+    }
+
+    const fn = vi.fn().mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 100))
+      return 'fn_done' // 这个结果会被丢弃
+    })
+    const waitForUserConfirm = vi.fn()
+
+    await expect(
+      withGuard(page, fn, {
+        config: makeConfig({ probeIntervalMs: 20 }),
+        waitForUserConfirm,
+      }),
+    ).rejects.toBeInstanceOf(GuardError)
+
+    expect(fn).toHaveBeenCalledTimes(1) // fn 仍被调用
     expect(waitForUserConfirm).not.toHaveBeenCalled() // abort 不需用户确认
   })
 })
@@ -344,14 +415,16 @@ describe('withGuard', () => {
 // ------------------------------------------------------------
 
 describe('probeRiskSignals', () => {
-  it('#15 uses page.$(selector) not page.evaluate', async () => {
+  it('#15 uses page.$(selector) not page.evaluate (P0 fix: inject evaluate into page mock)', async () => {
+    // P0 fix: evaluate 必须注入到 page 对象上，否则断言是 tautological
     const page = makeMockPage({ '.captcha-a': true })
-    const evaluate = vi.fn()
+    ;(page as any).evaluate = vi.fn()
 
     await probeRiskSignals(page, makeConfig())
 
     expect(page.$).toHaveBeenCalledWith('.captcha-a')
-    expect(evaluate).not.toHaveBeenCalled()
+    // 关键断言：page.evaluate 必须未被调用
+    expect((page as any).evaluate).not.toHaveBeenCalled()
   })
 
   it('#16 fallbackDialogSelector 命中时 confidence=0.3', async () => {
@@ -395,5 +468,165 @@ describe('GuardError', () => {
     expect(err).toBeInstanceOf(Error)
     expect(err.name).toBe('GuardError')
     expect(err.decision).toBe(decision)
+  })
+})
+
+// ------------------------------------------------------------
+// P0 fixes (audit-derived)
+// ------------------------------------------------------------
+
+describe('P0: config input validation', () => {
+  it('probeIntervalMs = 0 throws (防 setInterval 风暴)', async () => {
+    const page = makeMockPage({})
+    const fn = vi.fn().mockResolvedValue('ok')
+
+    await expect(
+      withGuard(page, fn, {
+        config: makeConfig({ probeIntervalMs: 0 }),
+      }),
+    ).rejects.toThrow(/probeIntervalMs/)
+  })
+
+  it('probeIntervalMs 负数 throws', async () => {
+    const page = makeMockPage({})
+    const fn = vi.fn().mockResolvedValue('ok')
+
+    await expect(
+      withGuard(page, fn, {
+        config: makeConfig({ probeIntervalMs: -1 }),
+      }),
+    ).rejects.toThrow(/probeIntervalMs/)
+  })
+
+  it('maxPauseMs = Infinity throws', async () => {
+    const page = makeMockPage({})
+    const fn = vi.fn().mockResolvedValue('ok')
+
+    await expect(
+      withGuard(page, fn, {
+        config: makeConfig({ maxPauseMs: Infinity }),
+      }),
+    ).rejects.toThrow(/maxPauseMs/)
+  })
+
+  it('maxPauseMs = NaN throws', async () => {
+    const page = makeMockPage({})
+    const fn = vi.fn().mockResolvedValue('ok')
+
+    await expect(
+      withGuard(page, fn, {
+        config: makeConfig({ maxPauseMs: NaN }),
+      }),
+    ).rejects.toThrow(/maxPauseMs/)
+  })
+
+  it('maxPauseMs = 0 throws (pause 立即超时等于永远不 pause)', async () => {
+    const page = makeMockPage({})
+    const fn = vi.fn().mockResolvedValue('ok')
+
+    await expect(
+      withGuard(page, fn, {
+        config: makeConfig({ maxPauseMs: 0 }),
+      }),
+    ).rejects.toThrow(/maxPauseMs/)
+  })
+})
+
+describe('P0: waitForUserConfirm default (防 pause 静默放行)', () => {
+  it('不注入 waitForUserConfirm 时 PAUSE 抛错而非静默放行', async () => {
+    const page = makeMockPage({ '.captcha-a': true })
+    page.waitForSelector = vi.fn(async () => undefined) // 立即 resolve
+    const fn = vi.fn()
+
+    await expect(
+      withGuard(page, fn, {
+        config: makeConfig({ probeIntervalMs: 20 }),
+        // waitForUserConfirm 不注入
+      }),
+    ).rejects.toThrow(/waitForUserConfirm.*not injected/i)
+  })
+})
+
+describe('P0: OSNotifier osascript argv 注入防御', () => {
+  let spawnMock: ReturnType<typeof vi.fn>
+
+  beforeEach(async () => {
+    const cp = await import('node:child_process')
+    spawnMock = cp.spawn as unknown as ReturnType<typeof vi.fn>
+    spawnMock.mockReset()
+  })
+
+  afterEach(() => {
+    spawnMock.mockReset()
+  })
+
+  it('darwin: body 含双引号/反斜杠 → title 和 body 作为位置参数（argv）传入，不进入 -e 字符串', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin' })
+    spawnMock.mockImplementation((_cmd, _args) => ({
+      on: (event: string, cb: (code: number) => void) => {
+        if (event === 'exit') cb(0)
+      },
+    }))
+
+    const notifier = new OSNotifier('darwin')
+    const maliciousReason = '恶意 " -e display notification "; rm -rf /; \\'
+    await notifier.notify({
+      action: 'pause',
+      reason: maliciousReason,
+      signal: makeSignal('verify_captcha'),
+    })
+
+    // argv 模式断言：
+    // 1. 必调用 osascript
+    // 2. 最后两个 args 是 title 和 body（位置参数）
+    // 3. 任何 -e 后面都不能包含恶意 body（注入防御核心）
+    expect(spawnMock).toHaveBeenCalledWith(
+      'osascript',
+      expect.arrayContaining([
+        '-e',
+        expect.stringContaining('on run argv'),
+        '-e',
+        expect.stringContaining('display notification'),
+        '-e',
+        expect.stringContaining('end run'),
+        'bapply 风控提示', // title
+        maliciousReason, // body 通过 argv 传入，原样保留
+      ]),
+    )
+
+    // 关键断言：所有 -e 后面的脚本片段都不能含恶意 body 内容（否则 body 进代码）
+    const args = spawnMock.mock.calls[0][1] as string[]
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === '-e') {
+        expect(args[i + 1]).not.toContain('rm -rf')
+        expect(args[i + 1]).not.toContain('恶意')
+      }
+    }
+  })
+
+  it('darwin: body 是普通文本 → spawn args 含 title + body 作为位置参数', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin' })
+    spawnMock.mockImplementation((_cmd, _args) => ({
+      on: (event: string, cb: (code: number) => void) => {
+        if (event === 'exit') cb(0)
+      },
+    }))
+
+    const notifier = new OSNotifier('darwin')
+    await notifier.notify({
+      action: 'pause',
+      reason: '请过验证',
+      signal: makeSignal('verify_captcha'),
+    })
+
+    expect(spawnMock).toHaveBeenCalledWith(
+      'osascript',
+      expect.arrayContaining([
+        '-e',
+        expect.stringContaining('display notification'),
+        'bapply 风控提示',
+        '请过验证',
+      ]),
+    )
   })
 })

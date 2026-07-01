@@ -108,7 +108,22 @@ export class OSNotifier implements Notifier {
 
     if (this.platform === 'darwin') {
       cmd = 'osascript'
-      args = ['-e', `display notification "${body}" with title "${title}"`]
+      // P0 fix: 用 argv 模式传值，避免 osascript 字符串拼接注入
+      // body/title 走 stdin 而非 -e 字符串拼接
+      args = [
+        '-e',
+        'on run argv',
+        '-e',
+        'set theTitle to item 1 of argv',
+        '-e',
+        'set theBody to item 2 of argv',
+        '-e',
+        'display notification theBody with title theTitle',
+        '-e',
+        'end run',
+        title,
+        body,
+      ]
     } else if (this.platform === 'linux') {
       cmd = 'notify-send'
       args = [body]
@@ -278,6 +293,35 @@ class PauseTimeoutError extends Error {
   }
 }
 
+/** P0 fix: 防御性 config 校验 */
+function validateGuardConfig(config: GuardConfig): void {
+  // probeIntervalMs 必须 ≥10ms（防 setInterval 风暴，10ms = 100Hz 对单 page 探针足够）
+  if (!Number.isFinite(config.probeIntervalMs) || config.probeIntervalMs < 10) {
+    throw new Error(
+      `[guard] probeIntervalMs 必须是 ≥10ms 的有限数（防 setInterval 风暴），当前: ${config.probeIntervalMs}`,
+    )
+  }
+  if (!Number.isFinite(config.maxPauseMs) || config.maxPauseMs <= 0) {
+    throw new Error(
+      `[guard] maxPauseMs 必须是 >0 的有限数（防 setTimeout 立即 fire），当前: ${config.maxPauseMs}`,
+    )
+  }
+}
+
+/** P0 fix: waitForUserConfirm 默认 throw，防 pause 静默放行 */
+function requireWaitForUserConfirm(
+  fn: (() => Promise<void>) | undefined,
+  context: string,
+): () => Promise<void> {
+  if (fn) return fn
+  return async () => {
+    throw new Error(
+      `[guard] waitForUserConfirm not injected in ${context}。` +
+        `请在 CLI 层调用 setWaitForUserConfirm(readlineStdinPrompt) 后再触发风控。`,
+    )
+  }
+}
+
 /**
  * 处理单个 signal（pause race / abort）
  * - pause: race(waitForSelector(hidden), sleep(maxPauseMs))
@@ -335,8 +379,12 @@ export async function withGuard<T>(
   options: WithGuardOptions = {},
 ): Promise<T> {
   const config = options.config ?? DEFAULT_GUARD_CONFIG
+  validateGuardConfig(config) // P0 fix: input validation
   const notifier = options.notifier ?? new ConsoleNotifier()
-  const waitForUserConfirm = options.waitForUserConfirm
+  const waitForUserConfirm = requireWaitForUserConfirm(
+    options.waitForUserConfirm,
+    'withGuard',
+  )
 
   // Step 1: 同步探针（fn 执行前）
   const initialSigs = await probeRiskSignals(page, config)
