@@ -47,8 +47,12 @@ function resolvePort(): number {
   return n
 }
 
-/** 推断 platform 与 chrome 可执行路径（用于提示） */
-function detectChromePath(): string {
+/** 推断 platform 与 chrome 可执行路径（用于提示）。可被 BOSS_CHROME_PATH 覆盖。 */
+export function detectChromePath(): string {
+  const override = process.env.BOSS_CHROME_PATH
+  if (override && override.trim().length > 0) {
+    return override
+  }
   if (process.platform === 'darwin') {
     return '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
   }
@@ -58,13 +62,63 @@ function detectChromePath(): string {
   return 'google-chrome'
 }
 
-/** 返回给用户打印的 Chrome 启动命令模板 */
+/**
+ * 检测路径是否含 shell 元字符（P0 安全债）
+ *
+ * 拒接包含以下字符的路径（即使来源是 .env）：
+ *   ` $ & ; | < > ( ) { } [ ] \ 反引号 换行 \0
+ *
+ * 用户复制粘贴 `bapply chrome` 输出到终端时这些字符会被 shell 解释。
+ * 例：BOSS_CHROME_PATH='/tmp/`rm -rf /`/chrome' 输出会触发任意命令执行。
+ *
+ * 合法路径字符范围：
+ *   - 字母数字：`a-zA-Z0-9`
+ *   - 路径分隔符：`/ \ :`
+ *   - 路径常见字符：`- _ . , @ ~ = +`
+ *   - 空格（macOS Beta.app 等真实场景需要）
+ */
+const SHELL_METACHAR_REGEX = /[`$&;|<>(){}\[\]\\\n\0]/
+const SAFE_PATH_REGEX = /^[a-zA-Z0-9\s/\\:_.,@~=+\-]+$/
+
+/** 抛出明确的元字符错误 */
+export function assertPathSafe(p: string): void {
+  const match = p.match(SHELL_METACHAR_REGEX)
+  if (match) {
+    throw new Error(
+      `BOSS_CHROME_PATH contains shell metacharacter: ${JSON.stringify(match[0])}\n` +
+        `Refusing to generate a launch command that could be exploited when copy-pasted.\n` +
+        `Use a path containing only letters, digits, spaces, / \\ : _ . , @ ~ = + -`,
+    )
+  }
+  if (!SAFE_PATH_REGEX.test(p)) {
+    throw new Error(
+      `BOSS_CHROME_PATH contains unsafe characters. Allowed: letters, digits, spaces, / \\ : _ . , @ ~ = + -`,
+    )
+  }
+}
+
+/**
+ * 根据平台对路径加 shell quote（POSIX 用 '，Windows 用 "）
+ * 已通过 assertPathSafe 校验过 → 这里只负责 quote，不再做 escape 内部字符。
+ */
+function shellQuote(p: string): string {
+  if (process.platform === 'win32') {
+    // PowerShell / cmd 接受双引号
+    return p.includes(' ') ? `"${p}"` : p
+  }
+  // POSIX：含空格 → 单引号包裹（不含单引号，因为前一步已校验）
+  return p.includes(' ') ? `'${p}'` : p
+}
+
+/** 返回给用户打印的 Chrome 启动命令模板（P0 安全：shellQuote 包裹路径） */
 export function getChromeLaunchInstructions(port: number = DEFAULT_CDP_PORT): string {
   const chrome = detectChromePath()
+  assertPathSafe(chrome) // 拒绝含 shell 元字符的路径（防御用户 .env 被污染）
+  const quotedChrome = shellQuote(chrome)
   const userDataDir = '~/.boss-chrome'
   return [
     '# 请在终端运行下面一行（或在 Chrome 中打开 chrome://inspect/#devices 后启动）:',
-    `${chrome} --remote-debugging-port=${port} --user-data-dir=${userDataDir}`,
+    `${quotedChrome} --remote-debugging-port=${port} --user-data-dir=${userDataDir}`,
   ].join('\n')
 }
 

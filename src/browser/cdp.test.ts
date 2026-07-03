@@ -13,6 +13,7 @@ import {
   attachPlaywrightToCDP,
   CDPUnavailableError,
   getChromeLaunchInstructions,
+  detectChromePath,
 } from './cdp.js'
 
 // Mock Playwright's chromium BEFORE importing modules that use it
@@ -47,6 +48,72 @@ describe('getChromeLaunchInstructions', () => {
 
   it('mentions Chrome binary name', () => {
     expect(getChromeLaunchInstructions()).toContain('Chrome')
+  })
+})
+
+// ============================================================
+// detectChromePath：BOSS_CHROME_PATH 环境变量覆盖 (P2 #15)
+// ============================================================
+
+describe('detectChromePath', () => {
+  let originalEnv: NodeJS.ProcessEnv
+
+  beforeEach(() => {
+    originalEnv = { ...process.env }
+    delete process.env.BOSS_CHROME_PATH
+  })
+
+  afterEach(() => {
+    process.env = originalEnv
+  })
+
+  it('returns the BOSS_CHROME_PATH value when env var is set (overrides platform default)', () => {
+    process.env.BOSS_CHROME_PATH = '/custom/path/to/chrome'
+    expect(detectChromePath()).toBe('/custom/path/to/chrome')
+  })
+
+  it('ignores empty-string BOSS_CHROME_PATH (falls back to platform default)', () => {
+    process.env.BOSS_CHROME_PATH = ''
+    expect(detectChromePath()).not.toBe('')
+    expect(detectChromePath()).toContain('Chrome')
+  })
+
+  it('falls back to platform default when BOSS_CHROME_PATH is unset', () => {
+    // 当前平台（darwin）下默认应包含 "Google Chrome"
+    expect(detectChromePath()).toContain('Chrome')
+  })
+
+  it('getChromeLaunchInstructions uses BOSS_CHROME_PATH when set', () => {
+    process.env.BOSS_CHROME_PATH = '/opt/custom/chrome'
+    const out = getChromeLaunchInstructions()
+    expect(out).toContain('/opt/custom/chrome')
+    expect(out).not.toContain('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
+  })
+
+  // ============================================================
+  // P0 安全债：路径必须 shell-escape 后才拼到输出（audit 衍生）
+  // ============================================================
+
+  it('P0: escape BOSS_CHROME_PATH containing spaces when generating launch command', () => {
+    process.env.BOSS_CHROME_PATH = '/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta'
+    const out = getChromeLaunchInstructions()
+    // 必须用单引号包裹（含空格的合法路径），避免用户复制到终端被拆词
+    expect(out).toContain("'/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta'")
+  })
+
+  it('P0: refuse BOSS_CHROME_PATH containing shell metacharacters (defense-in-depth)', () => {
+    process.env.BOSS_CHROME_PATH = '/path/with/`rm -rf $TMP && echo bad`/chrome'
+    expect(() => getChromeLaunchInstructions()).toThrow(/shell metacharacter/i)
+  })
+
+  it('P0: refuse BOSS_CHROME_PATH containing backticks even when alone', () => {
+    process.env.BOSS_CHROME_PATH = '/path/`whoami`/chrome'
+    expect(() => getChromeLaunchInstructions()).toThrow(/shell metacharacter/i)
+  })
+
+  it('P0: refuse BOSS_CHROME_PATH containing $ expansion', () => {
+    process.env.BOSS_CHROME_PATH = '/path/$HOME/chrome'
+    expect(() => getChromeLaunchInstructions()).toThrow(/shell metacharacter/i)
   })
 })
 
@@ -138,7 +205,8 @@ describe('connectToUserChrome', () => {
 
     const call = vi.mocked(globalThis.fetch).mock.calls[0]
     const init = call[1] as RequestInit | undefined
-    expect(init?.signal).toBeDefined()
+    // AbortSignal 实例（不是 undefined 占位符）— 比 toBeDefined 更具体
+    expect(init?.signal).toBeInstanceOf(AbortSignal)
   })
 })
 
