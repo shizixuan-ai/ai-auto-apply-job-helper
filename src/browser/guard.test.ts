@@ -954,3 +954,142 @@ describe('P1 backlog #6: spawn child kill', () => {
     expect(killSpy).toHaveBeenCalledWith('SIGTERM')
   })
 })
+
+// ============================================================
+// P1 backlog: missed-branch 补全（audit 派生）
+// ============================================================
+// coverage 报告 uncovered lines: 168-172, 435, 445
+// 含义：
+//   - 167-173: OSNotifier child.on('error') handler 全段（spawn settled-race 第 3 分支）
+//   - 435:     race reject 时 notifier 二次抛错 → console.error 兜底
+//   - 445:     handleSignal continue 分支（safe 信号 → return 'resume'）
+
+describe('P1 backlog: missed-branch coverage', () => {
+  let spawnMock: ReturnType<typeof vi.fn>
+  let originalPlatform: NodeJS.Platform
+
+  beforeEach(async () => {
+    const cp = await import('node:child_process')
+    spawnMock = cp.spawn as unknown as ReturnType<typeof vi.fn>
+    spawnMock.mockReset()
+    originalPlatform = process.platform
+  })
+
+  afterEach(() => {
+    spawnMock.mockReset()
+    Object.defineProperty(process, 'platform', { value: originalPlatform })
+  })
+
+  // ----- Missed branch #1: OSNotifier child.on('error') fires (167-173) -----
+
+  it('OSNotifier: child.on("error") fires (settled=false path) → fallbackLog + resolve', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin' })
+    spawnMock.mockImplementation(() => ({
+      on: (event: string, cb: (err?: any) => void) => {
+        // 模拟 spawn 启动失败：只 fire 'error'，不 fire 'exit' 也不 fire timer
+        if (event === 'error') cb(new Error('ENOENT: osascript not found'))
+      },
+    }))
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const notifier = new OSNotifier('darwin')
+    await notifier.notify({
+      action: 'pause',
+      reason: 'ERR_EVT_MSG',
+      signal: makeSignal('verify_captcha', 1, '.geetest_panel'),
+    })
+
+    // 关键断言：error handler 走 fallbackLog（与 exit code≠0 行为一致）
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('ERR_EVT_MSG'))
+
+    logSpy.mockRestore()
+  })
+
+  it('OSNotifier: child.on("error") fires 后 exit 再 fire（settled race） → 只 log 一次', async () => {
+    // 模拟 race：error 先 fire，exit 后 fire
+    // 验证 settled 锁：exit handler 应 early-return，不再调 fallbackLog
+    let errorCb: ((err?: any) => void) | null = null
+    let exitCb: ((code: number) => void) | null = null
+    spawnMock.mockImplementation(() => ({
+      on: (event: string, cb: any) => {
+        if (event === 'error') errorCb = cb
+        if (event === 'exit') exitCb = cb
+      },
+    }))
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const notifier = new OSNotifier('darwin')
+
+    const promise = notifier.notify({
+      action: 'pause',
+      reason: 'SETTLED_RACE',
+      signal: makeSignal('verify_captcha', 1, '.geetest_panel'),
+    })
+
+    // 先 fire error（settled=true → log + resolve）
+    errorCb!(new Error('first'))
+    // 再 fire exit code=1（settled race → early-return，不重复 log）
+    exitCb!(1)
+
+    await promise
+
+    // fallbackLog 只调一次（error 路径那次）
+    const matches = logSpy.mock.calls.filter((c) =>
+      String(c[0]).includes('SETTLED_RACE'),
+    )
+    expect(matches).toHaveLength(1)
+
+    logSpy.mockRestore()
+  })
+
+  // ----- Missed branch #2: race reject + notifier 二次抛错 (435) -----
+
+  it('race reject + notifier.notify 二次抛错 → console.error 被调 + GuardError 仍抛', async () => {
+    // notifier 第一次 notify 抛错的 fallback 路径已测（backlog #1）
+    // 这里测 race reject 时第二次 notifier.notify 也抛错 → console.error 兜底
+    const failingNotifier = {
+      notify: vi.fn().mockRejectedValue(new Error('notifier down twice')),
+    }
+    const page = makeMockPage({ '.captcha-a': true })
+    page.waitForSelector = vi.fn().mockRejectedValue(new Error('page closed'))
+
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await expect(
+      withGuard(page, vi.fn(), {
+        config: makeConfig({
+          captchaSelectors: ['.captcha-a'],
+          probeIntervalMs: 20,
+        }),
+        notifier: failingNotifier,
+      }),
+    ).rejects.toBeInstanceOf(GuardError)
+
+    // 关键断言：第二次 notifier 抛错被 console.error 兜底，不阻断 GuardError
+    expect(errSpy).toHaveBeenCalledWith(
+      expect.stringContaining('notifier.notify (race reject)'),
+      expect.any(Error),
+    )
+
+    errSpy.mockRestore()
+  })
+
+  // ----- Missed branch #3: handleSignal continue 分支 (445) -----
+
+  it('safe 信号 (fallback dialog 命中) → handleSignal return "resume" → fn 仍执行', async () => {
+    // 设计：page.$ 让 [role="dialog"] 命中（fallback），其他硬编码不命中
+    // probeRiskSignals 返 [safe signal (confidence 0.3)]
+    // aggregateSignals 返 safe (priority 0，非 null)
+    // handleSignal(safe) → evaluateSignal → action='continue' → return 'resume'
+    // withGuard 继续走 step 2 → fn → 返 fn 结果
+    const page = makeMockPage({ '[role="dialog"]': true })
+    const fn = vi.fn().mockResolvedValue('fn_done')
+
+    const result = await withGuard(page, fn, {
+      config: makeConfig({ probeIntervalMs: 100_000 }),
+    })
+
+    expect(result).toBe('fn_done')
+    expect(fn).toHaveBeenCalledTimes(1)
+  })
+})
