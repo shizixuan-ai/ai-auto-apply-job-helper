@@ -213,6 +213,25 @@ export function aggregateSignals(signals: RiskSignal[]): RiskSignal | null {
   )
 }
 
+/**
+ * P1 backlog #4: detectedDuringFn 合并 helper
+ *
+ * setInterval 内多次 probe 几乎同时完成时，后写覆盖前写会丢失高优先级
+ * signal。用 pickStrongerSignal 比较两者，保留较高优先级，等价于
+ * "升级优先，但不会降级"。
+ *
+ * 优先级规则与 aggregateSignals 一致（基于 PRIORITY 表）。
+ * 平局时保留旧 signal（实现选择稳定性 > 替换）。
+ */
+export function pickStrongerSignal(
+  a: RiskSignal | null,
+  b: RiskSignal | null,
+): RiskSignal | null {
+  if (!a) return b
+  if (!b) return a
+  return PRIORITY[b.type] > PRIORITY[a.type] ? b : a
+}
+
 // ============================================================
 // 探针（依赖 Playwright Page）
 // ============================================================
@@ -422,7 +441,11 @@ export async function withGuard<T>(
     try {
       const sigs = await probeRiskSignals(page, config)
       const top = aggregateSignals(sigs)
-      if (top) detectedDuringFn = top
+      if (top) {
+        // backlog #4: 用合并而非覆盖，保留最高优先级 signal
+        // 防 setInterval 后写覆盖前写
+        detectedDuringFn = pickStrongerSignal(detectedDuringFn, top)
+      }
     } catch {
       /* 探针错误不阻塞 */
     }

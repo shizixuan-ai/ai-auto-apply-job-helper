@@ -13,6 +13,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   evaluateSignal,
   aggregateSignals,
+  pickStrongerSignal,
   probeRiskSignals,
   withGuard,
   GuardError,
@@ -745,5 +746,52 @@ describe('P1 backlog #3: pause race reject classification', () => {
       // reason 包含原始错误信息，便于诊断
       expect((err as GuardError).decision.reason).toMatch(/page|element|detached/i)
     }
+  })
+})
+
+// ============================================================
+// P1 backlog #4: detectedDuringFn 锁（防 setInterval 后写覆盖前写）
+// ============================================================
+// withGuard step 2 的 setInterval 内多个 probe 几乎同时结束时，
+// 后写覆盖前写：探测到 captcha（prio 5）后探测到 rate_limit（prio 4），
+// 因 race 顺序丢失了更高优先级信号。
+//
+// 修复：抽 pickStrongerSignal(a, b) helper，setInterval 内用合并而非覆盖。
+
+describe('P1 backlog #4: pickStrongerSignal', () => {
+  // pickStrongerSignal 在 guard.ts 内 export 后再补 import
+
+  it('PRIORITY: verify_captcha (5) > rate_limit (4) > safe (0)', () => {
+    const captcha = makeSignal('verify_captcha', 1, '.c')
+    const rate = makeSignal('rate_limit', 1, '.r')
+    expect(pickStrongerSignal(rate, captcha)).toBe(captcha)
+  })
+
+  it('returns higher-priority signal whichever position (a or b)', () => {
+    const captcha = makeSignal('verify_captcha', 1, '.c')
+    const rate = makeSignal('rate_limit', 1, '.r')
+    expect(pickStrongerSignal(captcha, rate)).toBe(captcha)
+    expect(pickStrongerSignal(rate, captcha)).toBe(captcha)
+  })
+
+  it('keeps higher-priority signal on tie priority (no overwrite)', () => {
+    const a = makeSignal('verify_captcha', 1, '.a')
+    const b = makeSignal('verify_captcha', 1, '.b')
+    // 同优先级 → 平局行为：实现选择保留 a
+    expect(pickStrongerSignal(a, b)?.rawSelector).toBe('.a')
+  })
+
+  it('returns null when both are null', () => {
+    expect(pickStrongerSignal(null, null)).toBeNull()
+  })
+
+  it('returns b when only b is non-null', () => {
+    const b = makeSignal('rate_limit', 1)
+    expect(pickStrongerSignal(null, b)).toBe(b)
+  })
+
+  it('returns a when only a is non-null', () => {
+    const a = makeSignal('rate_limit', 1)
+    expect(pickStrongerSignal(a, null)).toBe(a)
   })
 })
