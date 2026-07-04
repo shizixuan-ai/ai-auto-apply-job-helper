@@ -18,6 +18,7 @@ import os from 'node:os'
 import { connectToUserChrome, attachPlaywrightToCDP } from './cdp.js'
 import { withGuard, DEFAULT_GUARD_CONFIG, type GuardConfig } from './guard.js'
 import { typeText, type TypeTextOptions } from './human.js'
+import { detectCityMismatch, type CityReportableJob } from './city-utils.js'
 
 // ============================================================
 // 常量
@@ -421,6 +422,16 @@ export async function searchJobs(
       skills: job.skills ?? [],
       link: job.link ?? '',
     }))
+
+    // ---- Phase 2.5: --city 警告（详见 ADR-0003 + city-utils.ts） ----
+    if (city) {
+      // SearchResult.city 字段对应 BOSS API 的 cityName，我们用 {cityName} 形式传给 helper
+      const cityMatches: CityReportableJob[] = jobs.map((j) => ({ cityName: j.city }))
+      const mismatchWarning = detectCityMismatch(city, cityMatches)
+      if (mismatchWarning) {
+        console.warn(mismatchWarning)
+      }
+    }
 
     // ---- Phase 3: DOM 补充提取（不阻塞主流程） ----
     try {
