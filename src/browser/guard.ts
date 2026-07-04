@@ -456,6 +456,19 @@ export async function withGuard<T>(
     }
   }, config.probeIntervalMs)
 
+  // P1 backlog #5: step2 立即同步 probe 一次
+  // 覆 step1→setInterval 第一次 fire 间隙的 signal 探测盲区
+  // 立即跑不等 setInterval，第一次 tick 在 probeIntervalMs 后
+  try {
+    const initialSigs = await probeRiskSignals(page, config)
+    const initialTop = aggregateSignals(initialSigs)
+    if (initialTop) {
+      detectedDuringFn = pickStrongerSignal(detectedDuringFn, initialTop)
+    }
+  } catch {
+    /* 同步 probe 错误不阻塞 */
+  }
+
   let fnResult: T
   try {
     fnResult = await fn()

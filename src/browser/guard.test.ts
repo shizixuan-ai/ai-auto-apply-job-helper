@@ -301,7 +301,9 @@ describe('withGuard', () => {
       '.captcha-a',
       expect.objectContaining({ state: 'hidden' }),
     )
-    expect(waitForUserConfirm).toHaveBeenCalledTimes(1)
+    // step 2 sync probe（backlog #5）会让 mock 持续 captcha 在 step 3 再
+    // 触发一次确认。允许 ≥1 次实际行为。
+    expect(waitForUserConfirm.mock.calls.length).toBeGreaterThanOrEqual(1)
   })
 
   it('#13 maxPauseMs 超时 → throws GuardError(ABORT_TODAY)', async () => {
@@ -818,5 +820,65 @@ describe('P1 backlog #2: aggregateSignals null guard', () => {
   it('aggregateSignals([sig]) 仍然返回 sig（兼容旧行为）', () => {
     const sig = makeSignal('rate_limit')
     expect(aggregateSignals([sig])).toBe(sig)
+  })
+})
+
+// ============================================================
+// P1 backlog #5: step2 立即 sync probe（覆 step1→setInterval 间隙）
+// ============================================================
+// withGuard step 1 完成后到 setInterval 第一次 fire 之间有窗口，
+// 该窗口内 page 出现 signal 不会被探测捕获。修复：setInterval 创建
+// 后立即同步 probe 一次。
+//
+// 验证策略：用 captcha selector mock 让 step1 不命中、step2 sync 命中。
+// 这样只依赖 signal 检测，不依赖具体的 page.$ 调用次数（vitest mock
+// 行为细节难以预测）。
+
+describe('P1 backlog #5: step2 sync probe', () => {
+  it('step2 sync probe 命中信号（说明同步探针存在）', async () => {
+    // 用 captcha selectors 列表，让 step1 probe 不命中 captcha，
+    // step2 sync probe 命中 captcha（首次以外的）
+    let captchaSelectorHits = 0
+    const page = makeMockPage({ '.captcha-a': true })
+    page.$ = vi.fn().mockImplementation(async (sel: string) => {
+      if (sel === '.captcha-a') {
+        captchaSelectorHits++
+        // 第 1 次访问（step1 probe）→ 不命中；第 2 次（step2 sync）→ 命中
+        return captchaSelectorHits === 2 ? {} : null
+      }
+      return null
+    })
+    const fn = vi.fn().mockResolvedValue('ok')
+
+    // step2 sync probe 命中 captcha → step3 → handleSignal → PAUSE
+    // → waitForUserConfirm 未注入 → throw
+    await expect(
+      withGuard(page, fn, {
+        config: makeConfig({
+          captchaSelectors: ['.captcha-a'],
+          probeIntervalMs: 100_000,
+        }),
+      }),
+    ).rejects.toThrow(/waitForUserConfirm.*not injected/)
+
+    // 至少第 2 次访问 .captcha-a 触发命中逻辑
+    expect(captchaSelectorHits).toBeGreaterThanOrEqual(2)
+  })
+
+  it('probeIntervalMs 巨大时 fn 在 setInterval 第一次 tick 之前完成', async () => {
+    // 防止 setInterval 第一次 tick 干扰（probeIntervalMs=100s 没机会 tick）
+    // 简单验证：fn 立即返回时无意外 throw
+    const page = makeMockPage({})
+    const fn = vi.fn().mockResolvedValue('ok')
+
+    await expect(
+      withGuard(page, fn, {
+        config: makeConfig({ probeIntervalMs: 100_000 }),
+      }),
+    ).resolves.toBe('ok')
+
+    // 防 setInterval 还在跑：清掉
+    // （withGuard 内部已 clearInterval，这里验证 fn 调过 1 次）
+    expect(fn).toHaveBeenCalledTimes(1)
   })
 })
