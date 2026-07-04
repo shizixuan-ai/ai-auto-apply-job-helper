@@ -795,3 +795,28 @@ describe('P1 backlog #4: pickStrongerSignal', () => {
     expect(pickStrongerSignal(a, null)).toBe(a)
   })
 })
+
+// ============================================================
+// P1 backlog #2: aggregateSignals null guard
+// ============================================================
+// 当前 aggregateSignals 只防御 length === 0，传 null/undefined 时
+// 访问 .length 抛 TypeError。加 null guard 让其 return null。
+
+describe('P1 backlog #2: aggregateSignals null guard', () => {
+  it('aggregateSignals(null) 不抛错并返回 null', () => {
+    expect(aggregateSignals(null as any)).toBeNull()
+  })
+
+  it('aggregateSignals(undefined) 不抛错并返回 null', () => {
+    expect(aggregateSignals(undefined as any)).toBeNull()
+  })
+
+  it('aggregateSignals([]) 仍然返回 null（兼容旧行为）', () => {
+    expect(aggregateSignals([])).toBeNull()
+  })
+
+  it('aggregateSignals([sig]) 仍然返回 sig（兼容旧行为）', () => {
+    const sig = makeSignal('rate_limit')
+    expect(aggregateSignals([sig])).toBe(sig)
+  })
+})

@@ -206,8 +206,13 @@ const PRIORITY: Record<SignalType, number> = {
   safe: 0,
 }
 
-export function aggregateSignals(signals: RiskSignal[]): RiskSignal | null {
-  if (signals.length === 0) return null
+export function aggregateSignals(
+  signals: RiskSignal[] | null | undefined,
+): RiskSignal | null {
+  // P1 backlog #2: null/undefined guard
+  // 调用者有时没初始化（比如 probeRiskSignals 内部初始空），传 null
+  // 之前会抛 TypeError；现在安全返回 null
+  if (!signals || signals.length === 0) return null
   return signals.reduce((top, s) =>
     PRIORITY[s.type] > PRIORITY[top.type] ? s : top,
   )
