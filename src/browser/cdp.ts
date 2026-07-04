@@ -33,7 +33,7 @@ export interface CDPWrapper {
 }
 
 /** 默认 CDP 端口，可被 BOSS_CDP_PORT 环境变量覆盖 */
-const DEFAULT_CDP_PORT = 9222
+export const DEFAULT_CDP_PORT = 9222
 
 /** 单次 fetch 探测的超时上限（毫秒） */
 const PROBE_TIMEOUT_MS = 2000

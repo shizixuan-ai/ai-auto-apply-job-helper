@@ -5,9 +5,12 @@
 // 跨平台分支：macOS / Windows / Linux
 //
 // 这是一个纯函数，方便 vitest 在 RED→GREEN 阶段验证输出。
+//
+// 注意：默认端口常量从 cdp.ts 导入（DEFAULT_CDP_PORT），
+// 避免与 cdp.ts 私有常量重复导致端口漂移。
 // ============================================================
 
-import { getChromeLaunchInstructions } from '../../browser/cdp.js'
+import { getChromeLaunchInstructions, DEFAULT_CDP_PORT } from '../../browser/cdp.js'
 
 export interface ChromeHandlerOptions {
   /** 自定义端口，覆盖默认 9222 与 BOSS_CDP_PORT */
@@ -22,10 +25,8 @@ export interface ChromeHandlerOptions {
  *   - 必须包含 "--remote-debugging-port="
  *   - 必须包含 "--user-data-dir="
  *   - 必须包含 Chrome 可执行文件名
- *   - ports 反映传入的 port，未传则用默认 9222
+ *   - ports 反映传入的 port，未传则用 DEFAULT_CDP_PORT
  */
 export function handleChromeCommand(options: ChromeHandlerOptions = {}): string {
-  return getChromeLaunchInstructions(options.port ?? DEFAULT_PORT)
+  return getChromeLaunchInstructions(options.port ?? DEFAULT_CDP_PORT)
 }
-
-const DEFAULT_PORT = 9222

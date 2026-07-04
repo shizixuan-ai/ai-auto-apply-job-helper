@@ -4,6 +4,7 @@
 
 import { describe, it, expect } from 'vitest'
 import { handleChromeCommand } from './chrome-handler.js'
+import { DEFAULT_CDP_PORT } from '../../browser/cdp.js'
 
 describe('handleChromeCommand', () => {
   it('returns a non-empty string', () => {
@@ -30,6 +31,13 @@ describe('handleChromeCommand', () => {
   it('uses default port 9222 when no option is provided', () => {
     const out = handleChromeCommand()
     expect(out).toContain('9222')
+  })
+
+  it('default port comes from cdp.ts DEFAULT_CDP_PORT (防常量漂移回归)', () => {
+    // 验证 chrome-handler 真的从 cdp.ts 导入默认值，而非自有重复常量
+    expect(DEFAULT_CDP_PORT).toBe(9222)
+    const out = handleChromeCommand()
+    expect(out).toContain(String(DEFAULT_CDP_PORT))
   })
 
   it('respects overridden port', () => {
