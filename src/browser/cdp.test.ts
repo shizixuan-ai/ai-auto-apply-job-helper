@@ -49,6 +49,18 @@ describe('getChromeLaunchInstructions', () => {
   it('mentions Chrome binary name', () => {
     expect(getChromeLaunchInstructions()).toContain('Chrome')
   })
+
+  // ============================================================
+  // Chrome 111+ 安全策略：必须显式允许 zhipin.com origin
+  // P0 实测发现：缺少 --remote-allow-origins=* 时 Chrome DevTools
+  // 会拒绝来自 https://www.zhipin.com 的 WebSocket 连接，
+  // 导致 Playwright connectOverCDP 接管时报 "about:blank"。
+  // ============================================================
+
+  it('emits --remote-allow-origins=* to permit zhipin.com origin (Chrome 111+)', () => {
+    const out = getChromeLaunchInstructions()
+    expect(out).toContain('--remote-allow-origins=*')
+  })
 })
 
 // ============================================================

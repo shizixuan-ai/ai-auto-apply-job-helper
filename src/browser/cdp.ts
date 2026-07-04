@@ -118,7 +118,7 @@ export function getChromeLaunchInstructions(port: number = DEFAULT_CDP_PORT): st
   const userDataDir = '~/.boss-chrome'
   return [
     '# 请在终端运行下面一行（或在 Chrome 中打开 chrome://inspect/#devices 后启动）:',
-    `${quotedChrome} --remote-debugging-port=${port} --user-data-dir=${userDataDir}`,
+    `${quotedChrome} --remote-debugging-port=${port} --user-data-dir=${userDataDir} --remote-allow-origins=*`,
   ].join('\n')
 }
 
