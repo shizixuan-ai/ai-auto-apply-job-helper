@@ -16,7 +16,7 @@ import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
 import { connectToUserChrome, attachPlaywrightToCDP } from './cdp.js'
-import { withGuard, DEFAULT_GUARD_CONFIG, type GuardConfig } from './guard.js'
+import { withGuard, DEFAULT_GUARD_CONFIG, type GuardConfig, GuardError } from './guard.js'
 import { typeText, type TypeTextOptions } from './human.js'
 import { detectCityMismatch, type CityReportableJob } from './city-utils.js'
 
@@ -530,6 +530,11 @@ export async function sendGreeting(
         console.log(`✅ 已向岗位 ${jobId} 发送打招呼消息 (typed=${result.typed}, typos=${result.typos})`)
         return true
       } catch (err) {
+        // backlog #7: GuardError 必须透传（不让风控决策被业务 catch 吞掉）
+        // 业务错误（page.goto 抛 navigation timeout 等）仍返回 false
+        if (err instanceof GuardError) {
+          throw err
+        }
         console.error(`❌ 向岗位 ${jobId} 发送消息失败:`, err)
         return false
       }
