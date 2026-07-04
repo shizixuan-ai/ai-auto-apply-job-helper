@@ -118,7 +118,9 @@ export function getChromeLaunchInstructions(port: number = DEFAULT_CDP_PORT): st
   const userDataDir = '~/.boss-chrome'
   return [
     '# 请在终端运行下面一行（或在 Chrome 中打开 chrome://inspect/#devices 后启动）:',
-    `${quotedChrome} --remote-debugging-port=${port} --user-data-dir=${userDataDir} --remote-allow-origins=*`,
+    // 注意：'--remote-allow-origins=*' 必须单引号包裹，
+    // zsh 默认会把 * 当 glob 通配符展开（macOS 主流 shell）
+    `${quotedChrome} --remote-debugging-port=${port} --user-data-dir=${userDataDir} '--remote-allow-origins=*'`,
   ].join('\n')
 }
 

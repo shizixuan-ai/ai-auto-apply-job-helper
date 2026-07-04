@@ -61,6 +61,18 @@ describe('getChromeLaunchInstructions', () => {
     const out = getChromeLaunchInstructions()
     expect(out).toContain('--remote-allow-origins=*')
   })
+
+  // ============================================================
+  // zsh glob 修正：含 * 的 flag 必须用单引号包裹
+  // P0 实测：用户复制 `--remote-allow-origins=*` 粘贴到 zsh
+  // 会触发 "no matches found" 错误（* 被当成 glob 通配符）
+  // 整个 flag 必须 'flag=value' quote 起来。
+  // ============================================================
+
+  it('quotes the *-suffixed flag with single quotes to avoid zsh glob expansion', () => {
+    const out = getChromeLaunchInstructions()
+    expect(out).toContain("'--remote-allow-origins=*'")
+  })
 })
 
 // ============================================================
