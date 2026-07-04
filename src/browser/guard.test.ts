@@ -20,6 +20,8 @@ import {
   OSNotifier,
   ConsoleNotifier,
   DEFAULT_GUARD_CONFIG,
+  DEFAULT_NOTIFIER_TIMEOUT_MS,
+  parseNotifierTimeoutMs,
   type SignalType,
   type RiskSignal,
   type GuardDecision,
@@ -1091,5 +1093,130 @@ describe('P1 backlog: missed-branch coverage', () => {
 
     expect(result).toBe('fn_done')
     expect(fn).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ============================================================
+// P2: spawnTimeoutMs env var 覆盖（BOSS_NOTIFIER_TIMEOUT_MS）
+// ============================================================
+// 用途：CI 调优 / 不同部署环境设置不同超时，无需改代码
+// 优先级：options.spawnTimeoutMs > env > DEFAULT_NOTIFIER_TIMEOUT_MS
+// 防御：env 解析失败（NaN/0/负数）静默回退默认，不让 process 启动失败
+
+describe('P2: parseNotifierTimeoutMs (env override)', () => {
+  const ORIGINAL_ENV = process.env.BOSS_NOTIFIER_TIMEOUT_MS
+
+  beforeEach(() => {
+    delete process.env.BOSS_NOTIFIER_TIMEOUT_MS
+  })
+
+  afterEach(() => {
+    if (ORIGINAL_ENV === undefined) {
+      delete process.env.BOSS_NOTIFIER_TIMEOUT_MS
+    } else {
+      process.env.BOSS_NOTIFIER_TIMEOUT_MS = ORIGINAL_ENV
+    }
+  })
+
+  it('default: 无 options 无 env → DEFAULT_NOTIFIER_TIMEOUT_MS', () => {
+    expect(parseNotifierTimeoutMs(undefined)).toBe(DEFAULT_NOTIFIER_TIMEOUT_MS)
+    expect(DEFAULT_NOTIFIER_TIMEOUT_MS).toBe(5000)
+  })
+
+  it('option 是有效正数 → 直接使用 option（最高优先级）', () => {
+    process.env.BOSS_NOTIFIER_TIMEOUT_MS = '3000'
+    expect(parseNotifierTimeoutMs(1000)).toBe(1000)
+  })
+
+  it('option 无效（0）→ 回退到 env', () => {
+    process.env.BOSS_NOTIFIER_TIMEOUT_MS = '3000'
+    expect(parseNotifierTimeoutMs(0)).toBe(3000)
+  })
+
+  it('option 无效（负数）→ 回退到 env', () => {
+    process.env.BOSS_NOTIFIER_TIMEOUT_MS = '3000'
+    expect(parseNotifierTimeoutMs(-1)).toBe(3000)
+  })
+
+  it('option 无效（NaN）→ 回退到 env', () => {
+    process.env.BOSS_NOTIFIER_TIMEOUT_MS = '3000'
+    expect(parseNotifierTimeoutMs(NaN)).toBe(3000)
+  })
+
+  it('option 无效（Infinity）→ 回退到 env', () => {
+    process.env.BOSS_NOTIFIER_TIMEOUT_MS = '3000'
+    expect(parseNotifierTimeoutMs(Infinity)).toBe(3000)
+  })
+
+  it('env 是有效正数 → 使用 env', () => {
+    process.env.BOSS_NOTIFIER_TIMEOUT_MS = '8000'
+    expect(parseNotifierTimeoutMs(undefined)).toBe(8000)
+  })
+
+  it('env 是 0（无效，等于无 timeout）→ 回退默认', () => {
+    process.env.BOSS_NOTIFIER_TIMEOUT_MS = '0'
+    expect(parseNotifierTimeoutMs(undefined)).toBe(DEFAULT_NOTIFIER_TIMEOUT_MS)
+  })
+
+  it('env 是负数 → 回退默认', () => {
+    process.env.BOSS_NOTIFIER_TIMEOUT_MS = '-100'
+    expect(parseNotifierTimeoutMs(undefined)).toBe(DEFAULT_NOTIFIER_TIMEOUT_MS)
+  })
+
+  it('env 是非数字（"abc"）→ 回退默认', () => {
+    process.env.BOSS_NOTIFIER_TIMEOUT_MS = 'abc'
+    expect(parseNotifierTimeoutMs(undefined)).toBe(DEFAULT_NOTIFIER_TIMEOUT_MS)
+  })
+
+  it('env 是空字符串 → 回退默认', () => {
+    process.env.BOSS_NOTIFIER_TIMEOUT_MS = ''
+    expect(parseNotifierTimeoutMs(undefined)).toBe(DEFAULT_NOTIFIER_TIMEOUT_MS)
+  })
+
+  it('env 是浮点（"3.5"）→ parseInt 截断为 3', () => {
+    // 防御：parseInt 比 Number 更严格（不返 NaN 给 "3.5"）
+    // 但行为契约：parseInt 后若是 0 也算无效，回退默认
+    process.env.BOSS_NOTIFIER_TIMEOUT_MS = '3.5'
+    // 3 < 10 也算太短（防 setInterval 风暴的下限），回退默认
+    expect(parseNotifierTimeoutMs(undefined)).toBe(DEFAULT_NOTIFIER_TIMEOUT_MS)
+  })
+
+  it('env 是大数（"60000"）→ 使用 env', () => {
+    process.env.BOSS_NOTIFIER_TIMEOUT_MS = '60000'
+    expect(parseNotifierTimeoutMs(undefined)).toBe(60000)
+  })
+
+  // ----- 集成：OSNotifier 构造时自动读 env -----
+
+  it('OSNotifier 构造时自动读 env（无需 options）', async () => {
+    process.env.BOSS_NOTIFIER_TIMEOUT_MS = '1234'
+    const cp = await import('node:child_process')
+    const spawnMock = cp.spawn as unknown as ReturnType<typeof vi.fn>
+    spawnMock.mockReset()
+    spawnMock.mockImplementation(() => ({
+      on: () => {},
+      kill: vi.fn(),
+    }))
+
+    const originalPlatform = process.platform
+    Object.defineProperty(process, 'platform', { value: 'darwin' })
+
+    const notifier = new OSNotifier('darwin')
+    // 验证构造后 spawnTimeoutMs 是 1234
+    // 通过行为验证：spawnTimeoutMs=1234 让 timer 在 ~1234ms 后 fire
+    const start = Date.now()
+    await notifier.notify({
+      action: 'pause',
+      reason: 'env_test',
+      signal: makeSignal('verify_captcha', 1, '.test'),
+    })
+    const elapsed = Date.now() - start
+    // 应该至少 1100ms（用 1234 env，timer 必须 fire 因为 mock spawn 永不 resolve）
+    expect(elapsed).toBeGreaterThanOrEqual(1100)
+    // 但不能太慢（容许 200ms 误差）
+    expect(elapsed).toBeLessThan(2000)
+
+    spawnMock.mockReset()
+    Object.defineProperty(process, 'platform', { value: originalPlatform })
   })
 })

@@ -68,6 +68,51 @@ export const DEFAULT_GUARD_CONFIG: GuardConfig = {
   fallbackDialogSelector: '[role="dialog"]',
 }
 
+/**
+ * OSNotifier spawn 子进程默认超时（5s）
+ * P2: 可通过 BOSS_NOTIFIER_TIMEOUT_MS env var 覆盖
+ */
+export const DEFAULT_NOTIFIER_TIMEOUT_MS = 5000
+
+/**
+ * P2: env var 名（CI / 不同部署环境调优，无需改代码）
+ */
+export const NOTIFIER_TIMEOUT_ENV = 'BOSS_NOTIFIER_TIMEOUT_MS'
+
+/** 最小合法 timeout（10ms，与 probeIntervalMs 一致防定时器风暴） */
+const MIN_NOTIFIER_TIMEOUT_MS = 10
+
+/**
+ * P2: 解析 spawn timeout，优先级 option > env > default
+ *
+ * 行为契约：
+ *   - option 是有限正数（≥10）→ 直接使用
+ *   - 否则读 process.env.BOSS_NOTIFIER_TIMEOUT_MS
+ *   - env 是有限正整数（≥10）→ 使用 env
+ *   - 其它（NaN / 0 / 负数 / 空 / 非数字）→ 静默回退默认
+ *
+ * 防 NaN/Infinity/0/负数：避免 setTimeout 立即 fire / 永不 fire
+ */
+export function parseNotifierTimeoutMs(option: number | undefined): number {
+  // 1. option 优先
+  if (Number.isFinite(option) && (option as number) >= MIN_NOTIFIER_TIMEOUT_MS) {
+    return option as number
+  }
+
+  // 2. 回退到 env
+  const raw = process.env[NOTIFIER_TIMEOUT_ENV]
+  if (raw === undefined || raw === '') return DEFAULT_NOTIFIER_TIMEOUT_MS
+
+  // parseInt 比 Number 更严格（"3.5" → 3, "abc" → NaN, "3abc" → 3）
+  // 但我们要求整数（spawn timeout 用整数秒已足够）
+  const parsed = parseInt(raw, 10)
+  if (!Number.isFinite(parsed) || parsed < MIN_NOTIFIER_TIMEOUT_MS) {
+    return DEFAULT_NOTIFIER_TIMEOUT_MS
+  }
+
+  return parsed
+}
+
 // ============================================================
 // 错误
 // ============================================================
@@ -92,7 +137,7 @@ export interface Notifier {
 
 export class OSNotifier implements Notifier {
   private readonly platform: NodeJS.Platform
-  /** spawn 子进程超时（默认 5s）。超时强制 kill + fallback。 */
+  /** spawn 子进程超时（默认 5s，可被 BOSS_NOTIFIER_TIMEOUT_MS 覆盖）。超时强制 kill + fallback。 */
   private readonly spawnTimeoutMs: number
 
   constructor(
@@ -100,7 +145,8 @@ export class OSNotifier implements Notifier {
     options?: { spawnTimeoutMs?: number },
   ) {
     this.platform = platform ?? process.platform
-    this.spawnTimeoutMs = options?.spawnTimeoutMs ?? 5000
+    // P2: parseNotifierTimeoutMs 统一 option > env > default 优先级
+    this.spawnTimeoutMs = parseNotifierTimeoutMs(options?.spawnTimeoutMs)
   }
 
   async notify(decision: GuardDecision): Promise<void> {
