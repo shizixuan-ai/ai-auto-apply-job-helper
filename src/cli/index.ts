@@ -16,6 +16,16 @@ import { createLLM } from '../llm/index.js'
 import { buildGreetingSystemPrompt, buildGreetingPrompt, buildResumeSummary } from '../template/index.js'
 import { listRecords, createRecord, updateRecord } from '../feishu/index.js'
 import { handleChromeCommand } from './handlers/chrome-handler.js'
+import { runSendCommand, type SendCommandResult } from './handlers/send-handler.js'
+
+/** SendCommandResult.action → process.exit code 映射（doc-only，CLI 层 switch 用） */
+const SEND_EXIT_CODE: Record<SendCommandResult['action'], number> = {
+  ok: 0,
+  failed: 1,
+  invalid_args: 2,
+  abort_today: 3,
+  abort: 4,
+}
 
 const program = new Command()
 
@@ -177,24 +187,30 @@ program
   .option('--cdp', '通过 CDP 连接已有 Chrome')
   .action(async (jobId: string, options: { message?: string; cdp?: boolean }) => {
     const cdp = options.cdp ?? program.opts().cdp ?? false
-    const session = await createSession(cdp)
-    const page = session.page
 
-    try {
-      const message = options.message
-      if (!message) {
-        console.log(chalk.red('❌ 请通过 -m 指定话术内容'))
-        process.exit(1)
-      }
+    console.log(chalk.cyan(`📤 正在向岗位 ${jobId} 发送打招呼...`))
 
-      console.log(chalk.cyan(`📤 正在向岗位 ${jobId} 发送打招呼...`))
-      const success = await sendGreeting(page, jobId, message)
+    // P0 fix: 调 runSendCommand 把 GuardError / 业务错误统一转 Result
+    // CLI 层只负责 exit code 映射 + 友好输出，不再 unhandled rejection
+    const result = await runSendCommand({ jobId, message: options.message, cdp })
 
-      if (success) {
-        console.log(chalk.green('✅ 发送成功'))
-      }
-    } finally {
-      await closeBrowserSession(session)
+    switch (result.action) {
+      case 'ok':
+        console.log(chalk.green(`✅ ${result.reason}`))
+        process.exit(SEND_EXIT_CODE.ok)
+      case 'invalid_args':
+        console.log(chalk.red(`❌ ${result.reason}`))
+        process.exit(SEND_EXIT_CODE.invalid_args)
+      case 'abort_today':
+        // 风控关键 signal：红字 + 单独 exit code 3，便于 CI / 监控识别
+        console.log(chalk.red(`\n🛑 风控今日上限：${result.reason}\n`))
+        process.exit(SEND_EXIT_CODE.abort_today)
+      case 'abort':
+        console.log(chalk.red(`\n🛑 风控阻断：${result.reason}\n`))
+        process.exit(SEND_EXIT_CODE.abort)
+      case 'failed':
+        console.log(chalk.red(`❌ ${result.reason}`))
+        process.exit(SEND_EXIT_CODE.failed)
     }
   })
 
