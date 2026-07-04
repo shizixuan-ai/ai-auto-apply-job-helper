@@ -92,9 +92,15 @@ export interface Notifier {
 
 export class OSNotifier implements Notifier {
   private readonly platform: NodeJS.Platform
+  /** spawn 子进程超时（默认 5s）。超时强制 kill + fallback。 */
+  private readonly spawnTimeoutMs: number
 
-  constructor(platform?: NodeJS.Platform) {
+  constructor(
+    platform?: NodeJS.Platform,
+    options?: { spawnTimeoutMs?: number },
+  ) {
     this.platform = platform ?? process.platform
+    this.spawnTimeoutMs = options?.spawnTimeoutMs ?? 5000
   }
 
   async notify(decision: GuardDecision): Promise<void> {
@@ -134,11 +140,34 @@ export class OSNotifier implements Notifier {
 
     await new Promise<void>((resolve) => {
       const child = spawn(cmd, args)
+      // backlog #6: spawn 子进程 timeout 兜底
+      // 如果 child 从不 fire 'exit' 或 'error'（系统卡顿 / notification center
+      // 假死 / 用户 macOS 权限禁止等），5s 后强制 kill + 走 fallback，
+      // 避免 withGuard 永远等 notify resolve。
+      let settled = false
+      const timer = setTimeout(() => {
+        if (settled) return
+        settled = true
+        try {
+          child.kill('SIGTERM')
+        } catch {
+          /* kill fail silently */
+        }
+        fallbackLog()
+        resolve()
+      }, this.spawnTimeoutMs)
+
       child.on('exit', (code) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
         if (code !== 0) fallbackLog()
         resolve()
       })
       child.on('error', () => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
         fallbackLog()
         resolve()
       })

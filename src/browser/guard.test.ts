@@ -882,3 +882,75 @@ describe('P1 backlog #5: step2 sync probe', () => {
     expect(fn).toHaveBeenCalledTimes(1)
   })
 })
+
+// ============================================================
+// P1 backlog #6: spawn child kill（防 osascript 挂起）
+// ============================================================
+// OSNotifier 在 darwin 调 osascript 用 spawn 启动子进程。如果子进程
+// 永远不 fire 'exit' 或 'error'（例如用户没有 notification center /
+// 系统卡顿），spawn 挂起 — withGuard 的 notify 等永远不 resolve，阻塞。
+//
+// 修复：spawn 后设置 5s timeout，超时后 child.kill() + fallback 路径。
+// 我们测：mock spawn 返一个不 fire 的 EventEmitter，期望 notify 在
+// ~5s timeout 后 resolve 而不是挂起。
+
+describe('P1 backlog #6: spawn child kill', () => {
+  let spawnMock: ReturnType<typeof vi.fn>
+  let originalPlatform: NodeJS.Platform
+
+  beforeEach(async () => {
+    const cp = await import('node:child_process')
+    spawnMock = cp.spawn as unknown as ReturnType<typeof vi.fn>
+    spawnMock.mockReset()
+    originalPlatform = process.platform
+    Object.defineProperty(process, 'platform', { value: 'darwin' })
+  })
+
+  afterEach(() => {
+    spawnMock.mockReset()
+    Object.defineProperty(process, 'platform', { value: originalPlatform })
+  })
+
+  it('P0 测试 1: spawn 返回的 child 永不 fire exit/error（hang）', async () => {
+    // mock spawn 返一个 EventEmitter，从不 emit exit/error
+    spawnMock.mockImplementation(() => ({
+      on: () => {
+        /* hang: never call cb */
+      },
+      kill: vi.fn(),
+    }))
+
+    // spawnTimeoutMs 50 → 测试快速完成（默认 5000ms 测试会等 5s）
+    const notifier = new OSNotifier('darwin', { spawnTimeoutMs: 50 })
+    const startTime = Date.now()
+
+    await notifier.notify({
+      action: 'pause',
+      reason: 'test',
+      signal: makeSignal('verify_captcha', 1, '.test'),
+    })
+
+    const elapsed = Date.now() - startTime
+    // 应该 ≤ ~150ms (50ms timeout + 一些延迟)
+    expect(elapsed).toBeLessThan(500)
+  })
+
+  it('P0 测试 2: child.kill(SIGTERM) 被调用（计时器触发后）', async () => {
+    const killSpy = vi.fn()
+    spawnMock.mockImplementation(() => ({
+      on: () => {
+        /* hang */
+      },
+      kill: killSpy,
+    }))
+
+    const notifier = new OSNotifier('darwin', { spawnTimeoutMs: 50 })
+    await notifier.notify({
+      action: 'pause',
+      reason: 'test',
+      signal: makeSignal('verify_captcha', 1, '.test'),
+    })
+
+    expect(killSpy).toHaveBeenCalledWith('SIGTERM')
+  })
+})
