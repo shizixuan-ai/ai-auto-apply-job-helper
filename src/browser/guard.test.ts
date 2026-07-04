@@ -696,3 +696,54 @@ describe('P1 backlog #1: notifier.notify try/catch', () => {
     consoleErrSpy.mockRestore()
   })
 })
+
+// ============================================================
+// P1 backlog #3: pause race 的 reject 分类
+// ============================================================
+// 当前：race 内部的 waitForSelector 抛错（如 page closed / selector 找不到），
+// catch 内 instanceof PauseTimeoutError 失败，所以 throw err 传播原始 Error。
+// 修复：所有 race 内的错误（除 PauseTimeoutError）也视为 abort_today，
+// 因为 page 异常意味着业务中断。
+
+describe('P1 backlog #3: pause race reject classification', () => {
+  it('page.waitForSelector 抛错时抛 GuardError(abort_today)（而非原始 Error 透传）', async () => {
+    const page = makeMockPage({ '.captcha-a': true })
+    page.waitForSelector = vi
+      .fn()
+      .mockRejectedValue(new Error('page closed unexpectedly'))
+    const fn = vi.fn()
+
+    // 当前：原始 Error('page closed unexpectedly') 透传
+    // 修复后：abort_today 决策透传，withGuard 抛 GuardError
+    await expect(
+      withGuard(page, fn, {
+        config: makeConfig({
+          captchaSelectors: ['.captcha-a'],
+          probeIntervalMs: 20,
+        }),
+      }),
+    ).rejects.toBeInstanceOf(GuardError)
+  })
+
+  it('page.waitForSelector 抛错时 abort_today reason 含原始错误信息（诊断可用）', async () => {
+    const page = makeMockPage({ '.captcha-a': true })
+    page.waitForSelector = vi
+      .fn()
+      .mockRejectedValue(new Error('element detached'))
+    const fn = vi.fn()
+
+    try {
+      await withGuard(page, fn, {
+        config: makeConfig({
+          captchaSelectors: ['.captcha-a'],
+          probeIntervalMs: 20,
+        }),
+      })
+      throw new Error('should have thrown')
+    } catch (err) {
+      expect(err).toBeInstanceOf(GuardError)
+      // reason 包含原始错误信息，便于诊断
+      expect((err as GuardError).decision.reason).toMatch(/page|element|detached/i)
+    }
+  })
+})

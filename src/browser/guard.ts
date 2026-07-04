@@ -364,16 +364,24 @@ async function handleSignal(
         sleep(config.maxPauseMs).then(() => Promise.reject(new PauseTimeoutError())),
       ])
     } catch (err) {
-      if (err instanceof PauseTimeoutError) {
-        const timeoutDecision: GuardDecision = {
-          action: 'abort_today',
-          reason: `等待验证超时（${config.maxPauseMs}ms），今日任务停止。`,
-          signal,
-        }
-        await notifier.notify(timeoutDecision)
-        throw new GuardError(timeoutDecision)
+      // P1 backlog #3: race 内任何 reject 统一处理为 abort_today
+      // (a) PauseTimeoutError → 已知超时
+      // (b) 其它 Error → page closed / waitForSelector 网络错等，page 异常即业务中断
+      // 所有情况透传 GuardError(abort_today)，让决策层对调用方透明
+      const isTimeout = err instanceof PauseTimeoutError
+      const raceErrDecision: GuardDecision = {
+        action: 'abort_today',
+        reason: isTimeout
+          ? `等待验证超时（${config.maxPauseMs}ms），今日任务停止。`
+          : `等待验证时 page 异常（${(err as Error).message ?? 'unknown'}），今日任务停止。`,
+        signal,
       }
-      throw err
+      try {
+        await notifier.notify(raceErrDecision)
+      } catch (notifyErr) {
+        console.error('[guard] notifier.notify (race reject) 抛错:', notifyErr)
+      }
+      throw new GuardError(raceErrDecision)
     }
 
     if (waitForUserConfirm) await waitForUserConfirm()
