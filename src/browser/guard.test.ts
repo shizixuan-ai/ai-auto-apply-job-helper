@@ -630,3 +630,69 @@ describe('P0: OSNotifier osascript argv 注入防御', () => {
     )
   })
 })
+
+// ============================================================
+// P1 backlog #1: notifier.notify 抛错不应阻塞 withGuard
+// ============================================================
+// 当前实现：handleSignal 内 `await notifier.notify(decision)` 没有 try/catch，
+// 自定义 Notifier 实现一抛错就让整个 withGuard 阻断。
+// 修复方案：notify 包 try/catch，抛错时 console fallback 到 [action] reason
+// 输出，最后仍按 guard decision 走 abort / pause 流程。
+
+describe('P1 backlog #1: notifier.notify try/catch', () => {
+  it('Notifier.notify 抛错时不阻断 withGuard（abort_today 决策仍生效）', async () => {
+    const brokenNotifier = {
+      notify: vi.fn().mockRejectedValue(new Error('osascript crashed')),
+    }
+    const page = makeMockPage({ '.rate-limit-modal': true })
+    page.waitForSelector = vi.fn().mockResolvedValue(undefined)
+    const fn = vi.fn()
+
+    // 当前实现：notifier 抛错直接传播 → withGuard 抛错（不是 GuardError）
+    // 修复后：notify 抛错被 try/catch 抓住 → abort_today 决策继续生效 →
+    //         withGuard 抛 GuardError(abort_today)
+    await expect(
+      withGuard(page, fn, {
+        config: makeConfig({
+          rateLimitSelectors: ['.rate-limit-modal'],
+          probeIntervalMs: 20,
+        }),
+        notifier: brokenNotifier,
+      }),
+    ).rejects.toBeInstanceOf(GuardError)
+  })
+
+  it('Notifier.notify 抛错时控制台有 fallback 输出（业务可见）', async () => {
+    const brokenNotifier = {
+      notify: vi.fn().mockRejectedValue(new Error('console broken')),
+    }
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const consoleErrSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    const page = makeMockPage({ '.rate-limit-modal': true })
+    page.waitForSelector = vi.fn().mockResolvedValue(undefined)
+
+    await expect(
+      withGuard(
+        page,
+        vi.fn(),
+        {
+          config: makeConfig({
+            rateLimitSelectors: ['.rate-limit-modal'],
+          }),
+          notifier: brokenNotifier,
+        },
+      ),
+    ).rejects.toBeInstanceOf(GuardError)
+
+    // 至少有一次 console.log 或 console.error 调用
+    const allCalls = [
+      ...consoleSpy.mock.calls.map(String),
+      ...consoleErrSpy.mock.calls.map(String),
+    ].join('\n')
+    expect(allCalls.length).toBeGreaterThan(0)
+
+    consoleSpy.mockRestore()
+    consoleErrSpy.mockRestore()
+  })
+})

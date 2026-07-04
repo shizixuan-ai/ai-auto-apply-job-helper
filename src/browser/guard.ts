@@ -337,7 +337,21 @@ async function handleSignal(
   waitForUserConfirm?: () => Promise<void>,
 ): Promise<'resume' | never> {
   const decision = evaluateSignal(signal, config)
-  await notifier.notify(decision)
+
+  // P1 backlog #1: notifier.notify 抛错不应阻断 withGuard。
+  // 自定义 Notifier 实现抛错时，fallback 到 console.log 让业务可见，
+  // 但 abort / pause 决策本身继续生效。
+  try {
+    await notifier.notify(decision)
+  } catch (err) {
+    console.error(
+      `[guard] notifier.notify 抛错（action=${decision.action}），降级到 console:`,
+      err,
+    )
+    console.log(
+      `\n🔔 [${decision.action.toUpperCase().padEnd(12)}] ${decision.reason}\n`,
+    )
+  }
 
   if (decision.action === 'abort_today' || decision.action === 'abort') {
     throw new GuardError(decision)
