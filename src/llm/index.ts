@@ -68,7 +68,17 @@ class OpenAIAdapter implements LLMAdapter {
       temperature: 0.7,
     })
 
-    return res.choices[0]?.message?.content ?? ''
+    // 审计修复（穷尽审计发现）：与 Anthropic 同样的 fake green 漏洞
+    // content=null/空 时返 '' → auto-greet 把空招呼语当成功发给 BOSS HR
+    const text = res.choices[0]?.message?.content
+    if (typeof text !== 'string' || text.length === 0) {
+      const finishReason = res.choices[0]?.finish_reason
+      throw new Error(
+        `OpenAI 兼容 API 返回空内容 [model=${this.model}, finish_reason=${finishReason}]: ` +
+        JSON.stringify(res).slice(0, 200),
+      )
+    }
+    return text
   }
 }
 

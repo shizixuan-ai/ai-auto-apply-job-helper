@@ -149,16 +149,22 @@ describe('OpenAIAdapter.generate', () => {
     )
   })
 
-  it('响应 content 为空时返回空字符串（不抛）', async () => {
+  it('响应 content 为空时抛错（不再返空串，避免 auto-greet fake green）', async () => {
     mockCreate.mockResolvedValueOnce({
-      choices: [{ message: { content: null } }],
+      choices: [{ message: { content: null }, finish_reason: 'content_filter' }],
     })
 
     const adapter = createLLM(makeConfig({ provider: 'deepseek' }))
 
-    const result = await adapter.generate('JD')
+    await expect(adapter.generate('JD')).rejects.toThrow(/OpenAI 兼容 API 返回空内容.*content_filter/)
+  })
 
-    expect(result).toBe('')
+  it('响应 choices 为空数组时抛错', async () => {
+    mockCreate.mockResolvedValueOnce({ choices: [] })
+
+    const adapter = createLLM(makeConfig({ provider: 'deepseek' }))
+
+    await expect(adapter.generate('JD')).rejects.toThrow(/返回空内容/)
   })
 })
 
