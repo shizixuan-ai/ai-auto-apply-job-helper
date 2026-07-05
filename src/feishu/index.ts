@@ -62,6 +62,18 @@ async function request<T>(
     body: body ? JSON.stringify(body) : undefined,
   })
   const data = await res.json()
+
+  // 审计修复（你提出占位符 .env 没创建表却"成功"暴露的 bug）：
+  // 飞书 API 错误必须显式抛出，禁止伪装成功。
+  // 真实场景：APP_TOKEN/tableId 错误时飞书返 { code: 99991663, msg: "...", data: {} }
+  // 旧代码原样返回 → list-handler 拿到 data.items=[] → 误判"空表"
+  if (typeof data?.code === 'number' && data.code !== 0) {
+    throw new Error(`飞书 API 错误 [code=${data.code}]: ${data.msg ?? 'unknown'}`)
+  }
+  if (!res.ok) {
+    throw new Error(`飞书 HTTP ${res.status}: ${res.statusText}`)
+  }
+
   return data as T
 }
 

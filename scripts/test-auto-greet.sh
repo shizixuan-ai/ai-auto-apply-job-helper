@@ -125,10 +125,14 @@ step "Step 4/5 准备 auto-greet (limit=$LIMIT)"
 
 # 先读飞书，统计待投递岗位数
 list_output=$(npx tsx src/cli/index.ts list 2>&1 || true)
-pending_count=$(echo "$list_output" | grep -c "状态: 待投递" || echo "0")
+pending_count=$(printf '%s' "$list_output" | grep -c "状态: 待投递" 2>/dev/null || true)
+pending_count=${pending_count:-0}
+# 清理多行（grep -c 输出可能带 trailing newlines）
+pending_count=$(printf '%s' "$pending_count" | head -1 | tr -d '[:space:]')
+pending_count=${pending_count:-0}
 info "当前飞书『待投递』岗位数: $pending_count"
 
-if [[ "$pending_count" -eq "0" ]]; then
+if [[ "$pending_count" == "0" ]]; then
   warn "飞书无『待投递』岗位，auto-greet 不会执行任何操作"
   info "请先用 bapply search <关键词> 搜岗位，再用 bapply send 发出去后状态变『已沟通』"
   info "或者手动在飞书表格添加『状态=待投递』的测试行"
@@ -179,13 +183,13 @@ duration=$((end_time - start_time))
 info "耗时: ${duration}s"
 
 # Baseline 日志
-if [[ -f "$BASELINE_FILE" ]]; then
+if [[ -f "${BASELINE_FILE:-}" ]]; then
   info "本次 baseline 记录（$BASELINE_FILE）："
   awk -v start="$start_iso" '
     $0 ~ start,/^$/ {print}
   ' "$BASELINE_FILE" 2>/dev/null | tail -20 || tail -10 "$BASELINE_FILE"
 else
-  warn "未找到今日 baseline 文件: $BASELINE_FILE"
+  warn "未找到今日 baseline 文件"
 fi
 
 # 飞书状态对比
