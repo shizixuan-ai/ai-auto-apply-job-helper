@@ -17,6 +17,7 @@ import { buildGreetingSystemPrompt, buildGreetingPrompt, buildResumeSummary } fr
 import { listRecords, createRecord, updateRecord } from '../feishu/index.js'
 import { handleChromeCommand } from './handlers/chrome-handler.js'
 import { runSendCommand, type SendCommandResult } from './handlers/send-handler.js'
+import { runListCommand, type ListResult } from './handlers/list-handler.js'
 import { writeBaselineRecord, writeBaselineRecordSync, type BaselineRecord } from './observability/baseline-writer.js'
 
 /** SendCommandResult.action → process.exit code 映射（doc-only，CLI 层 switch 用） */
@@ -26,6 +27,13 @@ const SEND_EXIT_CODE: Record<SendCommandResult['action'], number> = {
   invalid_args: 2,
   abort_today: 3,
   abort: 4,
+}
+
+/** ListResult.action → process.exit code 映射 */
+const LIST_EXIT_CODE: Record<ListResult['action'], number> = {
+  ok: 0,
+  missing_config: 2, // 类比 send.invalid_args：缺配置也算"参数错"
+  fail: 1,
 }
 
 const program = new Command()
@@ -323,6 +331,71 @@ program
           status: 'fail',
         })
         process.exit(SEND_EXIT_CODE.failed)
+    }
+  })
+
+// ============================================================
+// list
+// ============================================================
+
+program
+  .command('list')
+  .description('查看多维表格中的岗位和状态')
+  .option('-n, --limit <limit>', '每页条数', '20')
+  .action(async (options: { limit?: string }) => {
+    const start = Date.now()
+    const limit = options.limit ? Number(options.limit) : 20
+
+    if (!Number.isFinite(limit) || limit <= 0) {
+      console.log(chalk.red(`❌ --limit 必须是正整数: ${options.limit}`))
+      writeBaselineRecordSync({
+        ts: new Date().toISOString(),
+        command: 'list',
+        duration_ms: Date.now() - start,
+        http_code: null,
+        result_count: 0,
+        status: 'fail',
+      })
+      process.exit(LIST_EXIT_CODE.fail)
+    }
+
+    const result = await runListCommand({ limit })
+
+    switch (result.action) {
+      case 'ok':
+        console.log(chalk.cyan(result.formatted))
+        await writeBaselineRecord({
+          ts: new Date().toISOString(),
+          command: 'list',
+          duration_ms: Date.now() - start,
+          http_code: 200,
+          result_count: result.recordCount,
+          status: 'ok',
+        })
+        process.exit(LIST_EXIT_CODE.ok)
+      case 'missing_config':
+        console.log(chalk.yellow(`\n⚠️  ${result.reason}\n`))
+        console.log(chalk.cyan(result.hint))
+        writeBaselineRecordSync({
+          ts: new Date().toISOString(),
+          command: 'list',
+          duration_ms: Date.now() - start,
+          http_code: null,
+          result_count: 0,
+          status: 'fail',
+        })
+        process.exit(LIST_EXIT_CODE.missing_config)
+      case 'fail':
+        console.log(chalk.red(`\n❌ ${result.reason}\n`))
+        writeBaselineRecordSync({
+          ts: new Date().toISOString(),
+          command: 'list',
+          duration_ms: Date.now() - start,
+          http_code: null,
+          result_count: 0,
+          status: 'fail',
+        })
+        process.exit(LIST_EXIT_CODE.fail)
     }
   })
 

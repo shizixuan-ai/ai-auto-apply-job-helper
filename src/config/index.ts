@@ -12,6 +12,9 @@ export function loadConfig(): AppConfig {
     feishu: {
       appId: requireEnv('FEISHU_APP_ID'),
       appSecret: requireEnv('FEISHU_APP_SECRET'),
+      // list/sync/stats 命令需要，缺时给空串由 handler 友好提示
+      appToken: process.env.FEISHU_APP_TOKEN ?? '',
+      tableId: process.env.FEISHU_TABLE_ID ?? '',
     },
     llm: {
       provider,

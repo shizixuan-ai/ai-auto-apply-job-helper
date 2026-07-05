@@ -42,6 +42,10 @@ export interface AppConfig {
   feishu: {
     appId: string
     appSecret: string
+    /** 多维表格 appToken（list/sync/stats 命令需要） */
+    appToken?: string
+    /** 多维表格 tableId（list/sync/stats 命令需要） */
+    tableId?: string
   }
   llm: {
     provider: LLMProvider
