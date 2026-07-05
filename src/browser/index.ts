@@ -235,25 +235,40 @@ export async function closeBrowserSession(session: {
       // Playwright: context.cookies()（CDP 与 Launch 模式均用此 API）
       cookies = await context.cookies()
     }
-  } catch {
-    /* cookie 读取失败不阻塞关闭 */
+  } catch (err) {
+    // 审计修复（穷尽审计 P1-1）：cookie 读取失败必须 warn
+    // 否则用户下次启动会反复扫码登录（macOS 权限问题常见）
+    const msg = err instanceof Error ? err.message : String(err)
+    console.warn(`[browser] Cookie 读取失败（已忽略，可能下次需重新登录）: ${msg}`)
   }
 
   if (cookies.length > 0) await saveCookies(cookies)
 
   if (cdpMode) {
     // CDP 接管：只断开与用户真 Chrome 的连接，不关浏览器
-    await browser.close()
+    try {
+      await browser.close()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.warn(`[browser] CDP browser.disconnect 失败（Chrome 进程可能已退出）: ${msg}`)
+    }
     return
   }
 
   // Stealth Launch（fallback）：关闭我们启动的浏览器
+  // 审计修复：cleanup 失败必须 warn，否则 Chrome 进程泄漏 → macOS zombie
   try {
     await context?.close()
-  } catch {}
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.warn(`[browser] context.close 失败（Chrome 可能已崩溃）: ${msg}`)
+  }
   try {
     await browser.close()
-  } catch {}
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.warn(`[browser] browser.close 失败（可能僵尸进程）: ${msg}`)
+  }
 }
 
 // ============================================================

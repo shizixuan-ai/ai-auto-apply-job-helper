@@ -104,7 +104,27 @@ program
       console.log(chalk.green('✅ 飞书 API 连通正常'))
     } catch (err: any) {
       status = 'fail'
-      console.log(chalk.red(`❌ ${err.message}`))
+      const msg = err instanceof Error ? err.message : String(err)
+
+      // 审计修复（穷尽审计 P1-2）：区分认证/权限/限流/网络错误
+      // 用户填错 APP_SECRET 时不再笼统提示，需具体指引
+      if (/code=99991/.test(msg) || msg.includes('invalid') || msg.includes('unauthorized')) {
+        console.log(chalk.red('❌ 飞书认证失败'))
+        console.log(chalk.yellow('   请检查 FEISHU_APP_ID 和 FEISHU_APP_SECRET 是否正确'))
+        console.log(chalk.yellow('   获取地址: https://open.feishu.cn/app'))
+      } else if (msg.includes('code=91402') || msg.includes('NOTEXIST') || msg.includes('not found')) {
+        console.log(chalk.red('❌ 飞书表格不存在'))
+        console.log(chalk.yellow('   请检查 FEISHU_APP_TOKEN 和 FEISHU_TABLE_ID 是否正确'))
+        console.log(chalk.yellow('   从多维表格 URL 末尾获取: /base/<APP_TOKEN>?table=<TABLE_ID>'))
+      } else if (msg.includes('code=99991') || msg.includes('rate limit') || msg.includes('429')) {
+        console.log(chalk.red('❌ 飞书 API 限流'))
+        console.log(chalk.yellow('   请稍后再试，或检查应用权限'))
+      } else if (msg.includes('权限') || msg.includes('permission') || msg.includes('forbidden')) {
+        console.log(chalk.red('❌ 飞书权限不足'))
+        console.log(chalk.yellow('   请在飞书开放平台为应用添加「多维表格」读写权限'))
+      } else {
+        console.log(chalk.red(`❌ ${msg}`))
+      }
       // process.exit(1) 不等 async finally，必须同步写
       writeBaselineRecordSync({
         ts: new Date().toISOString(),
