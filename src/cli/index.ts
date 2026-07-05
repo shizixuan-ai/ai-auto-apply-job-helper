@@ -18,6 +18,7 @@ import { listRecords, createRecord, updateRecord } from '../feishu/index.js'
 import { handleChromeCommand } from './handlers/chrome-handler.js'
 import { runSendCommand, type SendCommandResult } from './handlers/send-handler.js'
 import { runListCommand, type ListResult } from './handlers/list-handler.js'
+import { runSyncCommand, type SyncResult } from './handlers/sync-handler.js'
 import { writeBaselineRecord, writeBaselineRecordSync, type BaselineRecord } from './observability/baseline-writer.js'
 
 /** SendCommandResult.action → process.exit code 映射（doc-only，CLI 层 switch 用） */
@@ -33,6 +34,15 @@ const SEND_EXIT_CODE: Record<SendCommandResult['action'], number> = {
 const LIST_EXIT_CODE: Record<ListResult['action'], number> = {
   ok: 0,
   missing_config: 2, // 类比 send.invalid_args：缺配置也算"参数错"
+  fail: 1,
+}
+
+/** SyncResult.action → process.exit code 映射 */
+const SYNC_EXIT_CODE: Record<SyncResult['action'], number> = {
+  ok: 0,
+  list: 0,
+  missing_config: 2,
+  invalid_args: 2,
   fail: 1,
 }
 
@@ -396,6 +406,112 @@ program
           status: 'fail',
         })
         process.exit(LIST_EXIT_CODE.fail)
+    }
+  })
+
+// ============================================================
+// sync
+// ============================================================
+
+program
+  .command('sync')
+  .description('同步飞书多维表格中的投递状态（MVP：读 + 单条手动更新）')
+  .option('--status <status>', '只看指定状态的岗位')
+  .option('--update <recordId:status>', '更新单条记录，格式 recordId:新状态（如 rec_001:已沟通）')
+  .action(async (options: { status?: string; update?: string }) => {
+    const start = Date.now()
+
+    // 解析 --update 参数（"rec_001:已沟通" → recordId + status）
+    let updateRecordId: string | undefined
+    let updateStatus: string | undefined
+    if (options.update) {
+      const idx = options.update.indexOf(':')
+      if (idx === -1) {
+        console.log(chalk.red(`❌ --update 格式错误，应为 recordId:status（如 rec_001:已沟通）`))
+        writeBaselineRecordSync({
+          ts: new Date().toISOString(),
+          command: 'sync',
+          duration_ms: Date.now() - start,
+          http_code: null,
+          result_count: 0,
+          status: 'fail',
+        })
+        process.exit(SYNC_EXIT_CODE.invalid_args)
+      }
+      updateRecordId = options.update.slice(0, idx)
+      updateStatus = options.update.slice(idx + 1)
+    }
+
+    // 决定模式：--update > --status > 默认
+    const mode: 'update' | 'filter' | 'list' = options.update
+      ? 'update'
+      : options.status
+        ? 'filter'
+        : 'list'
+
+    const result = await runSyncCommand({
+      mode,
+      status: options.status ?? updateStatus,
+      recordId: updateRecordId,
+    })
+
+    switch (result.action) {
+      case 'list':
+        console.log(chalk.cyan(result.formatted))
+        await writeBaselineRecord({
+          ts: new Date().toISOString(),
+          command: 'sync',
+          duration_ms: Date.now() - start,
+          http_code: 200,
+          result_count: result.totalCount,
+          status: 'ok',
+        })
+        process.exit(SYNC_EXIT_CODE.list)
+      case 'ok':
+        console.log(chalk.green(`✅ 已更新 ${result.recordId} → ${result.status}`))
+        await writeBaselineRecord({
+          ts: new Date().toISOString(),
+          command: 'sync',
+          duration_ms: Date.now() - start,
+          http_code: 200,
+          result_count: 1,
+          status: 'ok',
+        })
+        process.exit(SYNC_EXIT_CODE.ok)
+      case 'missing_config':
+        console.log(chalk.yellow(`\n⚠️  ${result.reason}\n`))
+        console.log(chalk.cyan(result.hint))
+        writeBaselineRecordSync({
+          ts: new Date().toISOString(),
+          command: 'sync',
+          duration_ms: Date.now() - start,
+          http_code: null,
+          result_count: 0,
+          status: 'fail',
+        })
+        process.exit(SYNC_EXIT_CODE.missing_config)
+      case 'invalid_args':
+        console.log(chalk.red(`\n❌ ${result.reason}\n`))
+        writeBaselineRecordSync({
+          ts: new Date().toISOString(),
+          command: 'sync',
+          duration_ms: Date.now() - start,
+          http_code: null,
+          result_count: 0,
+          status: 'fail',
+        })
+        process.exit(SYNC_EXIT_CODE.invalid_args)
+      case 'fail':
+        console.log(chalk.red(`\n❌ ${result.reason}\n`))
+        writeBaselineRecordSync({
+          ts: new Date().toISOString(),
+          command: 'sync',
+          duration_ms: Date.now() - start,
+          http_code: null,
+          result_count: 0,
+          status: 'fail',
+        })
+        process.exit(SYNC_EXIT_CODE.fail)
     }
   })
 
