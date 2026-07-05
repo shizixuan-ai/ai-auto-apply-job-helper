@@ -99,7 +99,25 @@ class AnthropicAdapter implements LLMAdapter {
       }),
     })
 
+    // 审计修复（用户实测暴露 fake green 风险）：
+    // 旧代码不检查 res.ok 和 body.type === 'error'，错误时返空串 ''
+    // → auto-greet 把空招呼语发给 BOSS HR，sync 标『已投递』但实际无效
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '')
+      throw new Error(`Anthropic HTTP ${res.status}: ${res.statusText} ${errBody.slice(0, 200)}`)
+    }
+
     const body = await res.json()
-    return (body as any).content?.[0]?.text ?? ''
+
+    // Anthropic 错误响应格式：{ type: 'error', error: { type, message } }
+    if (body?.type === 'error') {
+      throw new Error(`Anthropic API 错误 [${body.error?.type}]: ${body.error?.message}`)
+    }
+
+    const text = body?.content?.[0]?.text
+    if (typeof text !== 'string' || text.length === 0) {
+      throw new Error(`Anthropic 返回空内容: ${JSON.stringify(body).slice(0, 200)}`)
+    }
+    return text
   }
 }

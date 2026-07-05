@@ -174,13 +174,23 @@ describe('AnthropicAdapter.generate', () => {
     vi.unstubAllGlobals()
   })
 
+  /** Helper: 构造成功响应的 mock Response */
+  function mockOkResponse(body: unknown): Response {
+    return {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: () => Promise.resolve(body),
+      text: () => Promise.resolve(JSON.stringify(body)),
+    } as unknown as Response
+  }
+
   it('调用 fetch 并返回 content[0].text', async () => {
-    fetchSpy.mockResolvedValueOnce({
-      json: () =>
-        Promise.resolve({
-          content: [{ type: 'text', text: 'Anthropic 生成的招呼' }],
-        }),
-    })
+    fetchSpy.mockResolvedValueOnce(
+      mockOkResponse({
+        content: [{ type: 'text', text: 'Anthropic 生成的招呼' }],
+      }),
+    )
 
     const adapter = createLLM(makeConfig({ provider: 'anthropic' }))
 
@@ -200,15 +210,42 @@ describe('AnthropicAdapter.generate', () => {
     )
   })
 
-  it('content 缺失时返回空字符串', async () => {
-    fetchSpy.mockResolvedValueOnce({
-      json: () => Promise.resolve({ content: [] }),
-    })
+  // ----------------------------------------------------------------
+  // 审计修复后行为变更：旧版返空字符串，新版必须抛错
+  // （防止 auto-greet 把空招呼语当成功发给 BOSS HR）
+  // ----------------------------------------------------------------
+  it('content 缺失时抛错（不再返空串，避免 auto-greet fake green）', async () => {
+    fetchSpy.mockResolvedValueOnce(mockOkResponse({ content: [] }))
 
     const adapter = createLLM(makeConfig({ provider: 'anthropic' }))
 
-    const result = await adapter.generate('JD')
+    await expect(adapter.generate('JD')).rejects.toThrow(/Anthropic 返回空内容/)
+  })
 
-    expect(result).toBe('')
+  it('Anthropic 错误响应（type=error）抛错', async () => {
+    fetchSpy.mockResolvedValueOnce(
+      mockOkResponse({
+        type: 'error',
+        error: { type: 'rate_limit_error', message: 'Too many requests' },
+      }),
+    )
+
+    const adapter = createLLM(makeConfig({ provider: 'anthropic' }))
+
+    await expect(adapter.generate('JD')).rejects.toThrow(/rate_limit_error.*Too many requests/)
+  })
+
+  it('HTTP 401/500 抛错（不再伪装成功）', async () => {
+    fetchSpy.mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+      json: () => Promise.reject(new Error('not json')),
+      text: () => Promise.resolve('{"error":"invalid api key"}'),
+    } as unknown as Response)
+
+    const adapter = createLLM(makeConfig({ provider: 'anthropic' }))
+
+    await expect(adapter.generate('JD')).rejects.toThrow(/HTTP 401/)
   })
 })
