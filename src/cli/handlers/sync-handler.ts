@@ -5,13 +5,14 @@
 //   1. 默认（mode='list'）：读飞书全部记录，按"状态"字段分组输出分布
 //   2. 筛选（mode='filter', status='已沟通'）：只输出指定状态的记录
 //   3. 更新（mode='update', recordId, status）：单条更新飞书某条记录的"状态"字段
-//   4. auto-greet（mode='auto-greet'）：批量调 BOSS 打招呼 + 回写飞书『已投递』
+//   4. auto-greet（mode='auto-greet'）：批量生成招呼语 + 调 BOSS 打招呼 + 回写飞书
 //
-// ⚠️ KNOWN LIMITATION（B-2b-2 审计发现）：
-//   auto-greet 当前调 runSendCommand({ message: undefined })，但 send-handler
-//   在 message 缺失时立即返回 invalid_args。生产环境 auto-greet 会 100% 失败。
-//   修复路径：要么 send-handler 接受 undefined message 并自动生成招呼语，
-//   要么 sync-handler 先调 fetchJobDetail + llm.generate 生成 message 再 send。
+// auto-greet 流程（每个待投递 job）：
+//   1. generateGreeting(jobId) → message（默认 fetchJobDetail + LLM）
+//   2. runSendCommand({ jobId, message, cdp: false }) → result
+//   3. result.action === 'ok' → updateRecord('已投递') + succeeded++
+//
+// generateGreeting 通过 deps 注入；测试可 mock，生产用默认实现。
 //
 // 设计原则：
 //   - 不抛异常：所有错误转 Result 结构
@@ -22,6 +23,17 @@
 import { loadConfig } from '../../config/index.js'
 import { listRecords, updateRecord } from '../../feishu/index.js'
 import { runSendCommand } from './send-handler.js'
+import {
+  createBrowserSession,
+  closeBrowserSession,
+  fetchJobDetail,
+} from '../../browser/index.js'
+import { createLLM } from '../../llm/index.js'
+import {
+  buildGreetingPrompt,
+  buildGreetingSystemPrompt,
+  buildResumeSummary,
+} from '../../template/index.js'
 
 /** 飞书记录中"状态"字段的合法值 */
 export type SyncStatus = '待投递' | '已投递' | '已沟通' | '不合适' | string
@@ -58,6 +70,15 @@ export interface SyncCommandOptions {
   limit?: number
 }
 
+/**
+ * 注入式依赖：测试可替换，生产用真实实现
+ * 全部 optional，handler 在缺省时回退到默认实现
+ */
+export interface SyncCommandDeps {
+  /** auto-greet 模式：生成招呼语（默认 fetchJobDetail + LLM） */
+  generateGreeting?: (jobId: string) => Promise<string>
+}
+
 /** auto-greet 默认 limit */
 const AUTO_GREET_DEFAULT_LIMIT = 5
 
@@ -68,9 +89,14 @@ const SYNC_PAGE_SIZE = 100
  * 同步飞书记录（按模式分发）
  *
  * @param opts - 命令选项
+ * @param deps - 注入式依赖（测试用，生产可省略）
  * @returns SyncResult 结构化结果
  */
-export async function runSyncCommand(opts: SyncCommandOptions): Promise<SyncResult> {
+export async function runSyncCommand(
+  opts: SyncCommandOptions,
+  deps: SyncCommandDeps = {},
+): Promise<SyncResult> {
+  const generateGreetingFn = deps.generateGreeting ?? defaultGenerateGreeting
   const config = loadConfig()
   const appToken = config.feishu.appToken ?? ''
   const tableId = config.feishu.tableId ?? ''
@@ -139,7 +165,20 @@ export async function runSyncCommand(opts: SyncCommandOptions): Promise<SyncResu
 
       for (const job of pending) {
         const jobId = job.record_id
-        const sendResult = await runSendCommand({ jobId, message: undefined, cdp: false })
+
+        // Step 1: 生成招呼语（B-2b-2 修复：消除 message=undefined → invalid_args bug）
+        let message: string
+        try {
+          message = await generateGreetingFn(jobId)
+        } catch (err: unknown) {
+          failed++
+          const msg = err instanceof Error ? err.message : String(err)
+          errors.push({ jobId, reason: `生成招呼语失败: ${msg}` })
+          continue
+        }
+
+        // Step 2: 发送招呼
+        const sendResult = await runSendCommand({ jobId, message, cdp: false })
 
         if (sendResult.action === 'ok') {
           // 成功 → 回写飞书『已投递』
@@ -237,5 +276,35 @@ export async function runSyncCommand(opts: SyncCommandOptions): Promise<SyncResu
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
     return { action: 'fail', reason: `飞书 listRecords 失败: ${message}` }
+  }
+}
+
+// ============================================================
+// 默认 generateGreeting 实现（auto-greet 模式使用）
+// ============================================================
+// 流程：createBrowserSession → fetchJobDetail → LLM.generate → close
+// 每个 job 创建/销毁独立 session（简单清晰；性能可后续优化为批 session）
+//
+// resume 信息目前硬编码（与 CLI greet 命令保持一致）。
+// 后续可从 .env 或简历文件读取，PR 时再改。
+// ============================================================
+
+async function defaultGenerateGreeting(jobId: string): Promise<string> {
+  const config = loadConfig()
+  const session = await createBrowserSession(false) // batch 模式不用 CDP
+  try {
+    const jd = await fetchJobDetail(session.page, jobId)
+    const resumeSummary = buildResumeSummary({
+      skills: ['TypeScript', 'React', 'Node.js'],
+      yearsOfExperience: 3,
+      education: '本科',
+    })
+    const llm = createLLM(config)
+    return await llm.generate(
+      buildGreetingPrompt(jd, resumeSummary),
+      buildGreetingSystemPrompt(),
+    )
+  } finally {
+    await closeBrowserSession(session)
   }
 }

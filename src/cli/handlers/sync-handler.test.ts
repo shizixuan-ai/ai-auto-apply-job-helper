@@ -38,6 +38,14 @@ vi.mock('./send-handler.js', () => ({
 }))
 
 // ============================================================
+// auto-greet helper: generateGreeting mock 默认值
+// ============================================================
+//
+/** 默认 generateGreeting mock：每个 jobId → "Hi ${jobId}, 我对贵岗位很感兴趣" */
+const makeDefaultMockGenerateGreeting = () =>
+  vi.fn().mockImplementation(async (jobId: string) => `Hi ${jobId}, 我对贵岗位很感兴趣`)
+
+// ============================================================
 // 动态 import（mock 之后）
 // ============================================================
 
@@ -259,16 +267,26 @@ describe('runSyncCommand — 配置检查', () => {
 // ============================================================
 
 describe('runSyncCommand — auto-greet 模式', () => {
+  // 每个测试共用的 generateGreeting mock
+  // （默认每个 jobId → "Hi jobId"；个别测试用 mockRejectedValueOnce 模拟失败）
+  let mockGenerateGreeting: ReturnType<typeof makeDefaultMockGenerateGreeting>
+
   beforeEach(() => {
     mockListRecords.mockReset()
     mockUpdateRecord.mockReset()
     mockLoadConfig.mockReset()
     mockRunSendCommand.mockReset()
+    mockGenerateGreeting = makeDefaultMockGenerateGreeting()
   })
 
   afterEach(() => {
     vi.restoreAllMocks()
   })
+
+  /** 注入 generateGreeting mock 的便捷 helper */
+  async function runAutoGreet(handler: any, opts: any) {
+    return await handler.runSyncCommand(opts, { generateGreeting: mockGenerateGreeting })
+  }
 
   // 待投递岗位样本（3 条）
   const PENDING_RECORDS = {
@@ -293,7 +311,7 @@ describe('runSyncCommand — auto-greet 模式', () => {
     })
 
     const { runSyncCommand } = await freshHandler()
-    const result = await runSyncCommand({ mode: 'auto-greet' })
+    const result = await runSyncCommand({ mode: 'auto-greet' }, { generateGreeting: mockGenerateGreeting })
 
     expect(result.action).toBe('missing_config')
     if (result.action !== 'missing_config') throw new Error('unreachable')
@@ -308,7 +326,7 @@ describe('runSyncCommand — auto-greet 模式', () => {
     mockUpdateRecord.mockResolvedValue({ code: 0, msg: 'ok' })
 
     const { runSyncCommand } = await freshHandler()
-    const result = await runSyncCommand({ mode: 'auto-greet', limit: 10 })
+    const result = await runSyncCommand({ mode: 'auto-greet', limit: 10 }, { generateGreeting: mockGenerateGreeting })
 
     expect(result.action).toBe('auto-greet')
     if (result.action !== 'auto-greet') throw new Error('unreachable')
@@ -339,7 +357,7 @@ describe('runSyncCommand — auto-greet 模式', () => {
     mockUpdateRecord.mockResolvedValue({ code: 0, msg: 'ok' })
 
     const { runSyncCommand } = await freshHandler()
-    const result = await runSyncCommand({ mode: 'auto-greet', limit: 10 })
+    const result = await runSyncCommand({ mode: 'auto-greet', limit: 10 }, { generateGreeting: mockGenerateGreeting })
 
     if (result.action !== 'auto-greet') throw new Error('unreachable')
     expect(result.total).toBe(3)
@@ -367,7 +385,7 @@ describe('runSyncCommand — auto-greet 模式', () => {
 
     const { runSyncCommand } = await freshHandler()
     // 限制只处理 2 条（虽然有 3 条待投递）
-    const result = await runSyncCommand({ mode: 'auto-greet', limit: 2 })
+    const result = await runSyncCommand({ mode: 'auto-greet', limit: 2 }, { generateGreeting: mockGenerateGreeting })
 
     if (result.action !== 'auto-greet') throw new Error('unreachable')
     expect(result.total).toBe(2)
@@ -388,7 +406,7 @@ describe('runSyncCommand — auto-greet 模式', () => {
     })
 
     const { runSyncCommand } = await freshHandler()
-    const result = await runSyncCommand({ mode: 'auto-greet' })
+    const result = await runSyncCommand({ mode: 'auto-greet' }, { generateGreeting: mockGenerateGreeting })
 
     if (result.action !== 'auto-greet') throw new Error('unreachable')
     expect(result.total).toBe(0)
@@ -403,7 +421,7 @@ describe('runSyncCommand — auto-greet 模式', () => {
     mockRunSendCommand.mockResolvedValue({ action: 'abort', reason: '风控阻断' })
 
     const { runSyncCommand } = await freshHandler()
-    const result = await runSyncCommand({ mode: 'auto-greet', limit: 10 })
+    const result = await runSyncCommand({ mode: 'auto-greet', limit: 10 }, { generateGreeting: mockGenerateGreeting })
 
     if (result.action !== 'auto-greet') throw new Error('unreachable')
     expect(result.total).toBe(3)
@@ -418,7 +436,7 @@ describe('runSyncCommand — auto-greet 模式', () => {
     mockListRecords.mockRejectedValue(new Error('飞书连接超时'))
 
     const { runSyncCommand } = await freshHandler()
-    const result = await runSyncCommand({ mode: 'auto-greet' })
+    const result = await runSyncCommand({ mode: 'auto-greet' }, { generateGreeting: mockGenerateGreeting })
 
     expect(result.action).toBe('fail')
     if (result.action !== 'fail') throw new Error('unreachable')
@@ -446,7 +464,7 @@ describe('runSyncCommand — auto-greet 模式', () => {
     mockUpdateRecord.mockRejectedValue(new Error('飞书权限不足'))
 
     const { runSyncCommand } = await freshHandler()
-    const result = await runSyncCommand({ mode: 'auto-greet' })
+    const result = await runSyncCommand({ mode: 'auto-greet' }, { generateGreeting: mockGenerateGreeting })
 
     if (result.action !== 'auto-greet') throw new Error('unreachable')
     // 关键：succeeded=0, failed=1（半成功算失败）
@@ -479,7 +497,7 @@ describe('runSyncCommand — auto-greet 模式', () => {
     mockUpdateRecord.mockRejectedValue('plain string error')
 
     const { runSyncCommand } = await freshHandler()
-    const result = await runSyncCommand({ mode: 'auto-greet' })
+    const result = await runSyncCommand({ mode: 'auto-greet' }, { generateGreeting: mockGenerateGreeting })
 
     if (result.action !== 'auto-greet') throw new Error('unreachable')
     expect(result.errors).toHaveLength(1)
@@ -507,7 +525,7 @@ describe('runSyncCommand — auto-greet 模式', () => {
     })
 
     const { runSyncCommand } = await freshHandler()
-    const result = await runSyncCommand({ mode: 'auto-greet' })
+    const result = await runSyncCommand({ mode: 'auto-greet' }, { generateGreeting: mockGenerateGreeting })
 
     if (result.action !== 'auto-greet') throw new Error('unreachable')
     // 真实行为：succeeded=0, failed=N, errors 都含 '-m' 提示
@@ -517,5 +535,87 @@ describe('runSyncCommand — auto-greet 模式', () => {
     expect(result.errors).toHaveLength(3)
     expect(result.errors.every((e) => e.reason.includes('-m'))).toBe(true)
     expect(mockUpdateRecord).not.toHaveBeenCalled()
+  })
+
+  // ----------------------------------------------------------------
+  // B-2b-2 修复（方案 B）：generateGreeting 注入
+  // ----------------------------------------------------------------
+
+  it('每个 job 先调 generateGreeting，message 透传给 runSendCommand', async () => {
+    mockLoadConfig.mockReturnValue(makeLoadedConfig())
+    mockListRecords.mockResolvedValue(PENDING_RECORDS)
+    mockRunSendCommand.mockResolvedValue({ action: 'ok', reason: 'ok' })
+    mockUpdateRecord.mockResolvedValue({ code: 0, msg: 'ok' })
+
+    const { runSyncCommand } = await freshHandler()
+    const result = await runSyncCommand({ mode: 'auto-greet', limit: 10 }, { generateGreeting: mockGenerateGreeting })
+
+    if (result.action !== 'auto-greet') throw new Error('unreachable')
+    expect(result.succeeded).toBe(3)
+    // generateGreeting 被调用 3 次，每个待投递 job 一次
+    expect(mockGenerateGreeting).toHaveBeenCalledTimes(3)
+    expect(mockGenerateGreeting).toHaveBeenCalledWith('rec_p1')
+    expect(mockGenerateGreeting).toHaveBeenCalledWith('rec_p2')
+    expect(mockGenerateGreeting).toHaveBeenCalledWith('rec_p3')
+    // runSendCommand 收到 mockGenerateGreeting 返回的 message
+    expect(mockRunSendCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId: 'rec_p1',
+        message: 'Hi rec_p1, 我对贵岗位很感兴趣',
+        cdp: false,
+      }),
+    )
+  })
+
+  it('generateGreeting 失败时累积 errors 且不调 runSendCommand（fail-fast for that job）', async () => {
+    mockLoadConfig.mockReturnValue(makeLoadedConfig())
+    mockListRecords.mockResolvedValue(PENDING_RECORDS)
+    // 第 2 个岗位 generateGreeting 失败
+    mockGenerateGreeting
+      .mockResolvedValueOnce('msg-1')
+      .mockRejectedValueOnce(new Error('LLM rate limit'))
+      .mockResolvedValueOnce('msg-3')
+    mockRunSendCommand.mockResolvedValue({ action: 'ok', reason: 'ok' })
+    mockUpdateRecord.mockResolvedValue({ code: 0, msg: 'ok' })
+
+    const { runSyncCommand } = await freshHandler()
+    const result = await runSyncCommand({ mode: 'auto-greet', limit: 10 }, { generateGreeting: mockGenerateGreeting })
+
+    if (result.action !== 'auto-greet') throw new Error('unreachable')
+    expect(result.total).toBe(3)
+    expect(result.succeeded).toBe(2) // rec_p1, rec_p3 成功
+    expect(result.failed).toBe(1)   // rec_p2 generateGreeting 失败
+    expect(result.errors[0]).toEqual(
+      expect.objectContaining({
+        jobId: 'rec_p2',
+        reason: expect.stringMatching(/生成招呼语失败.*LLM rate limit/),
+      }),
+    )
+    // runSendCommand 只对 rec_p1 和 rec_p3 调用（rec_p2 跳过）
+    expect(mockRunSendCommand).toHaveBeenCalledTimes(2)
+    expect(mockRunSendCommand).not.toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: 'rec_p2' }),
+    )
+  })
+
+  it('generateGreeting 抛非 Error 实例时降级为 String(err)', async () => {
+    mockLoadConfig.mockReturnValue(makeLoadedConfig())
+    mockListRecords.mockResolvedValue({
+      code: 0,
+      msg: 'ok',
+      data: {
+        items: [{ record_id: 'rec_str', fields: { 状态: '待投递' } }],
+      },
+    })
+    mockGenerateGreeting.mockRejectedValue('plain string error')
+    mockRunSendCommand.mockResolvedValue({ action: 'ok', reason: 'ok' })
+
+    const { runSyncCommand } = await freshHandler()
+    const result = await runSyncCommand({ mode: 'auto-greet' }, { generateGreeting: mockGenerateGreeting })
+
+    if (result.action !== 'auto-greet') throw new Error('unreachable')
+    expect(result.failed).toBe(1)
+    expect(result.errors[0]?.reason).toMatch(/plain string error/)
+    expect(mockRunSendCommand).not.toHaveBeenCalled()
   })
 })
