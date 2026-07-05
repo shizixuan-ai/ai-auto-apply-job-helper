@@ -42,6 +42,7 @@ const LIST_EXIT_CODE: Record<ListResult['action'], number> = {
 const SYNC_EXIT_CODE: Record<SyncResult['action'], number> = {
   ok: 0,
   list: 0,
+  'auto-greet': 0, // 部分成功也算 ok（退出码），失败明细在 errors
   missing_config: 2,
   invalid_args: 2,
   fail: 1,
@@ -423,10 +424,17 @@ program
 
 program
   .command('sync')
-  .description('同步飞书多维表格中的投递状态（MVP：读 + 单条手动更新）')
+  .description('同步飞书多维表格中的投递状态（读 / 单条更新 / 批量打招呼）')
   .option('--status <status>', '只看指定状态的岗位')
   .option('--update <recordId:status>', '更新单条记录，格式 recordId:新状态（如 rec_001:已沟通）')
-  .action(async (options: { status?: string; update?: string }) => {
+  .option('--auto-greet', '批量调 BOSS 打招呼（只处理『待投递』岗位）')
+  .option('--limit <n>', 'auto-greet 模式处理上限（默认 5）')
+  .action(async (options: {
+    status?: string
+    update?: string
+    autoGreet?: boolean
+    limit?: string
+  }) => {
     const start = Date.now()
 
     // 解析 --update 参数（"rec_001:已沟通" → recordId + status）
@@ -450,17 +458,39 @@ program
       updateStatus = options.update.slice(idx + 1)
     }
 
-    // 决定模式：--update > --status > 默认
-    const mode: 'update' | 'filter' | 'list' = options.update
+    // 解析 --limit
+    let limitN: number | undefined
+    if (options.limit !== undefined) {
+      const n = Number(options.limit)
+      if (!Number.isFinite(n) || n <= 0) {
+        console.log(chalk.red(`❌ --limit 必须是正整数: ${options.limit}`))
+        writeBaselineRecordSync({
+          ts: new Date().toISOString(),
+          command: 'sync',
+          duration_ms: Date.now() - start,
+          http_code: null,
+          result_count: 0,
+          status: 'fail',
+        })
+        process.exit(SYNC_EXIT_CODE.invalid_args)
+      }
+      limitN = n
+    }
+
+    // 决定模式：--update > --auto-greet > --status > 默认
+    const mode: 'update' | 'auto-greet' | 'filter' | 'list' = options.update
       ? 'update'
-      : options.status
-        ? 'filter'
-        : 'list'
+      : options.autoGreet
+        ? 'auto-greet'
+        : options.status
+          ? 'filter'
+          : 'list'
 
     const result = await runSyncCommand({
       mode,
       status: options.status ?? updateStatus,
       recordId: updateRecordId,
+      limit: limitN,
     })
 
     switch (result.action) {
@@ -486,6 +516,19 @@ program
           status: 'ok',
         })
         process.exit(SYNC_EXIT_CODE.ok)
+      case 'auto-greet':
+        console.log(chalk.cyan(result.formatted))
+        // auto-greet 用 sync 写 baseline（succeeded + failed 都记录）
+        writeBaselineRecordSync({
+          ts: new Date().toISOString(),
+          command: 'sync',
+          duration_ms: Date.now() - start,
+          http_code: null,
+          result_count: result.succeeded,
+          status: result.failed === 0 ? 'ok' : 'interrupted',
+          interrupted_reason: result.failed > 0 ? 'rate_limit' : undefined,
+        })
+        process.exit(SYNC_EXIT_CODE['auto-greet'])
       case 'missing_config':
         console.log(chalk.yellow(`\n⚠️  ${result.reason}\n`))
         console.log(chalk.cyan(result.hint))

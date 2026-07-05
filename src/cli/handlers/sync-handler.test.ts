@@ -2,13 +2,15 @@
 // sync-handler 单元测试（RED）
 // ============================================================
 // Sprint B-2b：sync 命令 MVP（读飞书 + 单条手动 update-status）
+// Sprint B-2b-2：sync --auto-greet 模式（自动调 BOSS 打招呼 + 回写飞书）
 //
 // runSyncCommand 行为契约：
 //   - mode='list'（默认）：读飞书 + 按状态分组输出分布
 //   - mode='filter'（--status <s>）：只输出指定状态的记录
 //   - mode='update'（--update-status <id> <s>）：单条更新飞书
+//   - mode='auto-greet'（--auto-greet）：批量调 BOSS 打招呼 + 回写飞书
 //   - 缺配置 → missing_config（不抛）
-//   - 飞书失败 → fail + reason（不抛）
+//   - 飞书/BOSS 失败 → fail（auto-greet 模式为 per-job errors）
 // ============================================================
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -20,6 +22,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 const mockListRecords = vi.fn()
 const mockUpdateRecord = vi.fn()
 const mockLoadConfig = vi.fn()
+const mockRunSendCommand = vi.fn()
 
 vi.mock('../../feishu/index.js', () => ({
   listRecords: mockListRecords,
@@ -28,6 +31,10 @@ vi.mock('../../feishu/index.js', () => ({
 
 vi.mock('../../config/index.js', () => ({
   loadConfig: mockLoadConfig,
+}))
+
+vi.mock('./send-handler.js', () => ({
+  runSendCommand: mockRunSendCommand,
 }))
 
 // ============================================================
@@ -237,5 +244,245 @@ describe('runSyncCommand — 配置检查', () => {
     if (result.action !== 'missing_config') throw new Error('unreachable')
     expect(mockListRecords).not.toHaveBeenCalled()
     expect(mockUpdateRecord).not.toHaveBeenCalled()
+  })
+})
+
+// ============================================================
+// runSyncCommand — auto-greet 模式（Sprint B-2b-2）
+// ============================================================
+// 行为契约：
+//   - 读飞书『待投递』岗位（limit 默认 5）
+//   - 对每个岗位调 runSendCommand
+//   - runSendCommand 成功 → updateRecord『已投递』
+//   - runSendCommand 失败 → errors.push，不中断，继续下一个
+//   - 全程不抛异常
+// ============================================================
+
+describe('runSyncCommand — auto-greet 模式', () => {
+  beforeEach(() => {
+    mockListRecords.mockReset()
+    mockUpdateRecord.mockReset()
+    mockLoadConfig.mockReset()
+    mockRunSendCommand.mockReset()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  // 待投递岗位样本（3 条）
+  const PENDING_RECORDS = {
+    code: 0,
+    msg: 'ok',
+    data: {
+      items: [
+        { record_id: 'rec_p1', fields: { 职位: '前端A', 公司: '字节', 状态: '待投递' } },
+        { record_id: 'rec_p2', fields: { 职位: '前端B', 公司: '美团', 状态: '待投递' } },
+        { record_id: 'rec_p3', fields: { 职位: '前端C', 公司: '腾讯', 状态: '待投递' } },
+        { record_id: 'rec_other', fields: { 职位: '运维', 公司: '阿里', 状态: '已沟通' } }, // 非待投递
+      ],
+    },
+  }
+
+  it('缺配置返回 missing_config（不调 listRecords / runSendCommand）', async () => {
+    mockLoadConfig.mockReturnValue({
+      feishu: { appId: 'cli_x', appSecret: 'sec_x', appToken: '', tableId: '' },
+      llm: { provider: 'deepseek' as const },
+      boss: {},
+      browser: {},
+    })
+
+    const { runSyncCommand } = await freshHandler()
+    const result = await runSyncCommand({ mode: 'auto-greet' })
+
+    expect(result.action).toBe('missing_config')
+    if (result.action !== 'missing_config') throw new Error('unreachable')
+    expect(mockListRecords).not.toHaveBeenCalled()
+    expect(mockRunSendCommand).not.toHaveBeenCalled()
+  })
+
+  it('只处理『待投递』岗位，忽略其他状态', async () => {
+    mockLoadConfig.mockReturnValue(makeLoadedConfig())
+    mockListRecords.mockResolvedValue(PENDING_RECORDS)
+    mockRunSendCommand.mockResolvedValue({ action: 'ok', reason: '已打招呼' })
+    mockUpdateRecord.mockResolvedValue({ code: 0, msg: 'ok' })
+
+    const { runSyncCommand } = await freshHandler()
+    const result = await runSyncCommand({ mode: 'auto-greet', limit: 10 })
+
+    expect(result.action).toBe('auto-greet')
+    if (result.action !== 'auto-greet') throw new Error('unreachable')
+    // 4 条样本只 3 条『待投递』被处理
+    expect(result.total).toBe(3)
+    expect(result.succeeded).toBe(3)
+    expect(result.failed).toBe(0)
+    // runSendCommand 调用 3 次（不含 rec_other）
+    expect(mockRunSendCommand).toHaveBeenCalledTimes(3)
+    expect(mockRunSendCommand).toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: 'rec_p1', cdp: false }),
+    )
+    // 成功 → updateRecord『已投递』
+    expect(mockUpdateRecord).toHaveBeenCalledTimes(3)
+    expect(mockUpdateRecord).toHaveBeenCalledWith(
+      'appTok', 'tblId', 'rec_p1', { 状态: '已投递' },
+    )
+  })
+
+  it('部分 runSendCommand 失败时累积 errors 不中断', async () => {
+    mockLoadConfig.mockReturnValue(makeLoadedConfig())
+    mockListRecords.mockResolvedValue(PENDING_RECORDS)
+    // 第 2 个岗位失败
+    mockRunSendCommand
+      .mockResolvedValueOnce({ action: 'ok', reason: '已打招呼' })
+      .mockResolvedValueOnce({ action: 'failed', reason: 'BOSS 验证码拦截' })
+      .mockResolvedValueOnce({ action: 'ok', reason: '已打招呼' })
+    mockUpdateRecord.mockResolvedValue({ code: 0, msg: 'ok' })
+
+    const { runSyncCommand } = await freshHandler()
+    const result = await runSyncCommand({ mode: 'auto-greet', limit: 10 })
+
+    if (result.action !== 'auto-greet') throw new Error('unreachable')
+    expect(result.total).toBe(3)
+    expect(result.succeeded).toBe(2)
+    expect(result.failed).toBe(1)
+    expect(result.errors).toHaveLength(1)
+    expect(result.errors[0]).toEqual(
+      expect.objectContaining({ jobId: 'rec_p2', reason: expect.stringContaining('验证码') }),
+    )
+    // 格式化输出包含失败明细（commit message 承诺的能力）
+    expect(result.formatted).toContain('❌ 失败明细')
+    expect(result.formatted).toContain('验证码拦截')
+    // 只 update 成功的 2 条
+    expect(mockUpdateRecord).toHaveBeenCalledTimes(2)
+    expect(mockUpdateRecord).not.toHaveBeenCalledWith(
+      'appTok', 'tblId', 'rec_p2', expect.anything(),
+    )
+  })
+
+  it('limit 限制处理数量（默认 5）', async () => {
+    mockLoadConfig.mockReturnValue(makeLoadedConfig())
+    mockListRecords.mockResolvedValue(PENDING_RECORDS)
+    mockRunSendCommand.mockResolvedValue({ action: 'ok', reason: 'ok' })
+    mockUpdateRecord.mockResolvedValue({ code: 0, msg: 'ok' })
+
+    const { runSyncCommand } = await freshHandler()
+    // 限制只处理 2 条（虽然有 3 条待投递）
+    const result = await runSyncCommand({ mode: 'auto-greet', limit: 2 })
+
+    if (result.action !== 'auto-greet') throw new Error('unreachable')
+    expect(result.total).toBe(2)
+    expect(mockRunSendCommand).toHaveBeenCalledTimes(2)
+  })
+
+  it('无『待投递』岗位返回 total=0', async () => {
+    mockLoadConfig.mockReturnValue(makeLoadedConfig())
+    mockListRecords.mockResolvedValue({
+      code: 0,
+      msg: 'ok',
+      data: {
+        items: [
+          { record_id: 'r1', fields: { 状态: '已沟通' } },
+          { record_id: 'r2', fields: { 状态: '不合适' } },
+        ],
+      },
+    })
+
+    const { runSyncCommand } = await freshHandler()
+    const result = await runSyncCommand({ mode: 'auto-greet' })
+
+    if (result.action !== 'auto-greet') throw new Error('unreachable')
+    expect(result.total).toBe(0)
+    expect(result.succeeded).toBe(0)
+    expect(result.failed).toBe(0)
+    expect(mockRunSendCommand).not.toHaveBeenCalled()
+  })
+
+  it('全部 runSendCommand 失败时 succeeded=0', async () => {
+    mockLoadConfig.mockReturnValue(makeLoadedConfig())
+    mockListRecords.mockResolvedValue(PENDING_RECORDS)
+    mockRunSendCommand.mockResolvedValue({ action: 'abort', reason: '风控阻断' })
+
+    const { runSyncCommand } = await freshHandler()
+    const result = await runSyncCommand({ mode: 'auto-greet', limit: 10 })
+
+    if (result.action !== 'auto-greet') throw new Error('unreachable')
+    expect(result.total).toBe(3)
+    expect(result.succeeded).toBe(0)
+    expect(result.failed).toBe(3)
+    expect(result.errors).toHaveLength(3)
+    expect(mockUpdateRecord).not.toHaveBeenCalled()
+  })
+
+  it('listRecords 失败返回 fail', async () => {
+    mockLoadConfig.mockReturnValue(makeLoadedConfig())
+    mockListRecords.mockRejectedValue(new Error('飞书连接超时'))
+
+    const { runSyncCommand } = await freshHandler()
+    const result = await runSyncCommand({ mode: 'auto-greet' })
+
+    expect(result.action).toBe('fail')
+    if (result.action !== 'fail') throw new Error('unreachable')
+    expect(result.reason).toContain('飞书连接超时')
+  })
+
+  // ----------------------------------------------------------------
+  // 半成功场景：runSendCommand 成功但 updateRecord 失败
+  // （commit message 明确描述为设计要点，但 catch 分支 0 覆盖）
+  // ----------------------------------------------------------------
+  it('半成功：runSendCommand 成功 + updateRecord 抛异常 → 累积到 errors', async () => {
+    mockLoadConfig.mockReturnValue(makeLoadedConfig())
+    mockListRecords.mockResolvedValue({
+      code: 0,
+      msg: 'ok',
+      data: {
+        items: [
+          { record_id: 'rec_semi', fields: { 状态: '待投递' } },
+        ],
+      },
+    })
+    // runSendCommand 成功（已打招呼）
+    mockRunSendCommand.mockResolvedValue({ action: 'ok', reason: '已打招呼' })
+    // 但 updateRecord 抛异常（飞书更新失败）
+    mockUpdateRecord.mockRejectedValue(new Error('飞书权限不足'))
+
+    const { runSyncCommand } = await freshHandler()
+    const result = await runSyncCommand({ mode: 'auto-greet' })
+
+    if (result.action !== 'auto-greet') throw new Error('unreachable')
+    // 关键：succeeded=0, failed=1（半成功算失败）
+    expect(result.total).toBe(1)
+    expect(result.succeeded).toBe(0)
+    expect(result.failed).toBe(1)
+    expect(result.errors).toHaveLength(1)
+    // errors[0] 必须包含『飞书更新失败』字样（设计约定的 reason 前缀）
+    expect(result.errors[0]).toEqual(
+      expect.objectContaining({
+        jobId: 'rec_semi',
+        reason: expect.stringMatching(/飞书更新失败|权限不足/),
+      }),
+    )
+  })
+
+  it('updateRecord 抛非 Error 实例时也能降级（String(err) 分支）', async () => {
+    mockLoadConfig.mockReturnValue(makeLoadedConfig())
+    mockListRecords.mockResolvedValue({
+      code: 0,
+      msg: 'ok',
+      data: {
+        items: [
+          { record_id: 'rec_str', fields: { 状态: '待投递' } },
+        ],
+      },
+    })
+    mockRunSendCommand.mockResolvedValue({ action: 'ok', reason: '已打招呼' })
+    // 非 Error 实例
+    mockUpdateRecord.mockRejectedValue('plain string error')
+
+    const { runSyncCommand } = await freshHandler()
+    const result = await runSyncCommand({ mode: 'auto-greet' })
+
+    if (result.action !== 'auto-greet') throw new Error('unreachable')
+    expect(result.errors).toHaveLength(1)
+    expect(result.errors[0]?.reason).toMatch(/plain string error/)
   })
 })

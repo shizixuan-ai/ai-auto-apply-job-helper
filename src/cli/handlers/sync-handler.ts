@@ -19,6 +19,7 @@
 
 import { loadConfig } from '../../config/index.js'
 import { listRecords, updateRecord } from '../../feishu/index.js'
+import { runSendCommand } from './send-handler.js'
 
 /** 飞书记录中"状态"字段的合法值 */
 export type SyncStatus = '待投递' | '已投递' | '已沟通' | '不合适' | string
@@ -32,18 +33,31 @@ export type SyncResult =
       formatted: string
     }
   | { action: 'ok'; recordId: string; status: string }
+  | {
+      action: 'auto-greet'
+      total: number
+      succeeded: number
+      failed: number
+      errors: Array<{ jobId: string; reason: string }>
+      formatted: string
+    }
   | { action: 'missing_config'; reason: string; hint: string }
   | { action: 'invalid_args'; reason: string }
   | { action: 'fail'; reason: string }
 
 /** runSyncCommand 入参 */
 export interface SyncCommandOptions {
-  mode: 'list' | 'filter' | 'update'
+  mode: 'list' | 'filter' | 'update' | 'auto-greet'
   /** --status <s>：筛选指定状态 */
   status?: string
   /** --update-status <id> <s>：recordId */
   recordId?: string
+  /** auto-greet 模式：每日处理上限（默认 5） */
+  limit?: number
 }
+
+/** auto-greet 默认 limit */
+const AUTO_GREET_DEFAULT_LIMIT = 5
 
 /** 飞书默认页大小（sync 一次性读多点，避免分页） */
 const SYNC_PAGE_SIZE = 100
@@ -96,6 +110,77 @@ export async function runSyncCommand(opts: SyncCommandOptions): Promise<SyncResu
       record_id: string
       fields: Record<string, unknown>
     }>
+
+    // ============== auto-greet 模式 ==============
+    if (opts.mode === 'auto-greet') {
+      const limit = opts.limit ?? AUTO_GREET_DEFAULT_LIMIT
+      // 筛选『待投递』+ 应用 limit
+      const pending = items
+        .filter((it) => String(it.fields['状态'] ?? '') === '待投递')
+        .slice(0, limit)
+
+      if (pending.length === 0) {
+        return {
+          action: 'auto-greet',
+          total: 0,
+          succeeded: 0,
+          failed: 0,
+          errors: [],
+          formatted: '📭 没有『待投递』状态的岗位，无需打招呼\n\n💡 用 `bapply search` 收集岗位，`bapply greet` 生成话术后 `bapply send` 投递',
+        }
+      }
+
+      // 遍历调 BOSS 打招呼
+      let succeeded = 0
+      let failed = 0
+      const errors: Array<{ jobId: string; reason: string }> = []
+
+      for (const job of pending) {
+        const jobId = job.record_id
+        const sendResult = await runSendCommand({ jobId, message: undefined, cdp: false })
+
+        if (sendResult.action === 'ok') {
+          // 成功 → 回写飞书『已投递』
+          try {
+            await updateRecord(appToken, tableId, jobId, { 状态: '已投递' })
+            succeeded++
+          } catch (err: unknown) {
+            // updateRecord 失败：算半成功，jobId 已打招呼但飞书未更新
+            const message = err instanceof Error ? err.message : String(err)
+            errors.push({ jobId, reason: `已打招呼但飞书更新失败: ${message}` })
+            failed++
+          }
+        } else {
+          // runSendCommand 失败：累积错误，继续下一个
+          failed++
+          errors.push({ jobId, reason: sendResult.reason ?? sendResult.action })
+        }
+      }
+
+      // 汇总格式化
+      const errorLines = errors.length > 0
+        ? ['\n❌ 失败明细:', ...errors.map((e) => `  - ${e.jobId}: ${e.reason}`)]
+        : []
+
+      const formatted = [
+        '🚀 批量打招呼汇总',
+        '═══════════════════════',
+        `总处理:    ${pending.length}`,
+        `✅ 成功:   ${succeeded}`,
+        `❌ 失败:   ${failed}`,
+        ...errorLines,
+        '\n💡 用 `bapply stats` 查看最新投递统计',
+      ].join('\n')
+
+      return {
+        action: 'auto-greet',
+        total: pending.length,
+        succeeded,
+        failed,
+        errors,
+        formatted,
+      }
+    }
 
     // filter 模式：内存中按 status 字段筛选
     const filtered =
