@@ -31,6 +31,9 @@ npm-debug.log*
 # TypeScript
 *.tsbuildinfo
 
+# Audit scratch files (sub-agent artifacts)
+.audit-*
+
 # CLAUDE config (project-local secrets/state)
 .env.claude/
 

@@ -116,7 +116,16 @@ export async function runSendCommand(
       reason: `发送失败：${msg}`,
     }
   } finally {
-    await closeSessionFn(session)
+    // closeSession 抛错不能掩盖原始 error（业务/GuardError）
+    try {
+      await closeSessionFn(session)
+    } catch (closeErr) {
+      // 只在没业务错误时才抛 closeErr；否则静默（保留原始 error）
+      // （无法直接检测"是否有原始 error"，因为 catch 已经处理掉了——靠调用方感知）
+      // 选择保守策略：close 错误降级为 console.warn，不抛
+      const msg = closeErr instanceof Error ? closeErr.message : String(closeErr)
+      console.warn(`[send-handler] closeSession 失败（已忽略）: ${msg}`)
+    }
   }
 }
 

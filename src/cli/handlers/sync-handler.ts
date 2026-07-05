@@ -1,15 +1,17 @@
 // ============================================================
 // sync-handler — `bapply sync` 命令实现
 // ============================================================
-// Sprint B-2b：sync 命令 MVP
-//
-// 设计动机：把 PRD 缺的 sync 命令实装。MVP 聚焦"读飞书 + 单条手动更新"，
-// 真正的 BOSS 自动同步留给后续 sprint。
-//
-// 三种模式：
+// 4 种模式：
 //   1. 默认（mode='list'）：读飞书全部记录，按"状态"字段分组输出分布
 //   2. 筛选（mode='filter', status='已沟通'）：只输出指定状态的记录
 //   3. 更新（mode='update', recordId, status）：单条更新飞书某条记录的"状态"字段
+//   4. auto-greet（mode='auto-greet'）：批量调 BOSS 打招呼 + 回写飞书『已投递』
+//
+// ⚠️ KNOWN LIMITATION（B-2b-2 审计发现）：
+//   auto-greet 当前调 runSendCommand({ message: undefined })，但 send-handler
+//   在 message 缺失时立即返回 invalid_args。生产环境 auto-greet 会 100% 失败。
+//   修复路径：要么 send-handler 接受 undefined message 并自动生成招呼语，
+//   要么 sync-handler 先调 fetchJobDetail + llm.generate 生成 message 再 send。
 //
 // 设计原则：
 //   - 不抛异常：所有错误转 Result 结构
@@ -152,8 +154,9 @@ export async function runSyncCommand(opts: SyncCommandOptions): Promise<SyncResu
           }
         } else {
           // runSendCommand 失败：累积错误，继续下一个
+          // （SendCommandResult.action 必有值；reason 必有值，DiscriminatedUnion 已保证）
           failed++
-          errors.push({ jobId, reason: sendResult.reason ?? sendResult.action })
+          errors.push({ jobId, reason: sendResult.reason })
         }
       }
 

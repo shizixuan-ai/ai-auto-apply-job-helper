@@ -485,4 +485,37 @@ describe('runSyncCommand — auto-greet 模式', () => {
     expect(result.errors).toHaveLength(1)
     expect(result.errors[0]?.reason).toMatch(/plain string error/)
   })
+
+  // ----------------------------------------------------------------
+  // P0 fake green 回归测试：暴露 send-handler 在 message 缺失时的真实行为
+  //
+  // sync-handler.ts:140 调用 runSendCommand({ jobId, message: undefined })
+  // send-handler.ts:78-83 在 !opts.message 时立即返回 { action: 'invalid_args' }
+  //
+  // 上面 7 个测试用 mock 让 runSendCommand 返回 ok → 测试通过
+  // 但生产环境 send-handler 会真实返回 invalid_args → auto-greet 100% 失败
+  //
+  // 这个测试模拟真实 send-handler 行为，证明该 bug：
+  // ----------------------------------------------------------------
+  it('P0 回归：send 返 invalid_args（真实生产行为）时所有 job 失败', async () => {
+    mockLoadConfig.mockReturnValue(makeLoadedConfig())
+    mockListRecords.mockResolvedValue(PENDING_RECORDS)
+    // 模拟真实 send-handler 在 message=undefined 时的行为
+    mockRunSendCommand.mockResolvedValue({
+      action: 'invalid_args',
+      reason: '请通过 -m 指定话术内容',
+    })
+
+    const { runSyncCommand } = await freshHandler()
+    const result = await runSyncCommand({ mode: 'auto-greet' })
+
+    if (result.action !== 'auto-greet') throw new Error('unreachable')
+    // 真实行为：succeeded=0, failed=N, errors 都含 '-m' 提示
+    expect(result.total).toBe(3)
+    expect(result.succeeded).toBe(0)
+    expect(result.failed).toBe(3)
+    expect(result.errors).toHaveLength(3)
+    expect(result.errors.every((e) => e.reason.includes('-m'))).toBe(true)
+    expect(mockUpdateRecord).not.toHaveBeenCalled()
+  })
 })
