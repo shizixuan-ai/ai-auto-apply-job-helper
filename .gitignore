@@ -11,10 +11,8 @@ coverage/
 .vitest-cache/
 
 # Environment — NEVER commit real secrets
-# .env.example 是模板，必须保留可被 commit
 .env
 .env.*
-!.env.example
 
 # Runtime data (Browser profile / cookies / Feishu cache)
 .bapply/
