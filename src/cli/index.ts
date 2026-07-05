@@ -17,6 +17,7 @@ import { buildGreetingSystemPrompt, buildGreetingPrompt, buildResumeSummary } fr
 import { listRecords, createRecord, updateRecord } from '../feishu/index.js'
 import { handleChromeCommand } from './handlers/chrome-handler.js'
 import { runSendCommand, type SendCommandResult } from './handlers/send-handler.js'
+import { writeBaselineRecord, writeBaselineRecordSync, type BaselineRecord } from './observability/baseline-writer.js'
 
 /** SendCommandResult.action → process.exit code 映射（doc-only，CLI 层 switch 用） */
 const SEND_EXIT_CODE: Record<SendCommandResult['action'], number> = {
@@ -60,6 +61,8 @@ program
   .command('init')
   .description('检查环境配置是否正确')
   .action(async () => {
+    const start = Date.now()
+    let status: BaselineRecord['status'] = 'ok'
     console.log(chalk.cyan('🔍 正在检查配置...\n'))
 
     try {
@@ -73,8 +76,31 @@ program
       await listRecords('test', 'test')
       console.log(chalk.green('✅ 飞书 API 连通正常'))
     } catch (err: any) {
+      status = 'fail'
       console.log(chalk.red(`❌ ${err.message}`))
+      // process.exit(1) 不等 async finally，必须同步写
+      writeBaselineRecordSync({
+        ts: new Date().toISOString(),
+        command: 'init',
+        duration_ms: Date.now() - start,
+        http_code: null,
+        result_count: 0,
+        status,
+      })
       process.exit(1)
+    } finally {
+      // 正常退出路径（finally 内的 async writeBaselineRecord 由 commander 等）
+      // 失败路径已在 catch 内同步写入，无需重复
+      if (status === 'ok') {
+        await writeBaselineRecord({
+          ts: new Date().toISOString(),
+          command: 'init',
+          duration_ms: Date.now() - start,
+          http_code: null,
+          result_count: 0,
+          status,
+        })
+      }
     }
   })
 
@@ -87,14 +113,27 @@ program
   .description('扫码登录 BOSS 直聘（持久化 Cookie）')
   .option('--cdp', '通过 CDP 连接已有 Chrome')
   .action(async (options: { cdp?: boolean }) => {
+    const start = Date.now()
+    let status: BaselineRecord['status'] = 'ok'
     const cdp = options.cdp ?? program.opts().cdp ?? false
     const session = await createSession(cdp)
     const page = session.page
 
     try {
       await loginByQR(page)
+    } catch (err: any) {
+      status = 'fail'
+      throw err
     } finally {
       await closeBrowserSession(session)
+      await writeBaselineRecord({
+        ts: new Date().toISOString(),
+        command: 'login',
+        duration_ms: Date.now() - start,
+        http_code: null,
+        result_count: 0,
+        status,
+      })
     }
   })
 
@@ -110,6 +149,9 @@ program
   .option('--headless', '无头模式运行', false)
   .option('--cdp', '通过 CDP 连接已有 Chrome')
   .action(async (keyword: string, options: { city?: string; headless: boolean; cdp?: boolean }) => {
+    const start = Date.now()
+    let status: BaselineRecord['status'] = 'ok'
+    let resultCount = 0
     const cdp = options.cdp ?? program.opts().cdp ?? false
     const session = cdp
       ? await createCDPSession()
@@ -118,6 +160,7 @@ program
 
     try {
       const jobs = await searchJobs(page, keyword, options.city)
+      resultCount = jobs.length
 
       console.log(chalk.cyan(`\n📋 共找到 ${jobs.length} 个岗位:\n`))
       jobs.forEach((job, i) => {
@@ -129,8 +172,19 @@ program
         if (job.welfare.length) console.log(`     福利: ${job.welfare.join('、')}`)
         console.log()
       })
+    } catch (err: any) {
+      status = 'fail'
+      throw err
     } finally {
       await closeBrowserSession(session)
+      await writeBaselineRecord({
+        ts: new Date().toISOString(),
+        command: 'search',
+        duration_ms: Date.now() - start,
+        http_code: null,
+        result_count: resultCount,
+        status,
+      })
     }
   })
 
@@ -145,6 +199,8 @@ program
   .option('--headless', '无头模式运行', true)
   .option('--cdp', '通过 CDP 连接已有 Chrome')
   .action(async (jobId: string, options: { headless: boolean; cdp?: boolean }) => {
+    const start = Date.now()
+    let status: BaselineRecord['status'] = 'ok'
     const cdp = options.cdp ?? program.opts().cdp ?? false
     const config = loadConfig()
     const session = await createSession(cdp)
@@ -170,8 +226,19 @@ program
       console.log(chalk.green('\n📝 生成的话术:\n'))
       console.log(`  ${greeting}\n`)
       console.log(chalk.yellow('💡 使用 bapply send <jobId> -m "话术内容" 发送这段话术'))
+    } catch (err: any) {
+      status = 'fail'
+      throw err
     } finally {
       await closeBrowserSession(session)
+      await writeBaselineRecord({
+        ts: new Date().toISOString(),
+        command: 'greet',
+        duration_ms: Date.now() - start,
+        http_code: null,
+        result_count: 0,
+        status,
+      })
     }
   })
 
@@ -186,6 +253,7 @@ program
   .option('-m, --message <message>', '话术内容')
   .option('--cdp', '通过 CDP 连接已有 Chrome')
   .action(async (jobId: string, options: { message?: string; cdp?: boolean }) => {
+    const start = Date.now()
     const cdp = options.cdp ?? program.opts().cdp ?? false
 
     console.log(chalk.cyan(`📤 正在向岗位 ${jobId} 发送打招呼...`))
@@ -194,22 +262,66 @@ program
     // CLI 层只负责 exit code 映射 + 友好输出，不再 unhandled rejection
     const result = await runSendCommand({ jobId, message: options.message, cdp })
 
+    // 被动基线观测：在每个 case 的 process.exit 之前同步写入
+    // （await writeBaselineRecord 在 process.exit 前会丢——async 不等 exit）
     switch (result.action) {
       case 'ok':
         console.log(chalk.green(`✅ ${result.reason}`))
+        writeBaselineRecordSync({
+          ts: new Date().toISOString(),
+          command: 'send',
+          duration_ms: Date.now() - start,
+          http_code: null,
+          result_count: 1,
+          status: 'ok',
+        })
         process.exit(SEND_EXIT_CODE.ok)
       case 'invalid_args':
         console.log(chalk.red(`❌ ${result.reason}`))
+        writeBaselineRecordSync({
+          ts: new Date().toISOString(),
+          command: 'send',
+          duration_ms: Date.now() - start,
+          http_code: null,
+          result_count: 0,
+          status: 'fail',
+        })
         process.exit(SEND_EXIT_CODE.invalid_args)
       case 'abort_today':
         // 风控关键 signal：红字 + 单独 exit code 3，便于 CI / 监控识别
         console.log(chalk.red(`\n🛑 风控今日上限：${result.reason}\n`))
+        writeBaselineRecordSync({
+          ts: new Date().toISOString(),
+          command: 'send',
+          duration_ms: Date.now() - start,
+          http_code: null,
+          result_count: 0,
+          status: 'interrupted',
+          interrupted_reason: 'rate_limit',
+        })
         process.exit(SEND_EXIT_CODE.abort_today)
       case 'abort':
         console.log(chalk.red(`\n🛑 风控阻断：${result.reason}\n`))
+        writeBaselineRecordSync({
+          ts: new Date().toISOString(),
+          command: 'send',
+          duration_ms: Date.now() - start,
+          http_code: null,
+          result_count: 0,
+          status: 'interrupted',
+          interrupted_reason: 'guard_pause',
+        })
         process.exit(SEND_EXIT_CODE.abort)
       case 'failed':
         console.log(chalk.red(`❌ ${result.reason}`))
+        writeBaselineRecordSync({
+          ts: new Date().toISOString(),
+          command: 'send',
+          duration_ms: Date.now() - start,
+          http_code: null,
+          result_count: 0,
+          status: 'fail',
+        })
         process.exit(SEND_EXIT_CODE.failed)
     }
   })
