@@ -19,6 +19,7 @@ import { handleChromeCommand } from './handlers/chrome-handler.js'
 import { runSendCommand, type SendCommandResult } from './handlers/send-handler.js'
 import { runListCommand, type ListResult } from './handlers/list-handler.js'
 import { runSyncCommand, type SyncResult } from './handlers/sync-handler.js'
+import { runStatsCommand, type StatsResult } from './handlers/stats-handler.js'
 import { writeBaselineRecord, writeBaselineRecordSync, type BaselineRecord } from './observability/baseline-writer.js'
 
 /** SendCommandResult.action → process.exit code 映射（doc-only，CLI 层 switch 用） */
@@ -43,6 +44,13 @@ const SYNC_EXIT_CODE: Record<SyncResult['action'], number> = {
   list: 0,
   missing_config: 2,
   invalid_args: 2,
+  fail: 1,
+}
+
+/** StatsResult.action → process.exit code 映射 */
+const STATS_EXIT_CODE: Record<StatsResult['action'], number> = {
+  ok: 0,
+  missing_config: 2,
   fail: 1,
 }
 
@@ -512,6 +520,71 @@ program
           status: 'fail',
         })
         process.exit(SYNC_EXIT_CODE.fail)
+    }
+  })
+
+// ============================================================
+// stats
+// ============================================================
+
+program
+  .command('stats')
+  .description('投递统计概览（总数/状态分布/漏斗/Top 公司）')
+  .option('--top <n>', 'Top N 公司', '5')
+  .action(async (options: { top?: string }) => {
+    const start = Date.now()
+    const topN = options.top ? Number(options.top) : 5
+
+    if (!Number.isFinite(topN) || topN <= 0) {
+      console.log(chalk.red(`❌ --top 必须是正整数: ${options.top}`))
+      writeBaselineRecordSync({
+        ts: new Date().toISOString(),
+        command: 'stats',
+        duration_ms: Date.now() - start,
+        http_code: null,
+        result_count: 0,
+        status: 'fail',
+      })
+      process.exit(STATS_EXIT_CODE.fail)
+    }
+
+    const result = await runStatsCommand({ topN })
+
+    switch (result.action) {
+      case 'ok':
+        console.log(chalk.cyan(result.formatted))
+        await writeBaselineRecord({
+          ts: new Date().toISOString(),
+          command: 'stats',
+          duration_ms: Date.now() - start,
+          http_code: 200,
+          result_count: result.totalCount,
+          status: 'ok',
+        })
+        process.exit(STATS_EXIT_CODE.ok)
+      case 'missing_config':
+        console.log(chalk.yellow(`\n⚠️  ${result.reason}\n`))
+        console.log(chalk.cyan(result.hint))
+        writeBaselineRecordSync({
+          ts: new Date().toISOString(),
+          command: 'stats',
+          duration_ms: Date.now() - start,
+          http_code: null,
+          result_count: 0,
+          status: 'fail',
+        })
+        process.exit(STATS_EXIT_CODE.missing_config)
+      case 'fail':
+        console.log(chalk.red(`\n❌ ${result.reason}\n`))
+        writeBaselineRecordSync({
+          ts: new Date().toISOString(),
+          command: 'stats',
+          duration_ms: Date.now() - start,
+          http_code: null,
+          result_count: 0,
+          status: 'fail',
+        })
+        process.exit(STATS_EXIT_CODE.fail)
     }
   })
 
