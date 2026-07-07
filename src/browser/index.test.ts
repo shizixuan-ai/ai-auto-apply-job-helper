@@ -12,7 +12,7 @@
 // ============================================================
 
 import { describe, it, expect, vi } from 'vitest'
-import { sendGreeting } from './index.js'
+import { sendGreeting, fetchJobDetail } from './index.js'
 import { GuardError, type GuardDecision } from './guard.js'
 
 // ------------------------------------------------------------
@@ -84,5 +84,92 @@ describe('sendGreeting × GuardError', () => {
 
     const result = await sendGreeting(page as any, 'JOB123', 'hi', FAST_TYPE_OPTS)
     expect(result).toBe(true)
+  })
+})
+
+// ============================================================
+// fetchJobDetail — fallback selector 链（2026-07-07 修 P0）
+// ============================================================
+// 行为契约：
+//   - 构造正确的 BOSS 岗位 URL（https://www.zhipin.com/job_detail/{jobId}.html）
+//   - 优先尝试主选择器（.job-sec-text），失败时按顺序试 fallback
+//   - 每个选择器独立超时（不串行等待）
+//   - 返回首个非空文本
+//   - 所有选择器都失败 → 抛带 URL + 尝试列表的详细错误
+//
+// 为什么需要 fallback：
+//   BOSS 前端 HTML 经常改 class 名，硬编码单一选择器 100% 会挂
+//   （2026-07-07 dry-run 暴露：.job-sec-text 失效）
+// ============================================================
+
+describe('fetchJobDetail — fallback selector 链', () => {
+  it('主选择器命中：返回 .job-sec-text 的文本', async () => {
+    const page = makeMockPage()
+    page.waitForSelector = vi.fn().mockResolvedValue(undefined)
+    page.$eval = vi.fn().mockResolvedValue('主选择器拿到的 JD')
+
+    const jd = await fetchJobDetail(page as any, 'JOB123')
+
+    expect(jd).toBe('主选择器拿到的 JD')
+    expect(page.goto).toHaveBeenCalledWith(
+      'https://www.zhipin.com/job_detail/JOB123.html',
+      expect.objectContaining({ waitUntil: 'domcontentloaded' }),
+    )
+  })
+
+  it('🚨 关键：主选择器超时，fallback 选择器命中 → 返回 fallback 文本', async () => {
+    const page = makeMockPage()
+    // 第一次 waitForSelector 抛 timeout，第二次成功
+    page.waitForSelector = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Timeout 3000ms exceeded'))
+      .mockResolvedValueOnce(undefined)
+    // $eval 只在最后那个 selector 被调用时返回文本
+    page.$eval = vi.fn().mockImplementation(async (selector: string) => {
+      if (selector === '.job-sec-text') throw new Error('主选择器拿不到')
+      return 'fallback 拿到的 JD 内容'
+    })
+
+    const jd = await fetchJobDetail(page as any, 'JOB456')
+
+    expect(jd).toBe('fallback 拿到的 JD 内容')
+    // waitForSelector 至少被调用 2 次（主 + 至少 1 个 fallback）
+    expect(page.waitForSelector).toHaveBeenCalledTimes(2)
+  })
+
+  it('主选择器返空文本时，继续尝试 fallback（不返空串当成功）', async () => {
+    const page = makeMockPage()
+    page.waitForSelector = vi.fn().mockResolvedValue(undefined)
+    // 主选择器命中但内容为空，fallback 命中且有内容
+    page.$eval = vi.fn().mockImplementation(async (selector: string) => {
+      if (selector === '.job-sec-text') return ''
+      return '真正有内容的 JD'
+    })
+
+    const jd = await fetchJobDetail(page as any, 'JOB789')
+
+    expect(jd).toBe('真正有内容的 JD')
+  })
+
+  it('🚨 所有选择器都失败：抛带 URL + 尝试列表的详细错误', async () => {
+    const page = makeMockPage()
+    page.waitForSelector = vi.fn().mockRejectedValue(new Error('Timeout'))
+    page.$eval = vi.fn().mockRejectedValue(new Error('not found'))
+
+    await expect(fetchJobDetail(page as any, 'BAD_JOB')).rejects.toThrow(
+      /job_detail\/BAD_JOB\.html/,
+    )
+    // 验证错误消息包含尝试过的选择器列表（让用户能立刻定位是哪个 selector 失效）
+    await expect(fetchJobDetail(page as any, 'BAD_JOB')).rejects.toThrow(
+      /\.job-sec-text.*job-detail-section/s,
+    )
+  })
+
+  it('page.goto 抛错（无网络/404）：直接抛错，不尝试任何选择器', async () => {
+    const page = makeMockPage()
+    page.goto = vi.fn().mockRejectedValue(new Error('net::ERR_NAME_NOT_RESOLVED'))
+
+    await expect(fetchJobDetail(page as any, 'X')).rejects.toThrow(/ERR_NAME_NOT_RESOLVED/)
+    expect(page.waitForSelector).not.toHaveBeenCalled()
   })
 })

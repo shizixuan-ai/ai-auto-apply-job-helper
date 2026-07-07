@@ -506,15 +506,66 @@ export async function searchJobs(
 // ============================================================
 // 抓取岗位详情 (JD)
 // ============================================================
+// 2026-07-07 修 P0：原版硬编码 .job-sec-text，BOSS 改 HTML 后 100% 失败
+// 现在用 fallback selector 链按顺序尝试，每个独立超时
+// ============================================================
+
+/**
+ * JD 内容容器候选选择器（按优先级排序）
+ * - 主选择器：旧版 BOSS 的 .job-sec-text
+ * - 备选：覆盖 BOSS 最近几次改版的常见 class 名
+ * - 末尾：模糊匹配兜底（[class*="job-sec"] 等）
+ *
+ * 如何新增：BOSS 改 HTML 时，跑 `scripts/probe-boss-selectors.sh` 找新选择器，
+ * 把新选择器插到数组前面（不要删旧的，给老用户提供回滚机会）。
+ */
+export const JD_SELECTORS: ReadonlyArray<string> = [
+  '.job-sec-text',          // 主（旧版）
+  '.job-detail-section',    // 候选 1（2025+ 改版）
+  '.job-intro-container',   // 候选 2
+  '.text-desc',             // 候选 3（旧版备选）
+  '[class*="job-sec"]',     // 模糊匹配（兜底）
+  '[class*="job-detail"]',  // 模糊匹配（兜底）
+]
+
+/** 单个选择器独立超时（不要和 page.goto 的 30s 串行） */
+const JD_SELECTOR_TIMEOUT_MS = 3_000
 
 export async function fetchJobDetail(page: any, jobId: string): Promise<string> {
   const fullUrl = `https://www.zhipin.com/job_detail/${jobId}.html`
   await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 })
 
-  // 等待 JD 内容加载
-  await page.waitForSelector('.job-sec-text', { timeout: 10_000 })
-  const jd = await page.$eval('.job-sec-text', (el: any) => el.textContent?.trim() ?? '')
-  return jd
+  // Fallback selector 链：每个独立超时，返回首个非空文本
+  const triedSelectors: string[] = []
+  for (const selector of JD_SELECTORS) {
+    triedSelectors.push(selector)
+    try {
+      await page.waitForSelector(selector, { timeout: JD_SELECTOR_TIMEOUT_MS })
+    } catch {
+      // 超时或未命中 → 试下一个
+      continue
+    }
+    try {
+      const jd = await page.$eval(selector, (el: any) => el.textContent?.trim() ?? '')
+      if (jd && jd.length > 0) {
+        return jd
+      }
+      // 选择器命中但内容为空（BOSS 改了结构）→ 继续试下一个
+      continue
+    } catch {
+      // $eval 失败（极少见：选择器 race condition）
+      continue
+    }
+  }
+
+  // 所有选择器都失败
+  throw new Error(
+    `fetchJobDetail 失败：尝试了 ${triedSelectors.length} 个选择器都未命中 JD 容器\n` +
+      `  URL: ${fullUrl}\n` +
+      `  已尝试: ${triedSelectors.join(', ')}\n` +
+      `  可能原因：(1) BOSS 又改 HTML（跑 scripts/probe-boss-selectors.sh 找新选择器）` +
+      ` (2) jobId 无效/岗位已下架 (3) 登录态失效`,
+  )
 }
 
 // ============================================================

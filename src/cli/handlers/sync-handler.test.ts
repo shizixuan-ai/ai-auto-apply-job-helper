@@ -288,16 +288,18 @@ describe('runSyncCommand — auto-greet 模式', () => {
     return await handler.runSyncCommand(opts, { generateGreeting: mockGenerateGreeting })
   }
 
-  // 待投递岗位样本（3 条）
+  // 待投递岗位样本（3 条 + 1 非待投递）
+  // ⚠️ 2026-07-07 P0 修复后必须包含 BOSS_ID（BOSS 真实 job_id）
+  // 否则 sync-handler 会显式拒绝（不会偷偷拿 record_id 当 BOSS job_id）
   const PENDING_RECORDS = {
     code: 0,
     msg: 'ok',
     data: {
       items: [
-        { record_id: 'rec_p1', fields: { 职位: '前端A', 公司: '字节', 状态: '待投递' } },
-        { record_id: 'rec_p2', fields: { 职位: '前端B', 公司: '美团', 状态: '待投递' } },
-        { record_id: 'rec_p3', fields: { 职位: '前端C', 公司: '腾讯', 状态: '待投递' } },
-        { record_id: 'rec_other', fields: { 职位: '运维', 公司: '阿里', 状态: '已沟通' } }, // 非待投递
+        { record_id: 'rec_p1', fields: { 职位: '前端A', 公司: '字节', BOSS_ID: 'boss_a1', 状态: '待投递' } },
+        { record_id: 'rec_p2', fields: { 职位: '前端B', 公司: '美团', BOSS_ID: 'boss_b2', 状态: '待投递' } },
+        { record_id: 'rec_p3', fields: { 职位: '前端C', 公司: '腾讯', BOSS_ID: 'boss_c3', 状态: '待投递' } },
+        { record_id: 'rec_other', fields: { 职位: '运维', 公司: '阿里', BOSS_ID: 'boss_other', 状态: '已沟通' } }, // 非待投递
       ],
     },
   }
@@ -454,7 +456,7 @@ describe('runSyncCommand — auto-greet 模式', () => {
       msg: 'ok',
       data: {
         items: [
-          { record_id: 'rec_semi', fields: { 状态: '待投递' } },
+          { record_id: 'rec_semi', fields: { 状态: '待投递', BOSS_ID: 'boss_semi' } },
         ],
       },
     })
@@ -488,7 +490,7 @@ describe('runSyncCommand — auto-greet 模式', () => {
       msg: 'ok',
       data: {
         items: [
-          { record_id: 'rec_str', fields: { 状态: '待投递' } },
+          { record_id: 'rec_str', fields: { 状态: '待投递', BOSS_ID: 'boss_str' } },
         ],
       },
     })
@@ -554,14 +556,14 @@ describe('runSyncCommand — auto-greet 模式', () => {
     expect(result.succeeded).toBe(3)
     // generateGreeting 被调用 3 次，每个待投递 job 一次
     expect(mockGenerateGreeting).toHaveBeenCalledTimes(3)
-    expect(mockGenerateGreeting).toHaveBeenCalledWith('rec_p1')
-    expect(mockGenerateGreeting).toHaveBeenCalledWith('rec_p2')
-    expect(mockGenerateGreeting).toHaveBeenCalledWith('rec_p3')
+    expect(mockGenerateGreeting).toHaveBeenCalledWith('boss_a1') // 2026-07-07: 用 BOSS_ID 不是 record_id
+    expect(mockGenerateGreeting).toHaveBeenCalledWith('boss_b2')
+    expect(mockGenerateGreeting).toHaveBeenCalledWith('boss_c3')
     // runSendCommand 收到 mockGenerateGreeting 返回的 message
     expect(mockRunSendCommand).toHaveBeenCalledWith(
       expect.objectContaining({
         jobId: 'rec_p1',
-        message: 'Hi rec_p1, 我对贵岗位很感兴趣',
+        message: 'Hi boss_a1, 我对贵岗位很感兴趣',
         cdp: false,
       }),
     )
@@ -604,7 +606,7 @@ describe('runSyncCommand — auto-greet 模式', () => {
       code: 0,
       msg: 'ok',
       data: {
-        items: [{ record_id: 'rec_str', fields: { 状态: '待投递' } }],
+        items: [{ record_id: 'rec_str', fields: { 状态: '待投递', BOSS_ID: 'boss_str' } }],
       },
     })
     mockGenerateGreeting.mockRejectedValue('plain string error')
@@ -656,8 +658,8 @@ describe('runSyncCommand — auto-greet --dry-run 模式', () => {
     msg: 'ok',
     data: {
       items: [
-        { record_id: 'rec_d1', fields: { 职位: '前端', 公司: '字节', 状态: '待投递' } },
-        { record_id: 'rec_d2', fields: { 职位: '后端', 公司: '美团', 状态: '待投递' } },
+        { record_id: 'rec_d1', fields: { 职位: '前端', 公司: '字节', BOSS_ID: 'boss_d1', 状态: '待投递' } },
+        { record_id: 'rec_d2', fields: { 职位: '后端', 公司: '美团', BOSS_ID: 'boss_d2', 状态: '待投递' } },
       ],
     },
   }
@@ -675,8 +677,8 @@ describe('runSyncCommand — auto-greet --dry-run 模式', () => {
     expect(result.action).toBe('auto-greet')
     if (result.action !== 'auto-greet') throw new Error('unreachable')
     expect(mockGenerateGreeting).toHaveBeenCalledTimes(2)
-    expect(mockGenerateGreeting).toHaveBeenCalledWith('rec_d1')
-    expect(mockGenerateGreeting).toHaveBeenCalledWith('rec_d2')
+    expect(mockGenerateGreeting).toHaveBeenCalledWith('boss_d1')
+    expect(mockGenerateGreeting).toHaveBeenCalledWith('boss_d2')
   })
 
   it('🚨 关键安全属性：dry-run 不调 runSendCommand（不发真消息）', async () => {
@@ -724,7 +726,7 @@ describe('runSyncCommand — auto-greet --dry-run 模式', () => {
     expect(result.messages?.[0]).toEqual(
       expect.objectContaining({
         jobId: 'rec_d1',
-        message: 'Hi rec_d1, 我对贵岗位很感兴趣',
+        message: 'Hi boss_d1, 我对贵岗位很感兴趣',
       }),
     )
     // succeeded/failed 应为 0（dry-run 没真发消息）
@@ -745,7 +747,7 @@ describe('runSyncCommand — auto-greet --dry-run 模式', () => {
     if (result.action !== 'auto-greet') throw new Error('unreachable')
     expect(result.formatted).toContain('DRY RUN')
     expect(result.formatted).toContain('rec_d1')
-    expect(result.formatted).toContain('Hi rec_d1')
+    expect(result.formatted).toContain('Hi boss_d1')
     expect(result.formatted).toContain('rec_d2')
   })
 
@@ -797,5 +799,76 @@ describe('runSyncCommand — auto-greet --dry-run 模式', () => {
     expect(result.total).toBe(0)
     expect(result.messages).toHaveLength(0)
     expect(mockGenerateGreeting).not.toHaveBeenCalled()
+  })
+
+  // ----------------------------------------------------------------
+  // 2026-07-07 P0 修复：缺少 BOSS_ID 必须显式报错，不能拿 record_id 糊弄
+  // ----------------------------------------------------------------
+  it('🚨 关键：record 缺少 BOSS_ID → 显式报错 + 不调 generateGreeting', async () => {
+    mockLoadConfig.mockReturnValue(makeLoadedConfig())
+    mockListRecords.mockResolvedValue({
+      code: 0,
+      msg: 'ok',
+      data: {
+        items: [
+          // 没有 BOSS_ID 字段（旧数据/手动添加）
+          { record_id: 'rec_no_boss', fields: { 职位: '前端', 公司: '字节', 状态: '待投递' } },
+          // BOSS_ID 是空字符串
+          { record_id: 'rec_empty_boss', fields: { 职位: '后端', 公司: '美团', BOSS_ID: '', 状态: '待投递' } },
+          // BOSS_ID 是空白
+          { record_id: 'rec_ws_boss', fields: { 职位: '全栈', 公司: '腾讯', BOSS_ID: '   ', 状态: '待投递' } },
+        ],
+      },
+    })
+
+    const { runSyncCommand } = await freshHandler()
+    const result = await runSyncCommand(
+      { mode: 'auto-greet' },
+      { generateGreeting: mockGenerateGreeting },
+    )
+
+    if (result.action !== 'auto-greet') throw new Error('unreachable')
+    expect(result.total).toBe(3)
+    expect(result.succeeded).toBe(0)
+    expect(result.failed).toBe(3)
+    expect(result.errors).toHaveLength(3)
+    // 每条错误都要明确说「缺少 BOSS_ID」并提示用户怎么修
+    for (const err of result.errors) {
+      expect(err.reason).toMatch(/缺少 BOSS_ID/)
+      expect(err.reason).toMatch(/bapply search/)
+    }
+    // 🚨 关键：不能调 generateGreeting（拿无效 URL 去请求 BOSS 是浪费风控额度）
+    expect(mockGenerateGreeting).not.toHaveBeenCalled()
+    // 也不能调 send/update（fake green 防护）
+    expect(mockRunSendCommand).not.toHaveBeenCalled()
+    expect(mockUpdateRecord).not.toHaveBeenCalled()
+  })
+
+  it('部分 record 缺 BOSS_ID 时只跳那些，正常 record 继续处理', async () => {
+    mockLoadConfig.mockReturnValue(makeLoadedConfig())
+    mockListRecords.mockResolvedValue({
+      code: 0,
+      msg: 'ok',
+      data: {
+        items: [
+          { record_id: 'rec_ok', fields: { 职位: '前端', 公司: '字节', BOSS_ID: 'boss_ok', 状态: '待投递' } },
+          { record_id: 'rec_bad', fields: { 职位: '后端', 公司: '美团', 状态: '待投递' } }, // 缺 BOSS_ID
+        ],
+      },
+    })
+    mockRunSendCommand.mockResolvedValue({ action: 'ok', reason: 'ok' })
+    mockUpdateRecord.mockResolvedValue({ code: 0, msg: 'ok' })
+
+    const { runSyncCommand } = await freshHandler()
+    const result = await runSyncCommand(
+      { mode: 'auto-greet' },
+      { generateGreeting: mockGenerateGreeting },
+    )
+
+    if (result.action !== 'auto-greet') throw new Error('unreachable')
+    expect(result.succeeded).toBe(1)
+    expect(result.failed).toBe(1)
+    expect(mockGenerateGreeting).toHaveBeenCalledTimes(1)
+    expect(mockGenerateGreeting).toHaveBeenCalledWith('boss_ok') // 用 BOSS_ID 不是 record_id
   })
 })

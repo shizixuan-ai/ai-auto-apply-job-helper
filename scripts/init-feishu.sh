@@ -135,8 +135,16 @@ info "现有字段: ${existing_fields:-（空表）}"
 
 # 必需字段定义（type 1=文本, 3=单选）
 # 注意：macOS 默认 bash 3.2 不支持关联数组，用并行索引数组替代
-FIELD_NAMES=("职位" "公司" "状态" "薪资" "城市")
-FIELD_TYPES=("1"     "1"     "3"     "1"     "1")   # 1=文本, 3=单选
+FIELD_NAMES=("职位" "公司" "BOSS_ID" "状态" "薪资" "城市")
+FIELD_TYPES=("1"     "1"     "1"        "3"     "1"     "1")   # 1=文本, 3=单选
+# 字段说明：
+#   - 职位：公司招聘的岗位名称（如"前端工程师"）
+#   - 公司：公司名称
+#   - BOSS_ID：⭐ BOSS 直聘的 encryptJobId（auto-greet 必需！）
+#             没有这个字段 sync --auto-greet 会显式报错，不会偷偷拿无效 URL 去请求
+#   - 状态：单选项（待投递/已投递/已沟通/不合适）
+#   - 薪资：薪资范围
+#   - 城市：工作城市
 
 # 状态字段选项
 STATUS_OPTIONS='{"options":[{"name":"待投递","color":0},{"name":"已投递","color":1},{"name":"已沟通","color":2},{"name":"不合适","color":3}]}'

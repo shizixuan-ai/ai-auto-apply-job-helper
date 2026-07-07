@@ -180,11 +180,23 @@ export async function runSyncCommand(
 
       for (const job of pending) {
         const jobId = job.record_id
+        // 关键修复（2026-07-07 P0）：generateGreeting 需要 BOSS job_id 而非 Feishu record_id
+        // 优先读 fields['BOSS_ID']；缺失时显式报错（不再偷偷拿 record_id 当 BOSS job_id）
+        const bossJobId = String(job.fields['BOSS_ID'] ?? '').trim()
+        if (!bossJobId) {
+          failed++
+          errors.push({
+            jobId,
+            reason:
+              '缺少 BOSS_ID 字段。请先用 `bapply search <关键词>` 搜索岗位（自动写 BOSS_ID），再标记为『待投递』',
+          })
+          continue
+        }
 
         // Step 1: 生成招呼语（B-2b-2 修复：消除 message=undefined → invalid_args bug）
         let message: string
         try {
-          message = await generateGreetingFn(jobId)
+          message = await generateGreetingFn(bossJobId)
         } catch (err: unknown) {
           failed++
           const msg = err instanceof Error ? err.message : String(err)

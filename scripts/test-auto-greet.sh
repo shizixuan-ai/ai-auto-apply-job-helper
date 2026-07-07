@@ -235,10 +235,10 @@ info "耗时: ${duration}s"
 
 # Baseline 日志（默认空串，避免 set -u 报错）
 if [[ -n "${BASELINE_FILE:-}" && -f "${BASELINE_FILE}" ]]; then
-  info "本次 baseline 记录（$BASELINE_FILE）："
+  info "本次 baseline 记录（${BASELINE_FILE}）："
   awk -v start="$start_iso" '
     $0 ~ start,/^$/ {print}
-  ' "$BASELINE_FILE" 2>/dev/null | tail -20 || tail -10 "$BASELINE_FILE"
+  ' "${BASELINE_FILE}" 2>/dev/null | tail -20 || tail -10 "${BASELINE_FILE}"
 else
   warn "未找到今日 baseline 文件"
 fi
