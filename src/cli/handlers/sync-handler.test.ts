@@ -720,7 +720,6 @@ describe('runSyncCommand — auto-greet --dry-run 模式', () => {
     if (result.action !== 'auto-greet') throw new Error('unreachable')
     expect(result.dryRun).toBe(true)
     // 应该有 messages 数组（每个 job 一条招呼语）
-    expect(result.messages).toBeDefined()
     expect(result.messages).toHaveLength(2)
     expect(result.messages?.[0]).toEqual(
       expect.objectContaining({

@@ -167,8 +167,7 @@ export async function runSyncCommand(
           failed: 0,
           errors: [],
           formatted: '📭 没有『待投递』状态的岗位，无需打招呼\n\n💡 用 `bapply search` 收集岗位，`bapply greet` 生成话术后 `bapply send` 投递',
-          dryRun: opts.dryRun || undefined,
-          messages: opts.dryRun ? [] : undefined,
+          ...(opts.dryRun ? { dryRun: true, messages: [] as Array<{ jobId: string; message: string }> } : {}),
         }
       }
 
@@ -273,8 +272,7 @@ export async function runSyncCommand(
         failed,
         errors,
         formatted,
-        dryRun: opts.dryRun || undefined,
-        messages: opts.dryRun ? dryRunMessages : undefined,
+        ...(opts.dryRun ? { dryRun: true, messages: dryRunMessages } : {}),
       }
     }
 

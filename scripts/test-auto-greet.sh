@@ -2,9 +2,10 @@
 # ============================================================
 # auto-greet 真实 BOSS 实测脚本
 # ============================================================
-# 用法：bash scripts/test-auto-greet.sh [limit] [--dry-run]
+# 用法：bash scripts/test-auto-greet.sh [limit] [--dry-run] [--quiet]
 #   limit: 测试 job 数（默认 2，建议 ≤5 防风控）
 #   --dry-run: 演练模式（不真实发消息、不改飞书，只生成招呼语 + 验证 LLM 输出）
+#   --quiet: 禁用 ANSI 颜色（CI 友好）
 #
 # 流程：
 #   1. 环境检查（.env、飞书表头、CLI 可执行）
@@ -28,13 +29,17 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 # ============== 参数解析（位置参数：LIMIT）==============
-# 默认 LIMIT=2；解析 --dry-run 标志
+# 默认 LIMIT=2；解析 --dry-run / --quiet 标志
 LIMIT=2
 DRY_RUN=false
+QUIET=false
 for arg in "$@"; do
   case "$arg" in
     --dry-run)
       DRY_RUN=true
+      ;;
+    --quiet|-q)
+      QUIET=true
       ;;
     --help|-h)
       head -18 "$0" | tail -16
@@ -45,12 +50,17 @@ for arg in "$@"; do
       if [[ "$arg" =~ ^[0-9]+$ ]]; then
         LIMIT="$arg"
       else
-        echo "未知参数: $arg（支持：数字 limit / --dry-run / --help）"
+        echo "未知参数: $arg（支持：数字 limit / --dry-run / --quiet / --help）"
         exit 1
       fi
       ;;
   esac
 done
+
+# --quiet 模式：禁用 ANSI 颜色 + 抑制非关键输出（CI 友好）
+if [[ "$QUIET" == "true" ]]; then
+  RED=''; GREEN=''; YELLOW=''; BLUE=''; NC=''
+fi
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASELINE_DIR="$PROJECT_ROOT/.claude/diagnose/baseline"
