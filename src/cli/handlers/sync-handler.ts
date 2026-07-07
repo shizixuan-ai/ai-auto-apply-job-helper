@@ -24,6 +24,7 @@ import { loadConfig } from '../../config/index.js'
 import { listRecords, updateRecord } from '../../feishu/index.js'
 import { runSendCommand } from './send-handler.js'
 import {
+  createCDPSession,
   createBrowserSession,
   closeBrowserSession,
   fetchJobDetail,
@@ -346,8 +347,10 @@ export async function runSyncCommand(
 // ============================================================
 // 默认 generateGreeting 实现（auto-greet 模式使用）
 // ============================================================
-// 流程：createBrowserSession → fetchJobDetail → LLM.generate → close
-// 每个 job 创建/销毁独立 session（简单清晰；性能可后续优化为批 session）
+// 流程：createCDPSession（接管 9222 已登录 Chrome）→ fetchJobDetail → LLM.generate → close
+// 2026-07-07 P0 修复：之前用 createBrowserSession(false) 是反逻辑 ——
+//   createBrowserSession 启 stealth Chromium 独立 launch，没 cookie 会触发 BOSS _security_check
+//   auto-greet 是 batch 模式，**最**应该用 CDP 接管避免反复 new Chrome 窗口
 //
 // resume 信息目前硬编码（与 CLI greet 命令保持一致）。
 // 后续可从 .env 或简历文件读取，PR 时再改。
@@ -355,7 +358,8 @@ export async function runSyncCommand(
 
 async function defaultGenerateGreeting(jobId: string): Promise<string> {
   const config = loadConfig()
-  const session = await createBrowserSession(false) // batch 模式不用 CDP
+  // P0 fix: 用 CDP 接管已登录 Chrome（保留 BOSS session cookie）
+  const session = await createCDPSession()
   try {
     const jd = await fetchJobDetail(session.page, jobId)
     const resumeSummary = buildResumeSummary({

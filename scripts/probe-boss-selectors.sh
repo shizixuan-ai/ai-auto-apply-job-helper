@@ -73,19 +73,36 @@ if (!context) {
   console.error('未找到浏览器 context')
   process.exit(1)
 }
-const page = await context.newPage()
+// 2026-07-07 fix：用 pages() 里「含 zhipin」的 tab（已登录），不要 newPage() —— 否则新 tab 没 cookie，
+// BOSS 会跳到 _security_check 并销毁 execution context
+const existingPages = context.pages()
+let page = existingPages.find(p => (p.url() || '').includes('zhipin'))
+if (!page) {
+  console.error('未找到已打开的 BOSS tab')
+  console.error('   请在 Chrome 窗口里至少开一次 https://www.zhipin.com 后再跑本脚本')
+  console.error('   现有 tabs:')
+  for (const p of existingPages) console.error(`     - ${p.url()}`)
+  process.exit(1)
+}
 
 const url = `https://www.zhipin.com/job_detail/${JOB_ID}.html`
 console.log(`\n打开: ${url}\n`)
+console.log(`已登录 tab: ${page.url().slice(0, 80)}\n`)
 await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 })
 
-// 给 BOSS 反爬留 2 秒缓冲
-await page.waitForTimeout(2000)
+// 给 BOSS 反爬留 3 秒缓冲（含可能的 _security_check 一次性验证）
+await page.waitForTimeout(3000)
 
-// 检查是否被重定向（登录失效）
+// 检查是否被重定向（登录失效 / 风控）
 if (page.url().includes('/user/') || page.url() === 'about:blank') {
   console.error('页面被重定向到登录页，请确保 Chrome 已登录 BOSS')
   process.exit(1)
+}
+if (page.url().includes('_security_check=') || page.url().includes('/web/geek/security/')) {
+  console.error('⚠️  触发 BOSS 安全验证（_security_check）')
+  console.error('    请在 Chrome 窗口手动完成验证（拖动滑块/点击确认），完成后重新跑本脚本')
+  console.error(`    当前 URL: ${page.url()}`)
+  process.exit(2)
 }
 
 // 探测 JD 容器候选元素
@@ -146,8 +163,9 @@ console.log('  2. 把那个选择器加到 src/browser/index.ts 的 JD_SELECTORS
 console.log('  3. 跑测试验证: npx vitest run src/browser/index.test.ts')
 console.log('  4. 跑 dry-run 端到端: bash scripts/test-auto-greet.sh 1 --dry-run')
 
-await page.close()
-await browser.close()
+// 2026-07-07 fix：不要 await browser.close() —— 否则 Playwright 会关掉所有 CDP tab，
+//    包括用户已登录的 Chrome 实例。改用 connectOverCDP 模式的非破坏性退出。
+process.exit(0)
 EOF
 
 # 跑探测脚本

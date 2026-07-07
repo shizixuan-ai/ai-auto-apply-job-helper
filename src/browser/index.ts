@@ -173,7 +173,13 @@ export async function createCDPSession() {
         '请确认 Chrome 已用 --user-data-dir 启动并至少打开过一个窗口。',
     )
   }
-  const page = await context.newPage()
+  // 2026-07-07 P0 修复：优先复用已在的 zhipin tab（保留真实用户 Session/Referer），
+  //   仅当没有 zhipin tab 时才 newPage —— 否则 BOSS 会因缺少 Referer 拒服务
+  const existingZhipinTab = context.pages().find((p: any) => (p.url?.() || '').includes('zhipin.com'))
+  const page = existingZhipinTab ?? await context.newPage()
+  if (!existingZhipinTab) {
+    console.warn('[browser] 未找到已打开的 BOSS tab，已创建新 tab（请在 Chrome 窗口里至少打开一次 zhipin.com 以避免风控）')
+  }
 
   return {
     browser,
