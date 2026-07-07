@@ -175,9 +175,8 @@ export async function createCDPSession() {
   }
   // 2026-07-07 P0 修复：优先复用已在的 zhipin tab（保留真实用户 Session/Referer），
   //   仅当没有 zhipin tab 时才 newPage —— 否则 BOSS 会因缺少 Referer 拒服务
-  const existingZhipinTab = context.pages().find((p: any) => (p.url?.() || '').includes('zhipin.com'))
-  const page = existingZhipinTab ?? await context.newPage()
-  if (!existingZhipinTab) {
+  const page = await pickZhipinTabOrNew(context)
+  if (!context.pages().some((p: any) => (p.url?.() || '').includes('zhipin.com'))) {
     console.warn('[browser] 未找到已打开的 BOSS tab，已创建新 tab（请在 Chrome 窗口里至少打开一次 zhipin.com 以避免风控）')
   }
 
@@ -188,6 +187,20 @@ export async function createCDPSession() {
     cdpURL: wrapper.cdpURL,
     cdpMode: true as const,
   }
+}
+
+/**
+ * 复用已在的 zhipin tab；找不到再 newPage()
+ * 2026-07-07 P0 抽出：避免 BOSS 因 Referer 缺失静默拒服务
+ * @internal 导出供 unit test
+ */
+export async function pickZhipinTabOrNew(context: {
+  pages(): Array<{ url(): string | undefined }>
+  newPage(): Promise<unknown>
+}): Promise<unknown> {
+  const existing = context.pages().find((p) => (p.url() || '').includes('zhipin.com'))
+  if (existing) return existing
+  return await context.newPage()
 }
 
 // ============================================================

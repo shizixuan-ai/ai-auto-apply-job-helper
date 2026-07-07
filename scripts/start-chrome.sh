@@ -42,6 +42,10 @@ PROBE_TIMEOUT_SEC="${PROBE_TIMEOUT_SEC:-15}"
 LOG_FILE="${LOG_FILE:-/tmp/chrome-start.log}"
 PID_FILE="${PID_FILE:-/tmp/chrome-start.pid}"
 BOOTSTRAP_URL="${BOOTSTRAP_URL:-https://www.zhipin.com/}"
+# 2026-07-07 audit fix: Chrome 111+ 默认拒绝跨源 WebSocket，
+# Playwright 的 chromium.connectOverCDP 必须有 --remote-allow-origins=* 才连得上
+# （src/browser/cdp.test.ts 的 P0 测试已绑定此契约）
+REMOTE_ALLOW_ORIGINS_FLAG="--remote-allow-origins=*"
 
 ok()   { echo -e "${GREEN}✓${NC} $1"; }
 fail() { echo -e "${RED}✗${NC} $1"; }
@@ -107,15 +111,31 @@ ok "Chrome: $CHROME"
 PROFILE_DIR="$(mktemp -d -t chrome-cdp.XXXXXX)"
 ok "临时 profile: $PROFILE_DIR"
 
+# 异常退出 trap：清理临时 profile（含 BOSS session cookie —— 敏感数据不残留磁盘）
+cleanup_on_exit() {
+  local exit_code=$?
+  if [[ -n "${CHROME_PID:-}" ]] && kill -0 "${CHROME_PID}" 2>/dev/null; then
+    kill "${CHROME_PID}" 2>/dev/null || true
+    rm -f "${PID_FILE}" 2>/dev/null || true
+  fi
+  if [[ -n "${PROFILE_DIR:-}" && -d "${PROFILE_DIR}" ]]; then
+    rm -rf "${PROFILE_DIR}" 2>/dev/null || true
+  fi
+  exit "${exit_code}"
+}
+trap cleanup_on_exit EXIT INT TERM
+
 # ============================================================
 # Step 4: 后台拉起 Chrome
 # ============================================================
 # 注：不加 --headless，让用户能登录
 #    --no-first-run / --no-default-browser-check 避免弹窗
 #    Bootstrap URL 直接开 BOSS，登录后直接能搜
+#    REMOTE_ALLOW_ORIGINS_FLAG 让 Playwright connectOverCDP 能接管（Chrome 111+ 必需）
 nohup "$CHROME" \
   --remote-debugging-port="${CDP_PORT}" \
   --user-data-dir="${PROFILE_DIR}" \
+  "${REMOTE_ALLOW_ORIGINS_FLAG}" \
   --no-first-run \
   --no-default-browser-check \
   --disable-background-networking \

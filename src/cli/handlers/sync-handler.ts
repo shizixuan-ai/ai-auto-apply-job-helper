@@ -25,7 +25,6 @@ import { listRecords, updateRecord } from '../../feishu/index.js'
 import { runSendCommand } from './send-handler.js'
 import {
   createCDPSession,
-  createBrowserSession,
   closeBrowserSession,
   fetchJobDetail,
 } from '../../browser/index.js'
