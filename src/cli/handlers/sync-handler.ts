@@ -54,6 +54,10 @@ export type SyncResult =
       failed: number
       errors: Array<{ jobId: string; reason: string }>
       formatted: string
+      /** dry-run 模式标记（仅在 auto-greet + dryRun=true 时存在） */
+      dryRun?: boolean
+      /** dry-run 模式生成的招呼语列表（仅在 dryRun=true 时存在） */
+      messages?: Array<{ jobId: string; message: string }>
     }
   | { action: 'missing_config'; reason: string; hint: string }
   | { action: 'invalid_args'; reason: string }
@@ -68,6 +72,14 @@ export interface SyncCommandOptions {
   recordId?: string
   /** auto-greet 模式：每日处理上限（默认 5） */
   limit?: number
+  /**
+   * dry-run 模式（auto-greet only）：
+   *   - 仍调 generateGreeting（验证 LLM 输出）
+   *   - ❌ 不调 runSendCommand（不发真消息给 BOSS HR）
+   *   - ❌ 不调 updateRecord（不改飞书状态）
+   * 默认 false
+   */
+  dryRun?: boolean
 }
 
 /**
@@ -155,6 +167,8 @@ export async function runSyncCommand(
           failed: 0,
           errors: [],
           formatted: '📭 没有『待投递』状态的岗位，无需打招呼\n\n💡 用 `bapply search` 收集岗位，`bapply greet` 生成话术后 `bapply send` 投递',
+          dryRun: opts.dryRun || undefined,
+          messages: opts.dryRun ? [] : undefined,
         }
       }
 
@@ -162,6 +176,8 @@ export async function runSyncCommand(
       let succeeded = 0
       let failed = 0
       const errors: Array<{ jobId: string; reason: string }> = []
+      // dry-run 专用：收集生成的招呼语（仅 dryRun=true 时使用）
+      const dryRunMessages: Array<{ jobId: string; message: string }> = []
 
       for (const job of pending) {
         const jobId = job.record_id
@@ -174,6 +190,12 @@ export async function runSyncCommand(
           failed++
           const msg = err instanceof Error ? err.message : String(err)
           errors.push({ jobId, reason: `生成招呼语失败: ${msg}` })
+          continue
+        }
+
+        // dry-run 短路：仅记录 message，🚨 不调 runSendCommand、不改飞书
+        if (opts.dryRun) {
+          dryRunMessages.push({ jobId, message })
           continue
         }
 
@@ -199,20 +221,50 @@ export async function runSyncCommand(
         }
       }
 
-      // 汇总格式化
+      // ============================================================
+      // 格式化输出
+      // ============================================================
+      // dry-run 和正常模式共用同一格式化模板，仅头部 banner 不同
+      // ============================================================
       const errorLines = errors.length > 0
         ? ['\n❌ 失败明细:', ...errors.map((e) => `  - ${e.jobId}: ${e.reason}`)]
         : []
 
-      const formatted = [
-        '🚀 批量打招呼汇总',
-        '═══════════════════════',
-        `总处理:    ${pending.length}`,
-        `✅ 成功:   ${succeeded}`,
-        `❌ 失败:   ${failed}`,
-        ...errorLines,
-        '\n💡 用 `bapply stats` 查看最新投递统计',
-      ].join('\n')
+      let formatted: string
+      if (opts.dryRun) {
+        // dry-run：显示生成的招呼语，让用户 review 后再决定真实发送
+        const messageLines = dryRunMessages.length > 0
+          ? [
+              '\n📨 生成的招呼语（DRY RUN，未发送）:',
+              ...dryRunMessages.flatMap((m, i) => [
+                `  [${i + 1}] jobId=${m.jobId}`,
+                `      "${m.message}"`,
+              ]),
+            ]
+          : ['\n📭 无成功生成的招呼语']
+
+        formatted = [
+          '🧪 DRY RUN — auto-greet 演练模式',
+          '═══════════════════════════════════',
+          `总待投递:   ${pending.length}`,
+          `📝 已生成:   ${dryRunMessages.length}`,
+          `❌ 生成失败: ${errors.length}`,
+          ...messageLines,
+          ...errorLines,
+          '\n💡 确认招呼语质量后，去掉 --dry-run 跑真实发送:',
+          '   bapply sync --auto-greet --limit ' + pending.length,
+        ].join('\n')
+      } else {
+        formatted = [
+          '🚀 批量打招呼汇总',
+          '═══════════════════════',
+          `总处理:    ${pending.length}`,
+          `✅ 成功:   ${succeeded}`,
+          `❌ 失败:   ${failed}`,
+          ...errorLines,
+          '\n💡 用 `bapply stats` 查看最新投递统计',
+        ].join('\n')
+      }
 
       return {
         action: 'auto-greet',
@@ -221,6 +273,8 @@ export async function runSyncCommand(
         failed,
         errors,
         formatted,
+        dryRun: opts.dryRun || undefined,
+        messages: opts.dryRun ? dryRunMessages : undefined,
       }
     }
 

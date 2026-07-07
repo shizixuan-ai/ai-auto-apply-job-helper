@@ -619,3 +619,184 @@ describe('runSyncCommand — auto-greet 模式', () => {
     expect(mockRunSendCommand).not.toHaveBeenCalled()
   })
 })
+
+// ============================================================
+// runSyncCommand — auto-greet --dry-run 模式（2026-07-07）
+// ============================================================
+// 行为契约：
+//   - 读飞书『待投递』岗位（与普通 auto-greet 一样）
+//   - 对每个岗位调 generateGreeting（真实 LLM 调用，验证招呼语质量）
+//   - ❌ 不调 runSendCommand（不真实发消息给 BOSS HR）
+//   - ❌ 不调 updateRecord（不改飞书状态，避免脏数据）
+//   - 返回 action='auto-greet'，但带 dryRun=true 标记 + 生成的招呼语列表
+//
+// 为什么需要 dry-run：
+//   - 用户选择方案 B：先验证 LLM 生成质量，不发真消息
+//   - 防止 P0 fake green：旧 fake green 模式下脚本"成功"但实际 HR 没收到招呼
+//   - 避免 BOSS 风控：1 小时发 3 条可能被标记
+// ============================================================
+
+describe('runSyncCommand — auto-greet --dry-run 模式', () => {
+  let mockGenerateGreeting: ReturnType<typeof makeDefaultMockGenerateGreeting>
+
+  beforeEach(() => {
+    mockListRecords.mockReset()
+    mockUpdateRecord.mockReset()
+    mockLoadConfig.mockReset()
+    mockRunSendCommand.mockReset()
+    mockGenerateGreeting = makeDefaultMockGenerateGreeting()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  const DRY_PENDING_RECORDS = {
+    code: 0,
+    msg: 'ok',
+    data: {
+      items: [
+        { record_id: 'rec_d1', fields: { 职位: '前端', 公司: '字节', 状态: '待投递' } },
+        { record_id: 'rec_d2', fields: { 职位: '后端', 公司: '美团', 状态: '待投递' } },
+      ],
+    },
+  }
+
+  it('dry-run 仍调 generateGreeting（验证 LLM 输出）', async () => {
+    mockLoadConfig.mockReturnValue(makeLoadedConfig())
+    mockListRecords.mockResolvedValue(DRY_PENDING_RECORDS)
+
+    const { runSyncCommand } = await freshHandler()
+    const result = await runSyncCommand(
+      { mode: 'auto-greet', dryRun: true },
+      { generateGreeting: mockGenerateGreeting },
+    )
+
+    expect(result.action).toBe('auto-greet')
+    if (result.action !== 'auto-greet') throw new Error('unreachable')
+    expect(mockGenerateGreeting).toHaveBeenCalledTimes(2)
+    expect(mockGenerateGreeting).toHaveBeenCalledWith('rec_d1')
+    expect(mockGenerateGreeting).toHaveBeenCalledWith('rec_d2')
+  })
+
+  it('🚨 关键安全属性：dry-run 不调 runSendCommand（不发真消息）', async () => {
+    mockLoadConfig.mockReturnValue(makeLoadedConfig())
+    mockListRecords.mockResolvedValue(DRY_PENDING_RECORDS)
+
+    const { runSyncCommand } = await freshHandler()
+    await runSyncCommand(
+      { mode: 'auto-greet', dryRun: true },
+      { generateGreeting: mockGenerateGreeting },
+    )
+
+    // 🚨 绝不能调 runSendCommand —— 那会向真实 BOSS HR 发消息
+    expect(mockRunSendCommand).not.toHaveBeenCalled()
+  })
+
+  it('🚨 关键安全属性：dry-run 不调 updateRecord（不改飞书状态）', async () => {
+    mockLoadConfig.mockReturnValue(makeLoadedConfig())
+    mockListRecords.mockResolvedValue(DRY_PENDING_RECORDS)
+
+    const { runSyncCommand } = await freshHandler()
+    await runSyncCommand(
+      { mode: 'auto-greet', dryRun: true },
+      { generateGreeting: mockGenerateGreeting },
+    )
+
+    // 🚨 绝不能改飞书状态 —— dry-run 必须无副作用
+    expect(mockUpdateRecord).not.toHaveBeenCalled()
+  })
+
+  it('dry-run 返回 dryRun=true 标记 + 生成的消息列表', async () => {
+    mockLoadConfig.mockReturnValue(makeLoadedConfig())
+    mockListRecords.mockResolvedValue(DRY_PENDING_RECORDS)
+
+    const { runSyncCommand } = await freshHandler()
+    const result = await runSyncCommand(
+      { mode: 'auto-greet', dryRun: true },
+      { generateGreeting: mockGenerateGreeting },
+    )
+
+    if (result.action !== 'auto-greet') throw new Error('unreachable')
+    expect(result.dryRun).toBe(true)
+    // 应该有 messages 数组（每个 job 一条招呼语）
+    expect(result.messages).toBeDefined()
+    expect(result.messages).toHaveLength(2)
+    expect(result.messages?.[0]).toEqual(
+      expect.objectContaining({
+        jobId: 'rec_d1',
+        message: 'Hi rec_d1, 我对贵岗位很感兴趣',
+      }),
+    )
+    // succeeded/failed 应为 0（dry-run 没真发消息）
+    expect(result.succeeded).toBe(0)
+    expect(result.failed).toBe(0)
+  })
+
+  it('dry-run 输出包含 DRY RUN 横幅 + 每条招呼语', async () => {
+    mockLoadConfig.mockReturnValue(makeLoadedConfig())
+    mockListRecords.mockResolvedValue(DRY_PENDING_RECORDS)
+
+    const { runSyncCommand } = await freshHandler()
+    const result = await runSyncCommand(
+      { mode: 'auto-greet', dryRun: true },
+      { generateGreeting: mockGenerateGreeting },
+    )
+
+    if (result.action !== 'auto-greet') throw new Error('unreachable')
+    expect(result.formatted).toContain('DRY RUN')
+    expect(result.formatted).toContain('rec_d1')
+    expect(result.formatted).toContain('Hi rec_d1')
+    expect(result.formatted).toContain('rec_d2')
+  })
+
+  it('dry-run 即使 generateGreeting 失败也不调 send（fail-fast 仍然适用）', async () => {
+    mockLoadConfig.mockReturnValue(makeLoadedConfig())
+    mockListRecords.mockResolvedValue(DRY_PENDING_RECORDS)
+    // 第 2 个岗位 LLM 失败
+    mockGenerateGreeting
+      .mockResolvedValueOnce('msg-1')
+      .mockRejectedValueOnce(new Error('LLM rate limit'))
+
+    const { runSyncCommand } = await freshHandler()
+    const result = await runSyncCommand(
+      { mode: 'auto-greet', dryRun: true },
+      { generateGreeting: mockGenerateGreeting },
+    )
+
+    if (result.action !== 'auto-greet') throw new Error('unreachable')
+    expect(result.dryRun).toBe(true)
+    // 只有 1 条消息成功生成
+    expect(result.messages).toHaveLength(1)
+    expect(result.messages?.[0]?.jobId).toBe('rec_d1')
+    // 仍不调 send/update
+    expect(mockRunSendCommand).not.toHaveBeenCalled()
+    expect(mockUpdateRecord).not.toHaveBeenCalled()
+    // 错误要累积（与普通 auto-greet 一致）
+    expect(result.errors).toHaveLength(1)
+    expect(result.errors[0]?.reason).toMatch(/LLM rate limit/)
+  })
+
+  it('dry-run 模式无『待投递』岗位时不报错', async () => {
+    mockLoadConfig.mockReturnValue(makeLoadedConfig())
+    mockListRecords.mockResolvedValue({
+      code: 0,
+      msg: 'ok',
+      data: {
+        items: [{ record_id: 'r1', fields: { 状态: '已沟通' } }],
+      },
+    })
+
+    const { runSyncCommand } = await freshHandler()
+    const result = await runSyncCommand(
+      { mode: 'auto-greet', dryRun: true },
+      { generateGreeting: mockGenerateGreeting },
+    )
+
+    if (result.action !== 'auto-greet') throw new Error('unreachable')
+    expect(result.dryRun).toBe(true)
+    expect(result.total).toBe(0)
+    expect(result.messages).toHaveLength(0)
+    expect(mockGenerateGreeting).not.toHaveBeenCalled()
+  })
+})

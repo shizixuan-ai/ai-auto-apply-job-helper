@@ -134,26 +134,25 @@ print(' '.join(item['field_name'] for item in data.get('data', {}).get('items', 
 info "现有字段: ${existing_fields:-（空表）}"
 
 # 必需字段定义（type 1=文本, 3=单选）
-declare -A REQUIRED_FIELDS
-REQUIRED_FIELDS[职位]="1"
-REQUIRED_FIELDS[公司]="1"
-REQUIRED_FIELDS[状态]="3"  # 单选
-REQUIRED_FIELDS[薪资]="1"
-REQUIRED_FIELDS[城市]="1"
+# 注意：macOS 默认 bash 3.2 不支持关联数组，用并行索引数组替代
+FIELD_NAMES=("职位" "公司" "状态" "薪资" "城市")
+FIELD_TYPES=("1"     "1"     "3"     "1"     "1")   # 1=文本, 3=单选
 
 # 状态字段选项
 STATUS_OPTIONS='{"options":[{"name":"待投递","color":0},{"name":"已投递","color":1},{"name":"已沟通","color":2},{"name":"不合适","color":3}]}'
 
-for field_name in "${!REQUIRED_FIELDS[@]}"; do
+for i in "${!FIELD_NAMES[@]}"; do
+  field_name="${FIELD_NAMES[$i]}"
+  field_type="${FIELD_TYPES[$i]}"
+
   if echo " $existing_fields " | grep -q " $field_name "; then
     ok "字段已存在: $field_name"
     continue
   fi
 
-  type="${REQUIRED_FIELDS[$field_name]}"
-  info "创建字段: $field_name (type=$type)"
+  info "创建字段: $field_name (type=$field_type)"
 
-  body="{\"field_name\":\"$field_name\",\"type\":$type"
+  body="{\"field_name\":\"$field_name\",\"type\":$field_type"
   if [[ "$field_name" == "状态" ]]; then
     body+=",\"property\":$STATUS_OPTIONS"
   fi
@@ -209,7 +208,7 @@ done
 echo ""
 ok "全部完成！"
 echo ""
-echo "  添加字段: ${#REQUIRED_FIELDS[@]} 个（职位/公司/状态/薪资/城市）"
+echo "  添加字段: ${#FIELD_NAMES[@]} 个（职位/公司/状态/薪资/城市）"
 echo "  添加数据: $added / $TEST_ROWS 行"
 echo ""
 info "下一步："

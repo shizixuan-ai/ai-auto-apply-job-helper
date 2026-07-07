@@ -2,15 +2,20 @@
 # ============================================================
 # auto-greet 真实 BOSS 实测脚本
 # ============================================================
-# 用法：bash scripts/test-auto-greet.sh [limit]
+# 用法：bash scripts/test-auto-greet.sh [limit] [--dry-run]
 #   limit: 测试 job 数（默认 2，建议 ≤5 防风控）
+#   --dry-run: 演练模式（不真实发消息、不改飞书，只生成招呼语 + 验证 LLM 输出）
 #
 # 流程：
 #   1. 环境检查（.env、飞书表头、CLI 可执行）
 #   2. 飞书链路验证（list / stats）
 #   3. 单条手动 sync（不发请求，只验飞书链路）
-#   4. auto-greet 小规模实测
+#   4. auto-greet 小规模实测（dry-run 或真实）
 #   5. 结果验证 + baseline 日志分析
+#
+# Dry-run vs 真实：
+#   - 真实模式：向 BOSS HR 发消息 + 飞书状态改为『已投递』，需二次确认
+#   - Dry-run：只调 LLM 生成招呼语，无副作用，无需二次确认
 # ============================================================
 
 set -euo pipefail
@@ -22,7 +27,31 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-LIMIT="${1:-2}"
+# ============== 参数解析（位置参数：LIMIT）==============
+# 默认 LIMIT=2；解析 --dry-run 标志
+LIMIT=2
+DRY_RUN=false
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run)
+      DRY_RUN=true
+      ;;
+    --help|-h)
+      head -18 "$0" | tail -16
+      exit 0
+      ;;
+    *)
+      # 数字参数当作 limit
+      if [[ "$arg" =~ ^[0-9]+$ ]]; then
+        LIMIT="$arg"
+      else
+        echo "未知参数: $arg（支持：数字 limit / --dry-run / --help）"
+        exit 1
+      fi
+      ;;
+  esac
+done
+
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASELINE_DIR="$PROJECT_ROOT/.claude/diagnose/baseline"
 TODAY="$(date +%Y-%m-%d)"
@@ -143,17 +172,23 @@ if [[ "$LIMIT" -gt "$pending_count" ]]; then
   warn "limit=$LIMIT 大于待投递数 $pending_count，实际只处理 $pending_count 条"
 fi
 
-# 二次确认
-echo ""
-warn "⚠️  即将调用真实 BOSS 打招呼（limit=$LIMIT 条）"
-warn "    每条会：fetchJobDetail + LLM.generate + 真实 BOSS 发送"
-warn "    失败/成功会回写飞书状态"
-echo ""
-read -p "继续？[y/N] " -n 1 -r
-echo
-if [[ ! "$REPLY" =~ ^[Yy]$ ]]; then
-  info "用户取消，未执行 auto-greet"
-  exit 0
+# 二次确认（dry-run 模式跳过：dry-run 无副作用）
+if [[ "$DRY_RUN" == "true" ]]; then
+  echo ""
+  info "🧪 DRY RUN 模式：只生成招呼语，不真实发送、不改飞书状态"
+  info "    每条会：fetchJobDetail + LLM.generate（不会发给 BOSS HR）"
+else
+  echo ""
+  warn "⚠️  即将调用真实 BOSS 打招呼（limit=$LIMIT 条）"
+  warn "    每条会：fetchJobDetail + LLM.generate + 真实 BOSS 发送"
+  warn "    失败/成功会回写飞书状态"
+  echo ""
+  read -p "继续？[y/N] " -n 1 -r
+  echo
+  if [[ ! "$REPLY" =~ ^[Yy]$ ]]; then
+    info "用户取消，未执行 auto-greet"
+    exit 0
+  fi
 fi
 
 # 记录 baseline 时间锚点
@@ -164,9 +199,15 @@ info "开始时间: $start_iso"
 # ============================================================
 # Step 5: 实际跑 auto-greet
 # ============================================================
-step "Step 5/5 auto-greet 实战 (limit=$LIMIT)"
+step "Step 5/5 auto-greet 实战 (limit=$LIMIT$([ "$DRY_RUN" == "true" ] && echo " --dry-run"))"
 
-if npx tsx src/cli/index.ts sync --auto-greet --limit "$LIMIT"; then
+# 组装 sync 命令（dry-run 时加 --dry-run）
+SYNC_ARGS=(sync --auto-greet --limit "$LIMIT")
+if [[ "$DRY_RUN" == "true" ]]; then
+  SYNC_ARGS+=(--dry-run)
+fi
+
+if npx tsx src/cli/index.ts "${SYNC_ARGS[@]}"; then
   ok "auto-greet 命令退出码 0"
 else
   exit_code=$?
@@ -182,8 +223,8 @@ end_time=$(date +%s)
 duration=$((end_time - start_time))
 info "耗时: ${duration}s"
 
-# Baseline 日志
-if [[ -f "${BASELINE_FILE:-}" ]]; then
+# Baseline 日志（默认空串，避免 set -u 报错）
+if [[ -n "${BASELINE_FILE:-}" && -f "${BASELINE_FILE}" ]]; then
   info "本次 baseline 记录（$BASELINE_FILE）："
   awk -v start="$start_iso" '
     $0 ~ start,/^$/ {print}
@@ -198,13 +239,24 @@ info "飞书最新状态分布:"
 npx tsx src/cli/index.ts stats 2>&1 | tail -15 || true
 
 echo ""
-ok "实测完成！请按以下清单核对："
-echo "  [ ] 1. auto-greet 输出 succeeded/failed 数字合理"
-echo "  [ ] 2. 飞书对应 record 状态变为『已投递』"
-echo "  [ ] 3. BOSS 端 HR 收到打招呼消息（人工验证）"
-echo "  [ ] 4. LLM 生成的招呼语质量（人工 review）"
-echo "  [ ] 5. baseline 日志无 http_code 异常"
-echo ""
-info "如需排查："
-echo "  cat $BASELINE_FILE | tail -20"
-echo "  bash scripts/test-auto-greet.sh  # 重跑"
+if [[ "$DRY_RUN" == "true" ]]; then
+  ok "Dry-run 完成！请按以下清单核对："
+  echo "  [ ] 1. 输出包含『DRY RUN』横幅"
+  echo "  [ ] 2. 每条招呼语都展示了完整内容（人工 review 质量）"
+  echo "  [ ] 3. 飞书状态未变（仍是『待投递』）"
+  echo "  [ ] 4. 没有 BOSS 风控风险"
+  echo ""
+  info "确认招呼语质量后，可跑真实模式："
+  echo "  bash scripts/test-auto-greet.sh $LIMIT"
+else
+  ok "实测完成！请按以下清单核对："
+  echo "  [ ] 1. auto-greet 输出 succeeded/failed 数字合理"
+  echo "  [ ] 2. 飞书对应 record 状态变为『已投递』"
+  echo "  [ ] 3. BOSS 端 HR 收到打招呼消息（人工验证）"
+  echo "  [ ] 4. LLM 生成的招呼语质量（人工 review）"
+  echo "  [ ] 5. baseline 日志无 http_code 异常"
+  echo ""
+  info "如需排查："
+  echo "  cat $BASELINE_FILE | tail -20"
+  echo "  bash scripts/test-auto-greet.sh  # 重跑"
+fi

@@ -449,11 +449,13 @@ program
   .option('--update <recordId:status>', '更新单条记录，格式 recordId:新状态（如 rec_001:已沟通）')
   .option('--auto-greet', '批量调 BOSS 打招呼（只处理『待投递』岗位）')
   .option('--limit <n>', 'auto-greet 模式处理上限（默认 5）')
+  .option('--dry-run', 'auto-greet 演练模式：只生成招呼语 + 验证 LLM 输出，不真实发消息、不改飞书')
   .action(async (options: {
     status?: string
     update?: string
     autoGreet?: boolean
     limit?: string
+    dryRun?: boolean
   }) => {
     const start = Date.now()
 
@@ -511,6 +513,7 @@ program
       status: options.status ?? updateStatus,
       recordId: updateRecordId,
       limit: limitN,
+      dryRun: options.dryRun,
     })
 
     switch (result.action) {
@@ -538,16 +541,28 @@ program
         process.exit(SYNC_EXIT_CODE.ok)
       case 'auto-greet':
         console.log(chalk.cyan(result.formatted))
-        // auto-greet 用 sync 写 baseline（succeeded + failed 都记录）
-        writeBaselineRecordSync({
-          ts: new Date().toISOString(),
-          command: 'sync',
-          duration_ms: Date.now() - start,
-          http_code: null,
-          result_count: result.succeeded,
-          status: result.failed === 0 ? 'ok' : 'interrupted',
-          interrupted_reason: result.failed > 0 ? 'rate_limit' : undefined,
-        })
+        // dry-run：永远是 'ok'（dry-run 本来就是验证流程，发现错误是预期行为，不算 fail）
+        if (result.dryRun) {
+          writeBaselineRecordSync({
+            ts: new Date().toISOString(),
+            command: 'sync',
+            duration_ms: Date.now() - start,
+            http_code: null,
+            result_count: result.messages?.length ?? 0,
+            status: 'ok',
+          })
+        } else {
+          // 真实 auto-greet：succeeded+failed 都记录
+          writeBaselineRecordSync({
+            ts: new Date().toISOString(),
+            command: 'sync',
+            duration_ms: Date.now() - start,
+            http_code: null,
+            result_count: result.succeeded,
+            status: result.failed === 0 ? 'ok' : 'interrupted',
+            interrupted_reason: result.failed > 0 ? 'rate_limit' : undefined,
+          })
+        }
         process.exit(SYNC_EXIT_CODE['auto-greet'])
       case 'missing_config':
         console.log(chalk.yellow(`\n⚠️  ${result.reason}\n`))
