@@ -92,4 +92,6 @@ export interface AppConfig {
   browser: {
     chromiumPath?: string
   }
+  /** 评分阈值（search --write 命令使用，0~1） */
+  scoreThreshold: number
 }

@@ -9,13 +9,31 @@
 //   - 简历解析失败时整体直接返回 action: 'error'（无法打分）
 // ============================================================
 
-import type { Job, ResumeSummary } from '../../types/index.js'
+import type { ResumeSummary } from '../../types/index.js'
 import { scoreJob } from '../../scoring/index.js'
 import { ResumeNotFoundError, IncompleteResumeError } from '../../resume/md-fallback.js'
 
 // ============================================================
 // 类型定义
 // ============================================================
+
+/** BOSS 抓取的岗位原始格式（与 browser.SearchResult 对齐） */
+export interface SearchResultLite {
+  id: string
+  title: string
+  company: string
+  salary: string
+  city?: string
+  experience?: string
+  degree?: string
+  labels?: string[]
+  brandStage?: string
+  brandIndustry?: string
+  brandScale?: string
+  welfare?: string[]
+  skills?: string[]
+  link?: string
+}
 
 /** handler 入参 */
 export interface SearchWriteOptions {
@@ -49,7 +67,7 @@ export interface FeishuJobFields {
 
 /** 依赖注入（生产 vs 单测可换） */
 export interface SearchWriteDeps {
-  searchJobs: (keyword: string, city?: string) => Promise<Job[]>
+  searchJobs: (keyword: string, city?: string) => Promise<SearchResultLite[]>
   fetchJobDetail: (jobId: string) => Promise<string>
   scoreJob: (jd: string, summary: ResumeSummary, llm: unknown) => Promise<number>
   createRecord: (fields: FeishuJobFields) => Promise<{ record_id: string }>

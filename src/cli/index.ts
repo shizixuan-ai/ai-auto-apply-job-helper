@@ -190,16 +190,128 @@ program
 
 program
   .command('search')
-  .description('搜索岗位并展示列表')
+  .description('搜索岗位并展示列表（加 --write 进入 LLM 评分 + 写飞书模式）')
   .argument('<keyword>', '搜索关键词，如 "前端开发"')
   .option('-c, --city <city>', '城市，如 "北京"')
   .option('--headless', '无头模式运行', false)
   .option('--cdp', '通过 CDP 连接已有 Chrome')
-  .action(async (keyword: string, options: { city?: string; headless: boolean; cdp?: boolean }) => {
+  // ===== Sprint 1A 引入 =====
+  .option('--write', '真写飞书（不传 = 仅展示；与 --dry-run 互斥）', false)
+  .option('--dry-run', '走完整流程但 createRecord 是 no-op', false)
+  .option('--no-threshold', '不过滤（所有 scored 都算 passed）', false)
+  .option('-l, --limit <n>', '最多处理 N 个岗位', (v) => Number(v), 10)
+  .action(async (keyword: string, options: {
+    city?: string
+    headless: boolean
+    cdp?: boolean
+    write: boolean
+    dryRun: boolean
+    threshold: boolean      // commander 自动从 --no-threshold 派生
+    limit: number
+  }) => {
     const start = Date.now()
     let status: BaselineRecord['status'] = 'ok'
     let resultCount = 0
     const cdp = options.cdp ?? program.opts().cdp ?? false
+
+    // ===== Sprint 1A: --write / --dry-run 模式 =====
+    if (options.write || options.dryRun) {
+      if (options.write && options.dryRun) {
+        console.error(chalk.red('❌ --write 与 --dry-run 互斥，只能二选一'))
+        process.exit(2)
+      }
+
+      // 走 runSearchAndWrite 流程
+      const config = loadConfig()
+      // 写飞书前必须配 appToken/tableId（用 ?? 提供 fallback 让 TS narrow）
+      const appToken = config.feishu.appToken ?? ''
+      const tableId = config.feishu.tableId ?? ''
+      if (!appToken || !tableId) {
+        console.error(chalk.red('❌ --write / --dry-run 需要 FEISHU_APP_TOKEN 和 FEISHU_TABLE_ID（参考 .env.example）'))
+        process.exit(2)
+      }
+      const session = cdp
+        ? await createCDPSession()
+        : await createBrowserSession(!options.headless)
+      const page = session.page
+
+      try {
+        // 1) 搜索
+        const jobs = await searchJobs(page, keyword, options.city)
+        resultCount = jobs.length
+
+        // 2) 构造 deps
+        const llm = createLLM(config)
+        const { resolveResume } = await import('../resume/resolver.js')
+        const { scoreJob } = await import('../scoring/index.js')
+
+        const deps = {
+          searchJobs: async (_k: string, _c?: string) => jobs,   // 复用上面的搜索结果
+          fetchJobDetail: (id: string) => fetchJobDetail(page, id),
+          scoreJob: (jd: string, summary: any, _llm: unknown) => scoreJob(jd, summary, llm),
+          createRecord: async (fields: any) => {
+            // dryRun 走 no-op；write 走真写
+            if (options.dryRun) return { record_id: 'dry-run-noop' }
+            return createRecord(appToken, tableId, fields)
+          },
+          resolveResume: () => resolveResume(),
+          llm,
+          threshold: config.scoreThreshold,
+        }
+
+        // 3) 调 handler
+        const { runSearchAndWrite } = await import('../cli/handlers/search-and-write.js')
+        const result = await runSearchAndWrite(
+          {
+            keyword,
+            city: options.city,
+            write: options.write,        // dryRun 模式 opts.write = false
+            dryRun: options.dryRun,
+            noThreshold: !options.threshold,
+            limit: options.limit,
+          },
+          deps,
+        )
+
+        // 4) 打印报告
+        if (result.action === 'error') {
+          console.error(chalk.red(`❌ ${result.error}`))
+          status = 'fail'
+          process.exit(1)
+        }
+
+        console.log(chalk.cyan(`\n📊 搜索并评分结果 (mode=${options.write ? 'WRITE' : 'DRY-RUN'}):\n`))
+        console.log(`  总岗位: ${chalk.bold(result.total)}`)
+        console.log(`  评分成功: ${chalk.bold(result.scored)}`)
+        console.log(`  通过阈值 (${config.scoreThreshold}): ${chalk.green(result.passed)}`)
+        console.log(`  写入飞书: ${chalk.green(result.written)}`)
+        console.log(`  失败: ${chalk.red(result.failed)}`)
+        console.log(`  简历来源: ${result.resumeSource}`)
+        if (result.resumeWarnings.length) {
+          console.log(`  ${chalk.yellow('⚠️ 警告：')}`)
+          result.resumeWarnings.forEach((w) => console.log(`    - ${w}`))
+        }
+        if (options.dryRun) {
+          console.log(chalk.yellow(`\n💡 提示：当前是 --dry-run 模式，没真写飞书。加 --write 真写。`))
+        }
+      } catch (err: any) {
+        status = 'fail'
+        throw err
+      } finally {
+        await closeBrowserSession(session)
+        await writeBaselineRecord({
+          ts: new Date().toISOString(),
+          command: options.write ? 'search-write' : 'search-dry-run',
+          duration_ms: Date.now() - start,
+          http_code: null,
+          result_count: resultCount,
+          status,
+        })
+      }
+      return
+    }
+
+    // ===== 老逻辑：纯展示（无 --write / --dry-run）=====
     const session = cdp
       ? await createCDPSession()
       : await createBrowserSession(!options.headless)
