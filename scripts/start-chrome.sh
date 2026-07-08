@@ -109,21 +109,70 @@ ok "Chrome: $CHROME"
 # Step 3: 建临时 profile 目录
 # ============================================================
 PROFILE_DIR="$(mktemp -d -t chrome-cdp.XXXXXX)"
+# 2026-07-08 test-hook：把 PROFILE_DIR 写到固定文件供 test-start-chrome-trap.sh 读取
+# （写在 banner 之后，trap 启动之前 —— 此时 PROFILE_DIR 已确定）
 ok "临时 profile: $PROFILE_DIR"
+echo "${PROFILE_DIR}" > /tmp/chrome-start.profile 2>/dev/null || true
 
-# 异常退出 trap：清理临时 profile（含 BOSS session cookie —— 敏感数据不残留磁盘）
-cleanup_on_exit() {
-  local exit_code=$?
-  if [[ -n "${CHROME_PID:-}" ]] && kill -0 "${CHROME_PID}" 2>/dev/null; then
-    kill "${CHROME_PID}" 2>/dev/null || true
-    rm -f "${PID_FILE}" 2>/dev/null || true
+# trap：分两种清理策略
+#   - 正常 EXIT 0（脚本成功）：保留 Chrome + profile 给用户登录用（脚本本意）
+#   - 失败 EXIT !=0 / INT / TERM：必须清理（含 BOSS cookie 不残留磁盘）
+#
+# 2026-07-08 audit fix v2 (PreCommit hook 捕获的 critical bug)：
+#   trap 'func' EXIT INT TERM 这种写法里，func 里的 `$?` 是 trap 触发前
+#   最后一条命令的 exit code，**不是** signal exit code。
+#   当父进程用 `kill -INT $script_pid` 杀我们的 bash 时，trap 触发，
+#   但 `$?` 是 trap 链中前一步的 0，导致 cleanup 跳过 → BOSS cookie 泄漏
+#
+#   修复：分离 EXIT trap vs 信号 trap。信号 handler 强制退出码
+#         （POSIX 128+signal: INT=130, TERM=143）
+
+# 单一 cleanup 函数：是否清理 Chrome+profile 由参数决定
+do_cleanup() {
+  local kill_browser="$1"   # "kill" 或 "keep"
+  # TMP_VER 总是清（不含敏感数据）
+  [[ -n "${TMP_VER:-}" && -f "${TMP_VER}" ]] && rm -f "${TMP_VER}" 2>/dev/null || true
+  if [[ "$kill_browser" == "kill" ]]; then
+    if [[ -n "${CHROME_PID:-}" ]] && kill -0 "${CHROME_PID}" 2>/dev/null; then
+      kill "${CHROME_PID}" 2>/dev/null || true
+      rm -f "${PID_FILE}" 2>/dev/null || true
+    fi
+    if [[ -n "${PROFILE_DIR:-}" && -d "${PROFILE_DIR}" ]]; then
+      rm -rf "${PROFILE_DIR}" 2>/dev/null || true
+      warn "已清理临时 profile"
+    fi
   fi
-  if [[ -n "${PROFILE_DIR:-}" && -d "${PROFILE_DIR}" ]]; then
-    rm -rf "${PROFILE_DIR}" 2>/dev/null || true
-  fi
-  exit "${exit_code}"
 }
-trap cleanup_on_exit EXIT INT TERM
+
+on_success_exit() {
+  do_cleanup keep
+  exit 0
+}
+
+on_signal() {
+  local sig="$1"
+  do_cleanup kill
+  case "$sig" in
+    INT)  exit 130 ;;
+    TERM) exit 143 ;;
+    *)    exit 1   ;;
+  esac
+}
+
+# 失败的非 0 exit（如端口被占）：EXIT trap 触发，但要 kill
+on_failure_exit() {
+  local code=$?
+  do_cleanup kill
+  exit "$code"
+}
+
+# EXIT trap: 通过 LAUNCH_OK 这个全局状态决定保留还是清理
+#   LAUNCH_OK 在 banner 打印时设为 1（脚本成功到达那一步）
+#   所有 early-exit 的 exit 1 路径 LAUNCH_OK 仍是 0 → 走 on_failure_exit
+#   注意：bash trap 不支持多个 EXIT trap，但单个 trap 内 if 分支等价于多个
+trap '[[ "${LAUNCH_OK:-0}" -eq 1 ]] && on_success_exit || on_failure_exit' EXIT
+trap 'on_signal INT'  INT
+trap 'on_signal TERM' TERM
 
 # ============================================================
 # Step 4: 后台拉起 Chrome
@@ -156,7 +205,8 @@ info "等待 CDP 就绪 (timeout ${PROBE_TIMEOUT_SEC}s)..."
 deadline=$(( $(date +%s) + PROBE_TIMEOUT_SEC ))
 WS_URL=""
 TMP_VER="$(mktemp -t cdp-version.XXXXXX.json)"
-trap 'rm -f "${TMP_VER:-}"' EXIT
+# 2026-07-08 audit fix：删除原 `trap 'rm -f TMP_VER' EXIT` —— 它会覆盖 line 131 的 cleanup_on_exit
+# （bash trap 默认覆盖），导致 PROFILE_DIR/BOSS cookie 残留。TMP_VER 现在由 cleanup_on_exit 统一清理。
 
 while [[ $(date +%s) -lt $deadline ]]; do
   # --max-time 3 容忍 Chrome accept 后第一次响应慢（带 BOSS 首页 + WebSocket warmup）
@@ -193,6 +243,10 @@ if [[ -z "$WS_URL" ]]; then
   exit 1
 fi
 ok "CDP 就绪: $WS_URL"
+
+# 标记：脚本成功完成 CDP 探测 → EXIT trap 走"保留 Chrome"路径
+# （必须在 exit 0 之前赋值；不可在脚本末尾第一行）
+LAUNCH_OK=1
 
 # ============================================================
 # Step 6: 打印下一步指引
