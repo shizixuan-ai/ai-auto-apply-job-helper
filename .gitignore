@@ -44,3 +44,11 @@ npm-debug.log*
 
 # Literal tilde directory (shell ~ expansion artifact, contains .boss-chrome/)
 ~/
+
+# Hook 备份（Write hook 自动创建 xx.copy.example，不应 commit）
+*.copy.example
+*.copy.md
+
+# 用户真实简历（个人隐私，不 commit；项目保留 简历.md.example 模板）
+简历.md
+

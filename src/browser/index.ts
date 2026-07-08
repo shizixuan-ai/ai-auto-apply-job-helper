@@ -550,7 +550,32 @@ export const JD_SELECTORS: ReadonlyArray<string> = [
 /** 单个选择器独立超时（不要和 page.goto 的 30s 串行） */
 const JD_SELECTOR_TIMEOUT_MS = 3_000
 
-export async function fetchJobDetail(page: any, jobId: string): Promise<string> {
+export async function fetchJobDetail(page: any, jobId: string, opts: { throttleMs?: number } = {}): Promise<string> {
+  // ============================================================
+  // Sprint 1A 修复 P0：先试 wapi JSON（带 cookie），失败再降级 page.goto
+  // 原因：page.goto 高频触发 BOSS _security_check 反爬拦截
+  // ============================================================
+
+  // 尝试 1：wapi JSON（在 BOSS 域内 fetch，带页面 cookie + UA）
+  try {
+    const jdFromWapi = await fetchJobDetailViaWapi(page, jobId)
+    if (jdFromWapi && jdFromWapi.length > 0) {
+      return jdFromWapi
+    }
+    // wapi 返了但 jobDesc 为空 → 降级
+  } catch (err) {
+    // wapi 失败（无 zp_token / 网络 / 解析）→ 降级到 page.goto
+    // 不静默吞：Sprint 1A 假绿零容忍
+    const msg = err instanceof Error ? err.message : String(err)
+    console.warn(`[fetchJobDetail] wapi 失败，降级到 page.goto: ${msg}`)
+  }
+
+  // 尝试 2：降级到 page.goto + 限速（默认 3000ms，缓解反爬）
+  // 测试时传 throttleMs: 0 跳过 sleep
+  const throttleMs = opts.throttleMs ?? 3000
+  if (throttleMs > 0) {
+    await sleep(throttleMs)
+  }
   const fullUrl = `https://www.zhipin.com/job_detail/${jobId}.html`
   await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 })
 
@@ -585,6 +610,49 @@ export async function fetchJobDetail(page: any, jobId: string): Promise<string> 
       `  可能原因：(1) BOSS 又改 HTML（跑 scripts/probe-boss-selectors.sh 找新选择器）` +
       ` (2) jobId 无效/岗位已下架 (3) 登录态失效`,
   )
+}
+
+/**
+ * Sprint 1A P0 修复：通过 BOSS wapi JSON 抓取 JD（在 BOSS 域内 fetch，带 cookie）
+ * 避免 page.goto 触发 _security_check 反爬
+ *
+ * 端点：/wapi/zpgeek/job/detail.json?jobId=XXX
+ * 关键：
+ *   - 必须在 BOSS 域内 fetch（CORS + cookie 限制）
+ *   - 需要 zp_token cookie（搜索页就带）
+ *   - 返 JSON：{ zpData: { jobDetail: { jobDesc: "..." } } }
+ */
+async function fetchJobDetailViaWapi(page: any, jobId: string): Promise<string> {
+  // 在 BOSS 域内 fetch（page.evaluate 内 this = window）
+  const result = await page.evaluate(async (jobId: string) => {
+    try {
+      const resp = await fetch(`/wapi/zpgeek/job/detail.json?jobId=${encodeURIComponent(jobId)}`, {
+        credentials: 'include',  // 带 cookie
+        headers: { Accept: 'application/json' },
+      })
+      if (!resp.ok) {
+        return { ok: false, error: `HTTP ${resp.status}` }
+      }
+      const data: any = await resp.json()
+      const jd = data?.zpData?.jobDetail?.jobDesc
+      if (typeof jd !== 'string' || jd.length === 0) {
+        return { ok: false, error: 'jobDesc 字段缺失或为空' }
+      }
+      return { ok: true, jd }
+    } catch (e: any) {
+      return { ok: false, error: e?.message ?? String(e) }
+    }
+  }, jobId)
+
+  if (!result?.ok) {
+    throw new Error(result?.error ?? 'wapi 返回未知错误')
+  }
+  return result.jd
+}
+
+/** 简单的 sleep（不用 setTimeout 包装为了类型清晰） */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 // ============================================================

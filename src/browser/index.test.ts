@@ -25,7 +25,8 @@ function makeMockPage() {
     $eval: vi.fn().mockResolvedValue(''),
     $: vi.fn().mockResolvedValue(null), // probe 不命中任何 selector
     click: vi.fn().mockResolvedValue(undefined),
-    evaluate: vi.fn().mockResolvedValue({ code: 0, zpData: { jobList: [] } }),
+    // wapi 调用默认返 ok=false（jobDesc 缺失），触发降级到 page.goto
+    evaluate: vi.fn().mockResolvedValue({ ok: false, error: 'jobDesc 字段缺失或为空' }),
     mouse: { move: vi.fn().mockResolvedValue(undefined) },
     focus: vi.fn().mockResolvedValue(undefined),
     keyboard: {
@@ -156,11 +157,12 @@ describe('fetchJobDetail — fallback selector 链', () => {
     page.waitForSelector = vi.fn().mockRejectedValue(new Error('Timeout'))
     page.$eval = vi.fn().mockRejectedValue(new Error('not found'))
 
-    await expect(fetchJobDetail(page as any, 'BAD_JOB')).rejects.toThrow(
+    // 传 throttleMs: 0 跳过限速 sleep（生产 3000ms 限速是为了反爬）
+    await expect(fetchJobDetail(page as any, 'BAD_JOB', { throttleMs: 0 })).rejects.toThrow(
       /job_detail\/BAD_JOB\.html/,
     )
     // 验证错误消息包含尝试过的选择器列表（让用户能立刻定位是哪个 selector 失效）
-    await expect(fetchJobDetail(page as any, 'BAD_JOB')).rejects.toThrow(
+    await expect(fetchJobDetail(page as any, 'BAD_JOB', { throttleMs: 0 })).rejects.toThrow(
       /\.job-sec-text.*job-detail-section/s,
     )
   })

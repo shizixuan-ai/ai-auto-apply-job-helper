@@ -164,8 +164,10 @@ export async function runSearchAndWrite(
       written++
     } catch (err) {
       failed++
-      // 不阻塞整体，继续下一个 job
-      // 错误详情由调用方日志层记录（后续 Sprint 1B 接入 pino）
+      // Sprint 1A 修复 P0：不能静默吞错（用户报"全部失败看不到原因"）
+      // 1B 接入 pino 后替换为结构化日志
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error(`[runSearchAndWrite] job=${job.id} (${job.title}) failed: ${msg}`)
     }
   }
 
