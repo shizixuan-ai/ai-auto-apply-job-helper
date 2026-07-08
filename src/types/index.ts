@@ -19,6 +19,28 @@ export interface Job {
   status: ApplyStatus
   createdAt: string
   updatedAt: string
+  // BOSS 扩展字段（可选，老 Job fixture 不带也不报错）
+  city?: string
+  experience?: string
+  degree?: string
+  /** 原始 BOSS encryptedId（同 id，但语义清晰） */
+  bossId?: string
+  /** 招聘方 HR 名字 */
+  hrName?: string
+  /** 招聘方 HR 在线状态 */
+  hrOnline?: boolean
+  /** 公司融资阶段 */
+  brandStage?: string
+  /** 公司行业 */
+  brandIndustry?: string
+  /** 公司规模 */
+  brandScale?: string
+  /** 技能标签 */
+  skills?: string[]
+  /** 福利标签 */
+  welfare?: string[]
+  /** 原始链接 */
+  link?: string
 }
 
 /** 话术记录 */

@@ -14,9 +14,10 @@
 import { describe, it, expect, vi } from 'vitest'
 
 import { runSearchAndWrite } from './search-and-write.js'
+import type { Job } from '../../types/index.js'
 
 // ============================================================
-// Fixture: 2 个 job
+// Fixture: 2 个 job（强制类型为 Job，省略必填字段以聚焦测试）
 // ============================================================
 
 const JOB_A = {
@@ -27,14 +28,13 @@ const JOB_A = {
   city: '杭州',
   experience: '3-5 年',
   degree: '本科',
-  labels: [],
   brandStage: '',
   brandIndustry: '',
   brandScale: '',
   welfare: [],
   skills: [],
   link: '',
-}
+} as unknown as Job
 
 const JOB_B = {
   ...JOB_A,
@@ -90,6 +90,8 @@ describe('runSearchAndWrite', () => {
 
     // Assert
     expect(result.action).toBe('ok')
+    if (result.action !== 'ok') throw new Error('result is not ok')
+
     expect(result.total).toBe(2)
     expect(result.failed).toBe(1)     // jobA 失败
     expect(result.scored).toBe(1)     // jobB 评分成功

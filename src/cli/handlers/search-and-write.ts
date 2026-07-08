@@ -136,7 +136,7 @@ export async function runSearchAndWrite(
         title: job.title,
         company: job.company,
         salary: job.salary,
-        city: job.city,
+        city: job.city ?? '',
         score,
         reason: reason.slice(0, REASON_MAX),
         jd_snippet: jd.slice(0, JD_SNIPPET_MAX),
