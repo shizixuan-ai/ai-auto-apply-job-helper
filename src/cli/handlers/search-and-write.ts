@@ -52,17 +52,18 @@ export interface ResumeResolution {
   warnings: string[]
 }
 
-/** 飞书写入字段（核心字段） */
+/** 飞书写入字段（中文字段名，与飞书表 init-feishu.sh 字段定义一致） */
 export interface FeishuJobFields {
+  职位: string
+  公司: string
   BOSS_ID: string
-  title: string
-  company: string
-  salary?: string
-  city?: string
-  score: number
-  reason: string
-  jd_snippet: string
-  matchedAt: string
+  薪资?: string
+  城市?: string
+  分数: number
+  匹配原因: string
+  JD摘要: string
+  /** 飞书日期字段要毫秒时间戳（不是 ISO 字符串） */
+  匹配时间: number
 }
 
 /** 依赖注入（生产 vs 单测可换） */
@@ -150,15 +151,16 @@ export async function runSearchAndWrite(
 
       const reason = `score=${score.toFixed(2)}`
       const fields: FeishuJobFields = {
+        职位: job.title,
+        公司: job.company,
         BOSS_ID: job.id,
-        title: job.title,
-        company: job.company,
-        salary: job.salary,
-        city: job.city ?? '',
-        score,
-        reason: reason.slice(0, REASON_MAX),
-        jd_snippet: jd.slice(0, JD_SNIPPET_MAX),
-        matchedAt: new Date().toISOString(),
+        薪资: job.salary ?? '',
+        城市: job.city ?? '',
+        分数: score,
+        匹配原因: reason.slice(0, REASON_MAX),
+        JD摘要: jd.slice(0, JD_SNIPPET_MAX),
+        // 飞书日期字段要毫秒时间戳（不是 ISO 字符串）
+        匹配时间: Date.now(),
       }
       await deps.createRecord(fields)
       written++

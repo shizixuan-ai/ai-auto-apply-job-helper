@@ -103,5 +103,20 @@ describe('runSearchAndWrite', () => {
     expect(deps.createRecord).toHaveBeenCalledWith(
       expect.objectContaining({ BOSS_ID: 'jobB_encryptedId' }),
     )
+    expect(deps.createRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ 职位: '资深前端架构师' }),
+    )
+    // 假绿防御：必须断言 4 个新字段（公司/分数/匹配原因/JD摘要/匹配时间）
+    expect(deps.createRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        公司: '字节',
+        分数: 0.92,
+        匹配原因: 'score=0.92',
+        匹配时间: expect.any(Number),
+      }),
+    )
+    // JD摘要 是 jd 字符串前 200 字（test fixture 中 jobB 的 jd='JD for B'）
+    const actualCall = (deps.createRecord as any).mock.calls[0][0]
+    expect(actualCall.JD摘要).toBe('JD for B')
   })
 })

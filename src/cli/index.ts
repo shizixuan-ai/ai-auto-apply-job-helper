@@ -198,7 +198,7 @@ program
   // ===== Sprint 1A 引入 =====
   .option('--write', '真写飞书（不传 = 仅展示；与 --dry-run 互斥）', false)
   .option('--dry-run', '走完整流程但 createRecord 是 no-op', false)
-  .option('--no-threshold', '不过滤（所有 scored 都算 passed）', false)
+  .option('--no-threshold', '不过滤（所有 scored 都算 passed，不写 BOSS）')
   .option('-l, --limit <n>', '最多处理 N 个岗位', (v) => Number(v), 10)
   .action(async (keyword: string, options: {
     city?: string
@@ -267,7 +267,7 @@ program
             city: options.city,
             write: options.write,        // dryRun 模式 opts.write = false
             dryRun: options.dryRun,
-            noThreshold: !options.threshold,
+            noThreshold: options.threshold === false,
             limit: options.limit,
           },
           deps,
