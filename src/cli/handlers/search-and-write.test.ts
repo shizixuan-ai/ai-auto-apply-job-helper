@@ -63,14 +63,16 @@ describe('runSearchAndWrite', () => {
       fetchJobDetail: vi.fn(async (jobId: string) =>
         jobId === 'jobA_encryptedId' ? 'JD for A' : 'JD for B',
       ),
-      scoreJob: vi.fn(async (jobId: string) => {
-        if (jobId === 'jobA_encryptedId') {
+      scoreJob: vi.fn(async (jd: string) => {
+        if (jd === 'JD for A') {
           throw new Error('LLM 返回无效 JSON')
         }
         return 0.92 // jobB 通过
       }),
       createRecord: vi.fn(async () => ({ record_id: 'rec_new' })),
       resolveResume: vi.fn(async () => ({ summary: SAMPLE_RESUME, source: 'md' as const, warnings: [] })),
+      llm: {} as unknown,                          // 占位（scoreJob deps 不真用）
+      threshold: 0.85,
     }
 
     // Act
