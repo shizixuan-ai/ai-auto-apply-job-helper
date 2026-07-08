@@ -37,6 +37,15 @@ export interface FeishuRecord {
   fields: Record<string, unknown>
 }
 
+/** 简历摘要（Sprint 1A 引入，供 scoring/greet 共用） */
+export interface ResumeSummary {
+  name?: string
+  yearsOfExperience?: number
+  education?: string
+  skills?: string[]
+  recentProjects?: string[]
+}
+
 /** 应用配置 */
 export interface AppConfig {
   feishu: {
