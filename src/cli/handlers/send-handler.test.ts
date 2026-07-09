@@ -26,8 +26,9 @@ function makeDeps(overrides: Partial<{
   sendGreeting: any
   createSession: any
   closeSession: any
+  writeGreetingStatus: any
 }> = {}) {
-  const sendGreeting = overrides.sendGreeting ?? vi.fn().mockResolvedValue(true)
+  const sendGreeting = overrides.sendGreeting ?? vi.fn().mockResolvedValue({ action: 'sent', friendId: 'f_default' })
   const session = {
     page: { mockPage: true },
     browser: { close: vi.fn().mockResolvedValue(undefined) },
@@ -38,7 +39,9 @@ function makeDeps(overrides: Partial<{
     overrides.createSession ?? vi.fn().mockResolvedValue(session)
   const closeSession =
     overrides.closeSession ?? vi.fn().mockResolvedValue(undefined)
-  return { sendGreeting, createSession, closeSession }
+  const writeGreetingStatus =
+    overrides.writeGreetingStatus ?? vi.fn().mockResolvedValue(undefined)
+  return { sendGreeting, createSession, closeSession, writeGreetingStatus }
 }
 
 function makeGuardDecision(action: 'abort_today' | 'abort', reason: string) {
@@ -66,17 +69,17 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
     const { runSendCommand } = await import('./send-handler.js')
 
     const result = await runSendCommand(
-      { jobId: 'j1', message: '你好' },
+      { jobId: 'j1', hrUid: 'hr_test', message: '你好' },
       deps,
     )
 
     expect(result.action).toBe('ok')
     expect(result.reason).toMatch(/成功/)
-    // Sprint 2A.1: 4 参数签名（hrId 暂传 '' 占位）
+    // Sprint 2A.2: 4 参数签名（hrUid 来自 opts）
     expect(deps.sendGreeting).toHaveBeenCalledWith(
       { mockPage: true },
       'j1',
-      '',
+      'hr_test',
       '你好',
     )
   })
@@ -85,12 +88,28 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
     const deps = makeDeps()
     const { runSendCommand } = await import('./send-handler.js')
 
-    const result = await runSendCommand({ jobId: 'j1' }, deps)
+    const result = await runSendCommand({ jobId: 'j1', hrUid: 'hr_test' }, deps)
 
     expect(result.action).toBe('invalid_args')
     expect(result.reason).toMatch(/请通过 -m/)
     expect(deps.sendGreeting).not.toHaveBeenCalled()
     // invalid_args 也不该创建 session
+    expect(deps.createSession).not.toHaveBeenCalled()
+  })
+
+  it('Sprint 2A.2: 缺 hrUid → action="invalid_args" 且不调 sendGreeting', async () => {
+    const deps = makeDeps()
+    const { runSendCommand } = await import('./send-handler.js')
+
+    // cast: 故意省略 hrUid 以触发 invalid_args
+    const result = await runSendCommand(
+      { jobId: 'j1', message: 'hi' } as any,
+      deps,
+    )
+
+    expect(result.action).toBe('invalid_args')
+    expect(result.reason).toMatch(/-u/)
+    expect(deps.sendGreeting).not.toHaveBeenCalled()
     expect(deps.createSession).not.toHaveBeenCalled()
   })
 
@@ -102,7 +121,7 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
     const { runSendCommand } = await import('./send-handler.js')
 
     const result = await runSendCommand(
-      { jobId: 'j1', message: 'hi' },
+      { jobId: 'j1', hrUid: 'hr_test', message: 'hi' },
       deps,
     )
 
@@ -119,7 +138,7 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
     const { runSendCommand } = await import('./send-handler.js')
 
     const result = await runSendCommand(
-      { jobId: 'j1', message: 'hi' },
+      { jobId: 'j1', hrUid: 'hr_test', message: 'hi' },
       deps,
     )
 
@@ -134,7 +153,7 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
     const { runSendCommand } = await import('./send-handler.js')
 
     const result = await runSendCommand(
-      { jobId: 'j1', message: 'hi' },
+      { jobId: 'j1', hrUid: 'hr_test', message: 'hi' },
       deps,
     )
 
@@ -150,7 +169,7 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
     const { runSendCommand } = await import('./send-handler.js')
 
     const result = await runSendCommand(
-      { jobId: 'j1', message: 'hi' },
+      { jobId: 'j1', hrUid: 'hr_test', message: 'hi' },
       deps,
     )
 
@@ -164,7 +183,7 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
     })
     const { runSendCommand } = await import('./send-handler.js')
 
-    await runSendCommand({ jobId: 'j1', message: 'hi' }, deps)
+    await runSendCommand({ jobId: 'j1', hrUid: 'hr_test', message: 'hi' }, deps)
 
     expect(deps.closeSession).toHaveBeenCalledTimes(1)
   })
@@ -176,7 +195,7 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
     })
     const { runSendCommand } = await import('./send-handler.js')
 
-    await runSendCommand({ jobId: 'j1', message: 'hi' }, deps)
+    await runSendCommand({ jobId: 'j1', hrUid: 'hr_test', message: 'hi' }, deps)
 
     // 关键：即使 GuardError 抛出，session 必须清理（防 Chrome 泄漏）
     expect(deps.closeSession).toHaveBeenCalledTimes(1)
@@ -186,7 +205,7 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
     const deps = makeDeps()
     const { runSendCommand } = await import('./send-handler.js')
 
-    await runSendCommand({ jobId: 'j1', message: 'hi', cdp: true }, deps)
+    await runSendCommand({ jobId: 'j1', hrUid: 'hr_test', message: 'hi', cdp: true }, deps)
 
     expect(deps.createSession).toHaveBeenCalledWith(true)
   })
@@ -195,8 +214,108 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
     const deps = makeDeps()
     const { runSendCommand } = await import('./send-handler.js')
 
-    await runSendCommand({ jobId: 'j1', message: 'hi' }, deps)
+    await runSendCommand({ jobId: 'j1', hrUid: 'hr_test', message: 'hi' }, deps)
 
     expect(deps.createSession).toHaveBeenCalledWith(false)
+  })
+})
+
+// ============================================================
+// Sprint 2A.2: Feishu writeback 测试（3 个新测试）
+// ============================================================
+
+describe('runSendCommand — Sprint 2A.2: Feishu writeback', () => {
+  it('有 recordId + sendGreeting sent → writeGreetingStatus 被调，参数含 (recordId, "sent", any timestamp)', async () => {
+    const deps = makeDeps({
+      sendGreeting: vi.fn().mockResolvedValue({ action: 'sent', friendId: 'f_1' }),
+      writeGreetingStatus: vi.fn().mockResolvedValue(undefined),
+    })
+    const { runSendCommand } = await import('./send-handler.js')
+
+    const result = await runSendCommand(
+      { jobId: 'j1', hrUid: 'hr_test', message: 'hi', recordId: 'rec_001' },
+      deps,
+    )
+
+    expect(result.action).toBe('ok')
+    expect(result.reason).toMatch(/飞书已更新/)
+    expect(deps.writeGreetingStatus).toHaveBeenCalledTimes(1)
+    expect(deps.writeGreetingStatus).toHaveBeenCalledWith(
+      'rec_001',
+      'sent',
+      expect.any(Number),
+    )
+  })
+
+  it('有 recordId + sendGreeting failed → writeGreetingStatus 被调，参数含 (recordId, "failed", any timestamp)', async () => {
+    const deps = makeDeps({
+      sendGreeting: vi.fn().mockResolvedValue({ action: 'failed', error: 'BOSS 拒绝' }),
+      writeGreetingStatus: vi.fn().mockResolvedValue(undefined),
+    })
+    const { runSendCommand } = await import('./send-handler.js')
+
+    const result = await runSendCommand(
+      { jobId: 'j1', hrUid: 'hr_test', message: 'hi', recordId: 'rec_002' },
+      deps,
+    )
+
+    expect(result.action).toBe('failed')
+    expect(result.reason).toMatch(/飞书已更新/)
+    expect(deps.writeGreetingStatus).toHaveBeenCalledWith(
+      'rec_002',
+      'failed',
+      expect.any(Number),
+    )
+  })
+
+  it('无 recordId → writeGreetingStatus 不被调', async () => {
+    const deps = makeDeps({
+      sendGreeting: vi.fn().mockResolvedValue({ action: 'sent' }),
+      writeGreetingStatus: vi.fn().mockResolvedValue(undefined),
+    })
+    const { runSendCommand } = await import('./send-handler.js')
+
+    await runSendCommand(
+      { jobId: 'j1', hrUid: 'hr_test', message: 'hi' },
+      deps,
+    )
+
+    expect(deps.writeGreetingStatus).not.toHaveBeenCalled()
+  })
+
+  it('writeGreetingStatus 抛错 → send 主流程不阻塞，result.reason 标注失败', async () => {
+    const deps = makeDeps({
+      sendGreeting: vi.fn().mockResolvedValue({ action: 'sent', friendId: 'f_1' }),
+      writeGreetingStatus: vi.fn().mockRejectedValue(new Error('飞书 API 限流')),
+    })
+    const { runSendCommand } = await import('./send-handler.js')
+
+    const result = await runSendCommand(
+      { jobId: 'j1', hrUid: 'hr_test', message: 'hi', recordId: 'rec_003' },
+      deps,
+    )
+
+    // 主流程仍返回 ok（sendGreeting 成功），飞书写入失败仅在 reason 标注
+    expect(result.action).toBe('ok')
+    expect(result.reason).toMatch(/飞书写入失败/)
+    expect(result.reason).toMatch(/飞书 API 限流/)
+  })
+
+  it('GuardError(abort_today) 时 writeGreetingStatus 不被调（未真发打招呼）', async () => {
+    const decision = makeGuardDecision('abort_today', '今日上限')
+    const deps = makeDeps({
+      sendGreeting: vi.fn().mockRejectedValue(new GuardError(decision)),
+      writeGreetingStatus: vi.fn().mockResolvedValue(undefined),
+    })
+    const { runSendCommand } = await import('./send-handler.js')
+
+    const result = await runSendCommand(
+      { jobId: 'j1', hrUid: 'hr_test', message: 'hi', recordId: 'rec_004' },
+      deps,
+    )
+
+    expect(result.action).toBe('abort_today')
+    // 风控时未真发，不应写飞书
+    expect(deps.writeGreetingStatus).not.toHaveBeenCalled()
   })
 })

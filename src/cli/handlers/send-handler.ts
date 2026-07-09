@@ -27,6 +27,16 @@ import {
   sendGreeting,
   type SendGreetingResult,
 } from '../../browser/index.js'
+import type { GreetStatus } from '../../types/index.js'
+
+/** GreetStatus → 飞书"打招呼状态"单选中文 label 映射（与 add-sprint-2a-fields.mjs options 严格对齐） */
+const STATUS_LABEL: Record<GreetStatus, string> = {
+  pending: '待发送',
+  sent: '已发送',
+  failed: '失败',
+  rate_limited: '触发限额',
+  security_blocked: '风控拦截',
+}
 
 // ============================================================
 // 类型
@@ -35,8 +45,12 @@ import {
 export interface SendCommandOptions {
   /** 岗位 ID（encryptJobId） */
   jobId: string
+  /** 招聘方 HR 加密 uid（friend/add 第二参数 uid） */
+  hrUid: string
   /** 话术内容（-m / --message） */
   message?: string
+  /** 飞书记录 ID（如果有，写回打招呼状态） */
+  recordId?: string
   /** 是否通过 CDP 连接已有 Chrome */
   cdp?: boolean
 }
@@ -54,6 +68,19 @@ export interface SendCommandDeps {
   ) => Promise<SendGreetingResult>
   createSession?: (cdp: boolean) => Promise<any>
   closeSession?: (session: any) => Promise<void>
+  /**
+   * 写飞书记录（Sprint 2A.2）
+   *   - recordId: 飞书记录 ID
+   *   - status: 5 状态 GreetStatus
+   *   - greetedAt: 毫秒时间戳
+   *   - 由 CLI 层包装 updateRecord(config.feishu.appToken, tableId, ...)
+   *   - 失败不阻塞 send 主流程（仅 console.error + 写到 result.reason）
+   */
+  writeGreetingStatus?: (
+    recordId: string,
+    status: GreetStatus,
+    greetedAt: number,
+  ) => Promise<unknown>
 }
 
 export type SendCommandAction =
@@ -83,6 +110,12 @@ export async function runSendCommand(
       reason: '请通过 -m 指定话术内容',
     }
   }
+  if (!opts.hrUid) {
+    return {
+      action: 'invalid_args',
+      reason: '请通过 -u 指定 HR 加密 uid（friend/add 第二参数）',
+    }
+  }
 
   // 2. 注入式依赖（默认走真实实现）
   const sendGreetingFn = deps.sendGreeting ?? sendGreeting
@@ -91,26 +124,16 @@ export async function runSendCommand(
 
   // 3. 创建 session + 执行 + 清理（finally 兜底防 Chrome 泄漏）
   const session = await createSessionFn(opts.cdp ?? false)
+  let sendResult: SendGreetingResult | null = null
   try {
-    // Sprint 2A.1: 4 参数签名（hrId 暂传 '' 占位）。Sprint 2A.2 会从 job/CLI 拿真实值。
-    const result = await sendGreetingFn(session.page, opts.jobId, '', opts.message)
-
-    // Sprint 2A 5 状态映射：
-    //   - sent → ok
-    //   - failed / rate_limited / security_blocked → failed（单 job 失败路径）
-    //     按用户决策：rate_limit 和 security_blocked 不再中断今日任务
-    if (result.action === 'sent') {
-      return { action: 'ok', reason: `发送成功（friendId=${result.friendId ?? 'n/a'}）` }
-    }
-    return {
-      action: 'failed',
-      reason: `发送失败（${result.action}）：${result.error ?? '未知'}`,
-    }
+    // Sprint 2A.2: 4 参数签名（hrUid 从 opts 拿，CLI 通过 -u 透传）
+    sendResult = await sendGreetingFn(session.page, opts.jobId, opts.hrUid, opts.message)
   } catch (err) {
     // P0 fix: GuardError 必须捕获 → 透传为同 action 的 result
     if (err instanceof GuardError) {
       const a = err.decision.action
       if (a === 'abort_today' || a === 'abort') {
+        // 风控触发时：未真正发起打招呼，不写飞书
         return {
           action: a,
           reason: err.decision.reason,
@@ -118,22 +141,43 @@ export async function runSendCommand(
       }
     }
     // 非 GuardError：业务错误（如 navigation timeout / page closed）
+    // → 标记为 failed，让飞书记录显示"失败"（如果 recordId 提供）
     const msg = err instanceof Error ? err.message : String(err)
-    return {
-      action: 'failed',
-      reason: `发送失败：${msg}`,
-    }
+    sendResult = { action: 'failed', error: msg }
   } finally {
     // closeSession 抛错不能掩盖原始 error（业务/GuardError）
     try {
       await closeSessionFn(session)
     } catch (closeErr) {
-      // 只在没业务错误时才抛 closeErr；否则静默（保留原始 error）
-      // （无法直接检测"是否有原始 error"，因为 catch 已经处理掉了——靠调用方感知）
-      // 选择保守策略：close 错误降级为 console.warn，不抛
       const msg = closeErr instanceof Error ? closeErr.message : String(closeErr)
       console.warn(`[send-handler] closeSession 失败（已忽略）: ${msg}`)
     }
+  }
+
+  // 4. Sprint 2A.2: 写飞书（如有 recordId）
+  //   - 写失败不阻塞 send 主流程（仅 console.error + 在 reason 标注）
+  let writebackNote = ''
+  if (sendResult && opts.recordId && deps.writeGreetingStatus) {
+    try {
+      await deps.writeGreetingStatus(opts.recordId, sendResult.action, Date.now())
+      writebackNote = '（飞书已更新）'
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error(`[send-handler] 写飞书失败（已忽略）: ${msg}`)
+      writebackNote = `（飞书写入失败: ${msg}）`
+    }
+  }
+
+  // 5. 5 状态 → 4 SendCommandAction 映射
+  if (sendResult.action === 'sent') {
+    return {
+      action: 'ok',
+      reason: `发送成功（friendId=${sendResult.friendId ?? 'n/a'}）${writebackNote}`,
+    }
+  }
+  return {
+    action: 'failed',
+    reason: `发送失败（${sendResult.action}）：${sendResult.error ?? '未知'}${writebackNote}`,
   }
 }
 

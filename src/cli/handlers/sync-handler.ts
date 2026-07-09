@@ -211,7 +211,16 @@ export async function runSyncCommand(
         }
 
         // Step 2: 发送招呼
-        const sendResult = await runSendCommand({ jobId, message, cdp: false })
+        // TODO Sprint 2B: 这里有 pre-existing bug — jobId 实际是 Feishu record_id
+        //   应改为: { jobId: bossJobId, hrUid, message, recordId: jobId, cdp: false }
+        //   但需先让 search-and-write 写 HR_UID 到飞书 + sync-handler 读 HR_UID
+        //   Sprint 2A.2 commit B 暂传 '' 占位（trigger invalid_args，避免 tsc break）
+        const sendResult = await runSendCommand({
+          jobId,
+          hrUid: '',
+          message,
+          cdp: false,
+        })
 
         if (sendResult.action === 'ok') {
           // 成功 → 回写飞书『已投递』

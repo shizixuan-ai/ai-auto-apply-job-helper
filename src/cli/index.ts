@@ -409,17 +409,41 @@ program
   .command('send')
   .description('发送打招呼消息并更新状态')
   .argument('<jobId>', '岗位 ID')
+  .requiredOption('-u, --hr-uid <hrUid>', '招聘方 HR 加密 uid（friend/add 第二参数）')
   .option('-m, --message <message>', '话术内容')
+  .option('--record-id <recordId>', '飞书记录 ID（如有，写回打招呼状态）')
   .option('--cdp', '通过 CDP 连接已有 Chrome')
-  .action(async (jobId: string, options: { message?: string; cdp?: boolean }) => {
+  .action(async (jobId: string, options: { hrUid: string; message?: string; recordId?: string; cdp?: boolean }) => {
     const start = Date.now()
     const cdp = options.cdp ?? program.opts().cdp ?? false
 
     console.log(chalk.cyan(`📤 正在向岗位 ${jobId} 发送打招呼...`))
 
+    // Sprint 2A.2: 构造 writeGreetingStatus 依赖（用 config.feishu.appToken/tableId）
+    //   - 缺配置时降级为 no-op（handler 会调它，result.reason 标注"飞书写入失败"）
+    let writeGreetingStatus: ((recordId: string, status: string, greetedAt: number) => Promise<unknown>) | undefined
+    try {
+      const config = loadConfig()
+      if (config.feishu.appToken && config.feishu.tableId) {
+        const appToken = config.feishu.appToken
+        const tableId = config.feishu.tableId
+        writeGreetingStatus = async (recordId, status, greetedAt) => {
+          return updateRecord(appToken, tableId, recordId, {
+            打招呼状态: status,
+            打招呼时间: greetedAt,
+          })
+        }
+      }
+    } catch {
+      // loadConfig 失败不阻塞 send（writeGreetingStatus 保持 undefined → 跳过飞书写入）
+    }
+
     // P0 fix: 调 runSendCommand 把 GuardError / 业务错误统一转 Result
     // CLI 层只负责 exit code 映射 + 友好输出，不再 unhandled rejection
-    const result = await runSendCommand({ jobId, message: options.message, cdp })
+    const result = await runSendCommand(
+      { jobId, hrUid: options.hrUid, message: options.message, recordId: options.recordId, cdp },
+      { writeGreetingStatus },
+    )
 
     // 被动基线观测：在每个 case 的 process.exit 之前同步写入
     // （await writeBaselineRecord 在 process.exit 前会丢——async 不等 exit）
