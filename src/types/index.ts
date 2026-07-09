@@ -8,6 +8,25 @@ export type LLMProvider = 'deepseek' | 'openai' | 'anthropic' | 'ollama'
 /** 投递状态 */
 export type ApplyStatus = 'pending' | 'greeted' | 'replied' | 'interviewing' | 'rejected' | 'closed'
 
+/**
+ * 打招呼状态枚举（Sprint 2A 引入）
+ *
+ * 与飞书表"打招呼状态"单选字段严格对齐（中文标签映射在 handler/feishu 层做）：
+ *   - pending:          待发送（search-and-write 写入时的初态）
+ *   - sent:             已发送（BOSS friend/add code=0）
+ *   - failed:           业务失败（message 过长 / BOSS 其他 code / 网络错误）
+ *   - rate_limited:     触发限额（BOSS code=99991604）
+ *   - security_blocked: 风控拦截（BOSS code=99991603）
+ *
+ * 注意：枚举值是英文（代码可读），写飞书时翻译成中文标签。
+ */
+export type GreetStatus =
+  | 'pending'
+  | 'sent'
+  | 'failed'
+  | 'rate_limited'
+  | 'security_blocked'
+
 /** 岗位信息 */
 export interface Job {
   id: string
@@ -41,6 +60,12 @@ export interface Job {
   welfare?: string[]
   /** 原始链接 */
   link?: string
+  /** 招聘方 HR 的 BOSS 加密 uid（Sprint 2A：sendGreeting friend/add 需要） */
+  hrUid?: string
+  /** 打招呼状态（Sprint 2A：handler 写回飞书） */
+  greetStatus?: GreetStatus
+  /** 打招呼时间（毫秒时间戳，飞书日期字段 type=5） */
+  greetedAt?: number
 }
 
 /** 话术记录 */
