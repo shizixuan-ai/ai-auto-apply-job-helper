@@ -193,6 +193,21 @@ export async function runSyncCommand(
           continue
         }
 
+        // Sprint 2B Commit 2（2026-07-09）：读 fields['HR_UID']
+        //   来源：search-and-write 写入（Sprint 2B Commit 1）
+        //   用途：friend/add API 第二参数（BOSS HR 加密 uid）
+        //   缺失防护：显式报错 + 不调 generateGreeting（节省 LLM 配额 + 防风控额度浪费）
+        const hrUid = String(job.fields['HR_UID'] ?? '').trim()
+        if (!hrUid) {
+          failed++
+          errors.push({
+            jobId,
+            reason:
+              '缺少 HR_UID 字段。请重跑 `bapply search <关键词>`（会自动写 BOSS_ID + HR_UID），再标记为『待投递』',
+          })
+          continue
+        }
+
         // Step 1: 生成招呼语（B-2b-2 修复：消除 message=undefined → invalid_args bug）
         let message: string
         try {
@@ -211,14 +226,15 @@ export async function runSyncCommand(
         }
 
         // Step 2: 发送招呼
-        // TODO Sprint 2B: 这里有 pre-existing bug — jobId 实际是 Feishu record_id
-        //   应改为: { jobId: bossJobId, hrUid, message, recordId: jobId, cdp: false }
-        //   但需先让 search-and-write 写 HR_UID 到飞书 + sync-handler 读 HR_UID
-        //   Sprint 2A.2 commit B 暂传 '' 占位（trigger invalid_args，避免 tsc break）
+        // Sprint 2B Commit 2 修 3 GAP（2026-07-09）：
+        //   GAP-A: jobId 必须是 BOSS job_id（encryptJobId）才能调 friend/add
+        //   GAP-B: hrUid 从 fields['HR_UID'] 读（不再是 '' 占位）
+        //   GAP-C: recordId 必传，让 send-handler 写飞书"打招呼状态/时间"（Sprint 2A.2）
         const sendResult = await runSendCommand({
-          jobId,
-          hrUid: '',
+          jobId: bossJobId, // ✅ BOSS job_id（encryptJobId），不是 Feishu record_id
+          hrUid,            // ✅ 从 fields['HR_UID'] 读（search-and-write 写入）
           message,
+          recordId: jobId,  // ✅ Feishu record_id（writeback 用）
           cdp: false,
         })
 
