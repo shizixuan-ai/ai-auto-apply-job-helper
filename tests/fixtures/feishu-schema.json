@@ -1,0 +1,62 @@
+{
+  "_meta": {
+    "capturedAt": "2026-07-09T07:30:00.000Z",
+    "source": "Mock fixture for msw integration tests (Sprint 2B Step B)",
+    "method": "Hand-crafted based on Feishu Bitable v2 API response shape",
+    "note": "msw 集成测试的黄金基准。Feishu API 改版时手动更新此文件。"
+  },
+  "listRecords": {
+    "_comment": "对应 Feishu open-apis/bitable/v1/apps/{appToken}/tables/{tableId}/records",
+    "code": 0,
+    "msg": "success",
+    "data": {
+      "total": 3,
+      "has_more": false,
+      "items": [
+        {
+          "record_id": "rec_test_001",
+          "fields": {
+            "职位": "前端工程师",
+            "公司": "字节跳动",
+            "BOSS_ID": "boss_job_001",
+            "HR_UID": "b52207e95bbaaa7e0nF93dW8E1BZ",
+            "状态": "待投递"
+          }
+        },
+        {
+          "record_id": "rec_test_002",
+          "fields": {
+            "职位": "全栈工程师",
+            "公司": "美团",
+            "BOSS_ID": "boss_job_002",
+            "HR_UID": "a41106d84caaa96f0mE82cV7D0CX",
+            "状态": "待投递"
+          }
+        },
+        {
+          "record_id": "rec_test_003",
+          "fields": {
+            "职位": "DevOps 工程师",
+            "公司": "腾讯",
+            "BOSS_ID": "boss_job_003",
+            "HR_UID": "c63318f76dbbb87e1pG74eY9F2EA",
+            "状态": "已沟通"
+          }
+        }
+      ]
+    }
+  },
+  "updateRecord": {
+    "_comment": "对应 Feishu update record API 成功响应",
+    "code": 0,
+    "msg": "success",
+    "data": {
+      "record": {
+        "record_id": "rec_test_001",
+        "fields": {
+          "状态": "已投递"
+        }
+      }
+    }
+  }
+}
