@@ -12,7 +12,9 @@
     "start": "node dist/cli/index.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "probe:boss": "BOSS_SEARCH_PROBE=1 tsx scripts/probe-boss-api.mjs",
+    "probe:boss:debug": "BOSS_SEARCH_PROBE=1 BOSS_SEARCH_DEBUG=1 tsx scripts/probe-boss-api.mjs"
   },
   "dependencies": {
     "chalk": "^5.4.1",

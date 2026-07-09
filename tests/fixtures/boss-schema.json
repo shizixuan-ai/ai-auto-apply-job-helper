@@ -1,0 +1,13 @@
+{
+  "_warning": "PLACEHOLDER. 真跑 `npm run probe:boss` 后会被覆盖。",
+  "_meta": {
+    "capturedAt": "PLACEHOLDER",
+    "source": "PLACEHOLDER - 待 npm run probe:boss 真跑后填充",
+    "jobListIndex": 0,
+    "note": "契约测试的\"黄金基准\"。BOSS 改版时重新跑 npm run probe:boss 覆盖。"
+  },
+  "sampleJob": {
+    "_placeholder": "等待 BOSS 真实 API 响应填充"
+  },
+  "userRelatedFields": []
+}

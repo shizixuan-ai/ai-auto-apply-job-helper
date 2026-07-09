@@ -453,9 +453,11 @@ export async function searchJobs(
         body: JSON.stringify(body),
       })
       const json = await res.json()
-      // Sprint 2B commit 1 验证（user 要求）：打印 BOSS API 用户相关字段
-      // 仅在 BOSS_SEARCH_DEBUG=1 时输出（避免生产环境噪音）
-      // 字段名不对时改下面 .hrUid 解析即可
+      // Step A 探针 (Sprint 2B commit 1 升级)：
+      //   BOSS_SEARCH_DEBUG=1 时 → console.log 打印用户相关字段 (开发时验证)
+      //   BOSS_SEARCH_PROBE=1 时 → 把第一条 job 完整 dump 到 tests/fixtures/boss-schema.json
+      //                            (契约测试的"黄金基准"，Step B 阶段用于 msw mock 响应)
+      // 两个 env 独立：log 给开发者看，probe 给测试用
       if (process.env.BOSS_SEARCH_DEBUG === '1') {
         const firstJob = json?.zpData?.jobList?.[0]
         if (firstJob) {
@@ -465,6 +467,47 @@ export async function searchJobs(
           console.log('[searchJobs] BOSS API 用户相关字段（验证用）:')
           for (const k of userKeys) {
             console.log(`  ${k}: ${firstJob[k]}`)
+          }
+        }
+      }
+      if (process.env.BOSS_SEARCH_PROBE === '1') {
+        const firstJob = json?.zpData?.jobList?.[0]
+        if (firstJob) {
+          const { writeFileSync, mkdirSync } = await import('node:fs')
+          const { dirname, resolve } = await import('node:path')
+          const schemaPath = resolve(process.cwd(), 'tests/fixtures/boss-schema.json')
+          mkdirSync(dirname(schemaPath), { recursive: true })
+          // 脱敏: 把可能的敏感字段值截断 / 替换
+          const sanitize = (key: string, value: unknown): unknown => {
+            if (typeof value !== 'string') return value
+            if (/name|brand|company|title|jobName/i.test(key)) {
+              return value.length > 10 ? value.slice(0, 8) + '...' : value
+            }
+            if (/url|link/i.test(key)) return '[URL_OMITTED]'
+            return value
+          }
+          const sanitized: Record<string, unknown> = {}
+          for (const [k, v] of Object.entries(firstJob)) {
+            sanitized[k] = sanitize(k, v)
+          }
+          const probePayload = {
+            _meta: {
+              capturedAt: new Date().toISOString(),
+              source: 'BOSS /wapi/zpgeek/search/joblist.json',
+              jobListIndex: 0,
+              note: '契约测试的"黄金基准"。BOSS 改版时重新跑 npm run probe:boss 覆盖。',
+            },
+            sampleJob: sanitized,
+            // 关键: 高亮 user/hr/encrypt 字段，让开发者一眼看到 HR 加密 uid 的真实字段名
+            userRelatedFields: Object.keys(firstJob)
+              .filter((k) => /user|hr|encrypt/i.test(k))
+              .map((k) => ({ key: k, value: firstJob[k] })),
+          }
+          writeFileSync(schemaPath, JSON.stringify(probePayload, null, 2))
+          console.log(`[searchJobs] ✅ schema dumped to ${schemaPath}`)
+          console.log(`[searchJobs] 关键 user 相关字段:`)
+          for (const { key, value } of probePayload.userRelatedFields) {
+            console.log(`  ${key}: ${value}`)
           }
         }
       }
