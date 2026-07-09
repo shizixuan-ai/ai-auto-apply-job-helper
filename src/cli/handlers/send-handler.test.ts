@@ -59,9 +59,9 @@ function makeGuardDecision(action: 'abort_today' | 'abort', reason: string) {
 // ============================================================
 
 describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
-  it('happy path: sendGreeting 返 true → action="ok", reason 含 "成功"', async () => {
+  it('happy path: sendGreeting 返 {action:"sent"} → action="ok", reason 含 "成功"', async () => {
     const deps = makeDeps({
-      sendGreeting: vi.fn().mockResolvedValue(true),
+      sendGreeting: vi.fn().mockResolvedValue({ action: 'sent', friendId: 'f1' }),
     })
     const { runSendCommand } = await import('./send-handler.js')
 
@@ -72,9 +72,11 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
 
     expect(result.action).toBe('ok')
     expect(result.reason).toMatch(/成功/)
+    // Sprint 2A.1: 4 参数签名（hrId 暂传 '' 占位）
     expect(deps.sendGreeting).toHaveBeenCalledWith(
       { mockPage: true },
       'j1',
+      '',
       '你好',
     )
   })
@@ -125,9 +127,9 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
     expect(result.reason).toMatch(/不可恢复/)
   })
 
-  it('sendGreeting 返 false（业务失败）→ action="failed"', async () => {
+  it('sendGreeting 返 {action:"failed"}（业务失败）→ action="failed"', async () => {
     const deps = makeDeps({
-      sendGreeting: vi.fn().mockResolvedValue(false),
+      sendGreeting: vi.fn().mockResolvedValue({ action: 'failed', error: 'BOSS 拒绝' }),
     })
     const { runSendCommand } = await import('./send-handler.js')
 
@@ -138,6 +140,7 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
 
     expect(result.action).toBe('failed')
     expect(result.reason).toMatch(/失败/)
+    expect(result.reason).toMatch(/BOSS 拒绝/)
   })
 
   it('sendGreeting 抛普通 Error（非 GuardError）→ action="failed", reason 含原始 message', async () => {
@@ -157,7 +160,7 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
 
   it('成功路径: closeSession 在 finally 调用（即使 ok 也清理浏览器）', async () => {
     const deps = makeDeps({
-      sendGreeting: vi.fn().mockResolvedValue(true),
+      sendGreeting: vi.fn().mockResolvedValue({ action: 'sent' }),
     })
     const { runSendCommand } = await import('./send-handler.js')
 

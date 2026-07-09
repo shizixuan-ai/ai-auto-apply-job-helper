@@ -656,42 +656,107 @@ function sleep(ms: number): Promise<void> {
 }
 
 // ============================================================
-// 发送打招呼消息（API 直调，不依赖 DOM）
+// 发送打招呼消息（Sprint 2A：friend/add API）
 // ============================================================
+//
+// 协议：POST https://www.zhipin.com/wapi/zpgeek/friend/add.json
+//   - 在 BOSS 域内 fetch（page.evaluate，带 cookie + Referer，CDP 复用登录态）
+//   - form-encoded body: gid=<jobId>&uid=<hrId>&message=<msg>&expectInfo=0
+//
+// 5 状态枚举（与飞书"打招呼状态"单选项严格对齐）：
+//   - sent:             BOSS code=0，zpData 有 friendId
+//   - failed:           业务错误（length>200 / BOSS 其他 code / 网络错误）
+//   - rate_limited:     BOSS code=99991604（"too many requests today"）
+//   - security_blocked: BOSS code=99991603（"verify required"）
+//
+// GuardError 仍由 withGuard 抛出（abort_today / abort）→ send-handler.ts 映射到 exit code
+// ============================================================
+
+/** 招呼语最大长度（BOSS friend/add message 字段上限） */
+const MESSAGE_MAX = 200
+const FRIEND_ADD_URL = 'https://www.zhipin.com/wapi/zpgeek/friend/add.json'
+
+export type SendGreetingAction =
+  | 'sent'
+  | 'failed'
+  | 'rate_limited'
+  | 'security_blocked'
+
+export interface SendGreetingResult {
+  action: SendGreetingAction
+  /** 仅 action='sent' 时有值（来自 BOSS zpData） */
+  friendId?: string
+  chatId?: string
+  /** failed / rate_limited / security_blocked 都有：保留 BOSS message 便于调试 */
+  error?: string
+}
 
 export async function sendGreeting(
   page: any,
   jobId: string,
+  hrId: string,
   message: string,
-  typeTextOptions?: TypeTextOptions,
-): Promise<boolean> {
-  return withGuard(
-    page,
-    async () => {
-      try {
-        // 方案：打开聊天页 → 人类节奏键入（typeText 模拟真人输入）→ 点击发送
-        await page.goto(`https://www.zhipin.com/web/chat?jobId=${jobId}`, {
-          waitUntil: 'networkidle',
-          timeout: 30_000,
-        })
-        await page.waitForSelector('#chat-input', { timeout: 10_000 })
+): Promise<SendGreetingResult> {
+  // 前置守卫：message 长度必须在 HTTP 调用之前校验（防 BOSS 拒绝后浪费配额）
+  if (message.length > MESSAGE_MAX) {
+    return {
+      action: 'failed',
+      error: `message 长度 ${message.length} 超过上限 ${MESSAGE_MAX} 字`,
+    }
+  }
 
-        // 用 typeText 替代直接 evaluate：触发真实键盘事件 + 随机延迟 + typo 注入
-        const result = await typeText(page, '#chat-input', message, typeTextOptions)
-        await page.click('.btn-send')
+  try {
+    return await withGuard(
+      page,
+      async () => {
+        // page.evaluate 在浏览器上下文执行 fetch（带 cookie + Referer）
+        const data = await page.evaluate(
+          async ({ url, body }: { url: string; body: string }) => {
+            const resp = await fetch(url, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+              },
+              body,
+              credentials: 'include',
+            })
+            return await resp.json()
+          },
+          {
+            url: FRIEND_ADD_URL,
+            body: `gid=${encodeURIComponent(jobId)}&uid=${encodeURIComponent(hrId)}&message=${encodeURIComponent(message)}&expectInfo=0`,
+          },
+        )
 
-        console.log(`✅ 已向岗位 ${jobId} 发送打招呼消息 (typed=${result.typed}, typos=${result.typos})`)
-        return true
-      } catch (err) {
-        // backlog #7: GuardError 必须透传（不让风控决策被业务 catch 吞掉）
-        // 业务错误（page.goto 抛 navigation timeout 等）仍返回 false
-        if (err instanceof GuardError) {
-          throw err
+        // 解析 BOSS 响应（参考 boss-zhipin-bot README 错误码）
+        if (data?.code === 0) {
+          return {
+            action: 'sent' as const,
+            friendId: data.zpData?.friendId,
+            chatId: data.zpData?.chatId,
+          }
         }
-        console.error(`❌ 向岗位 ${jobId} 发送消息失败:`, err)
-        return false
-      }
-    },
-    { config: GUARD_CONFIG, waitForUserConfirm: _waitForUserConfirm },
-  )
+        if (data?.code === 99991603) {
+          return { action: 'security_blocked' as const, error: data?.message }
+        }
+        if (data?.code === 99991604) {
+          return { action: 'rate_limited' as const, error: data?.message }
+        }
+        return {
+          action: 'failed' as const,
+          error: data?.message ?? `BOSS 返 code=${data?.code}`,
+        }
+      },
+      { config: GUARD_CONFIG, waitForUserConfirm: _waitForUserConfirm },
+    )
+  } catch (err) {
+    // GuardError 必须透传（让 send-handler.ts 看到 abort_today / abort 决策）
+    if (err instanceof GuardError) {
+      throw err
+    }
+    // 业务错误（fetch 失败 / JSON 解析失败 / withGuard probe 抛错）
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error(`❌ sendGreeting 失败 (jobId=${jobId}):`, msg)
+    return { action: 'failed', error: msg }
+  }
 }

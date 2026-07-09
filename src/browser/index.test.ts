@@ -44,22 +44,30 @@ const FAST_TYPE_OPTS = {
 }
 
 // ============================================================
-// sendGreeting 决策透明性（backlog #7）
+// sendGreeting × GuardError（Sprint 2A：适配新签名 + friend/add）
+// ============================================================
+//
+// Sprint 2A 重构后：
+//   - 签名: (page, jobId, hrId, message) → Promise<SendGreetingResult>
+//   - 实现: page.evaluate(fetch friend/add)，不再 page.goto/typeText
+//   - 返回: {action: 'sent'|'failed'|'rate_limited'|'security_blocked', ...}
+//   - GuardError 仍透传（让 send-handler.ts 看到 abort_today / abort 决策）
 // ============================================================
 
 describe('sendGreeting × GuardError', () => {
-  it('业务错误（page.goto 抛 PageError）：catches and returns false', async () => {
+  it('业务错误（page.evaluate 抛 PageError）：catches and returns {action:"failed"}', async () => {
     const page = makeMockPage()
-    page.goto = vi.fn().mockRejectedValue(new Error('navigation timeout'))
+    // Sprint 2A: page.evaluate 是 friend/add 的出口，模拟它抛业务错误
+    page.evaluate = vi.fn().mockRejectedValue(new Error('navigation timeout'))
 
-    const result = await sendGreeting(page as any, 'JOB123', 'hello', FAST_TYPE_OPTS)
-    expect(result).toBe(false)
+    const result = await sendGreeting(page as any, 'JOB123', 'HR456', 'hello')
+    expect(result.action).toBe('failed')
+    expect(result.error).toMatch(/navigation timeout/)
   })
 
-  it('【RED】GuardError 来自 fn 内（page.goto）：必须 throw（不被吞）', async () => {
-    // 关键：把 GuardError 抛在 fn 内（page.goto 阶段），绕过 withGuard probe
-    // 当前实现：catch (err) { ... return false } 会吞掉 GuardError
-    // 修复后：catch 内 instanceof GuardError 应该 rethrow
+  it('GuardError 来自 fn 内（page.evaluate 阶段）：必须 throw（不被吞）', async () => {
+    // 关键：把 GuardError 抛在 fn 内（page.evaluate 阶段），绕过 withGuard probe
+    // 当前实现（已修复）：catch 内 instanceof GuardError 应该 rethrow
     const decision: GuardDecision = {
       action: 'abort_today',
       reason: '登录已失效',
@@ -71,20 +79,28 @@ describe('sendGreeting × GuardError', () => {
       },
     }
     const page = makeMockPage()
-    page.goto = vi.fn().mockImplementation(async () => {
+    page.evaluate = vi.fn().mockImplementation(async () => {
       throw new GuardError(decision)
     })
 
     await expect(
-      sendGreeting(page as any, 'JOB123', 'hello', FAST_TYPE_OPTS),
+      sendGreeting(page as any, 'JOB123', 'HR456', 'hello'),
     ).rejects.toBeInstanceOf(GuardError)
   })
 
-  it('正常路径：page 一切顺利返回 true', async () => {
+  it('正常路径：BOSS code=0 → action="sent"，friendId/chatId 解析', async () => {
     const page = makeMockPage()
+    // Sprint 2A: page.evaluate 返 BOSS friend/add 响应
+    page.evaluate = vi.fn().mockResolvedValue({
+      code: 0,
+      message: 'ok',
+      zpData: { status: 'success', friendId: 'friend_xyz', chatId: 'chat_abc' },
+    })
 
-    const result = await sendGreeting(page as any, 'JOB123', 'hi', FAST_TYPE_OPTS)
-    expect(result).toBe(true)
+    const result = await sendGreeting(page as any, 'JOB123', 'HR456', 'hi')
+    expect(result.action).toBe('sent')
+    expect(result.friendId).toBe('friend_xyz')
+    expect(result.chatId).toBe('chat_abc')
   })
 })
 

@@ -25,6 +25,7 @@ import {
   createCDPSession,
   closeBrowserSession,
   sendGreeting,
+  type SendGreetingResult,
 } from '../../browser/index.js'
 
 // ============================================================
@@ -48,8 +49,9 @@ export interface SendCommandDeps {
   sendGreeting?: (
     page: any,
     jobId: string,
+    hrId: string,
     message: string,
-  ) => Promise<boolean>
+  ) => Promise<SendGreetingResult>
   createSession?: (cdp: boolean) => Promise<any>
   closeSession?: (session: any) => Promise<void>
 }
@@ -90,13 +92,19 @@ export async function runSendCommand(
   // 3. 创建 session + 执行 + 清理（finally 兜底防 Chrome 泄漏）
   const session = await createSessionFn(opts.cdp ?? false)
   try {
-    const ok = await sendGreetingFn(session.page, opts.jobId, opts.message)
-    if (ok) {
-      return { action: 'ok', reason: '发送成功' }
+    // Sprint 2A.1: 4 参数签名（hrId 暂传 '' 占位）。Sprint 2A.2 会从 job/CLI 拿真实值。
+    const result = await sendGreetingFn(session.page, opts.jobId, '', opts.message)
+
+    // Sprint 2A 5 状态映射：
+    //   - sent → ok
+    //   - failed / rate_limited / security_blocked → failed（单 job 失败路径）
+    //     按用户决策：rate_limit 和 security_blocked 不再中断今日任务
+    if (result.action === 'sent') {
+      return { action: 'ok', reason: `发送成功（friendId=${result.friendId ?? 'n/a'}）` }
     }
     return {
       action: 'failed',
-      reason: '发送失败（详见 BOSS 页面或浏览器日志）',
+      reason: `发送失败（${result.action}）：${result.error ?? '未知'}`,
     }
   } catch (err) {
     // P0 fix: GuardError 必须捕获 → 透传为同 action 的 result
