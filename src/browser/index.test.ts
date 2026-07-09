@@ -12,7 +12,7 @@
 // ============================================================
 
 import { describe, it, expect, vi } from 'vitest'
-import { sendGreeting, fetchJobDetail, extractHrUid } from './index.js'
+import { sendGreeting, fetchJobDetail, extractHrUid, searchJobs } from './index.js'
 import { GuardError, type GuardDecision } from './guard.js'
 
 // ------------------------------------------------------------
@@ -232,5 +232,132 @@ describe('extractHrUid (Sprint 2B — probe 验证后修正)', () => {
   it('TEST 7 (回归防护): 旧推断字段名 encryptUserId 不再被识别', () => {
     // 防止有人把 fallback chain 加回 encryptUserId（probe 已证明不存在）
     expect(extractHrUid({ encryptUserId: 'hr_wrong' })).toBeUndefined()
+  })
+})
+
+// ============================================================
+// searchJobs Phase 1 跳过逻辑（Sprint 2D — 真实环境暴露）
+// ------------------------------------------------------------
+// 真实环境 bug（2026-07-09 连续跑 bapply search Java后端 --cdp 触发）：
+//   searchJobs Phase 1 永远 page.goto /web/geek/recommend
+//   第一次跑：Chrome 在 about:blank → goto OK
+//   第二次跑：Chrome 还在前一次留下的 /web/geek/jobs?query=Java后端 页
+//             → BOSS SPA 检测同源 redirect → 中断 Playwright goto
+//             → page.goto throws "Navigation interrupted by another navigation"
+//
+// 修复：Phase 1 先查 page.url()，若已在 BOSS geek 域（/web/geek/*）则跳过 goto
+// ============================================================
+
+describe('searchJobs — Phase 1 跳过逻辑（Sprint 2D）', () => {
+  function makeSearchPage(currentUrl = 'about:blank') {
+    return {
+      goto: vi.fn().mockResolvedValue(undefined),
+      url: vi.fn().mockReturnValue(currentUrl),
+      // Sprint 2D: 让 evaluate 返 BOSS API 成功（非空 jobList）→ 避免走 DOM 降级
+      // DOM 降级会再调 page.goto，干扰 Sprint 2D 测的"Phase 1 goto 次数"
+      evaluate: vi.fn().mockResolvedValue({
+        code: 0,
+        zpData: { jobList: [{ encryptJobId: 'fake', jobName: 'fake', brandName: 'fake' }] },
+      }),
+    }
+  }
+
+  it('Sprint 2D-1: page 在 BOSS geek 域（/web/geek/recommend）→ 跳过 Phase 1 goto', async () => {
+    const page = makeSearchPage('https://www.zhipin.com/web/geek/recommend')
+    try {
+      await searchJobs(page as any, '前端')
+    } catch {
+      // evaluate 失败会让 searchJobs 抛错（但我们要验证 goto 没被调）
+    }
+    // 🚨 关键：page.goto 不应被调（避免 BOSS SPA navigation race）
+    expect(page.goto).not.toHaveBeenCalled()
+  })
+
+  it('Sprint 2D-2: page 在 BOSS jobs 域（/web/geek/jobs?query=X）→ 跳过 Phase 1 goto', async () => {
+    // 真实场景：前一次 search 留下 URL
+    const page = makeSearchPage('https://www.zhipin.com/web/geek/jobs?query=Java%E5%90%8E%E7%AB%AF')
+    try {
+      await searchJobs(page as any, 'Java后端')
+    } catch {
+      // 同上
+    }
+    expect(page.goto).not.toHaveBeenCalled()
+  })
+
+  it('Sprint 2D-3: page 在 job_detail 域（/job_detail/X.html）→ 跳过 Phase 1 goto（也是 BOSS）', async () => {
+    const page = makeSearchPage('https://www.zhipin.com/job_detail/abc.html')
+    try {
+      await searchJobs(page as any, '前端')
+    } catch {
+      // 同上
+    }
+    expect(page.goto).not.toHaveBeenCalled()
+  })
+
+  it('Sprint 2D-4: page 在 about:blank（首次跑）→ 必须 Phase 1 goto', async () => {
+    const page = makeSearchPage('about:blank')
+    try {
+      await searchJobs(page as any, '前端')
+    } catch {
+      // 同上
+    }
+    // 🚨 关键：首次必须 goto（不能跳过安全入口）
+    expect(page.goto).toHaveBeenCalledWith(
+      'https://www.zhipin.com/web/geek/recommend',
+      expect.objectContaining({ waitUntil: 'domcontentloaded' }),
+    )
+  })
+
+  it('Sprint 2D-5: page 在非 BOSS 域（如 google.com）→ 必须 Phase 1 goto', async () => {
+    const page = makeSearchPage('https://www.google.com')
+    try {
+      await searchJobs(page as any, '前端')
+    } catch {
+      // 同上
+    }
+    // 不是 BOSS 域 → 必须 goto 拿登录态
+    expect(page.goto).toHaveBeenCalledWith(
+      'https://www.zhipin.com/web/geek/recommend',
+      expect.any(Object),
+    )
+  })
+
+  it('Sprint 2D-6: page 在 /user/ 登录页 → 仍然 goto（探针检测要 reveal 重定向）', async () => {
+    // 安全入口检测：searchJobs L432-434 在 page.url() 含 /user/ 时抛『登录失效』
+    // → 这一步必须走 page.goto，让 Phase 1 探针检测登录态
+    const page = makeSearchPage('https://www.zhipin.com/web/user/?ka=header-login')
+    try {
+      await searchJobs(page as any, '前端')
+    } catch {
+      // 登录失效会抛
+    }
+    expect(page.goto).toHaveBeenCalled()
+  })
+
+  it('Sprint 2D-7 (hook 审计): URL hostname 是 evil.com 但 query 含 zhipin.com → 必须 goto（防假阳性）', async () => {
+    // 假阳性场景：https://evil.com/redirect?url=https://www.zhipin.com/web/geek/jobs
+    // 旧实现 currentUrl.includes('zhipin.com') 会匹配 → 错误跳过 goto
+    // 新实现用 URL.hostname 严格匹配 → 不匹配 → 仍 goto
+    const page = makeSearchPage('https://evil.com/redirect?url=https://www.zhipin.com/web/geek/jobs')
+    try {
+      await searchJobs(page as any, '前端')
+    } catch {
+      // 同上
+    }
+    expect(page.goto).toHaveBeenCalledWith(
+      'https://www.zhipin.com/web/geek/recommend',
+      expect.objectContaining({ waitUntil: 'domcontentloaded' }),
+    )
+  })
+
+  it('Sprint 2D-8 (hook 审计): URL 解析失败（malformed）→ 保守走 goto', async () => {
+    // URL parse 失败场景（malformed string）
+    const page = makeSearchPage('not-a-url-at-all')
+    try {
+      await searchJobs(page as any, '前端')
+    } catch {
+      // 同上
+    }
+    expect(page.goto).toHaveBeenCalled()
   })
 })

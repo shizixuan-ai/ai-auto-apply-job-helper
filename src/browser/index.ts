@@ -423,12 +423,48 @@ export async function searchJobs(
   city?: string,
 ): Promise<SearchResult[]> {
   // ---- Phase 1: 安全入口 ----
-  await page.goto('https://www.zhipin.com/web/geek/recommend', {
-    waitUntil: 'domcontentloaded',
-    timeout: 30_000,
-  })
+  // Sprint 2D 修复：避免连续跑 search 时的 BOSS SPA navigation race
+  //   前一次 search 留下的 URL（如 /web/geek/jobs?query=...）若与目标同源，
+  //   BOSS 客户端路由会 redirect → 中断 Playwright page.goto → throws
+  // 解决：检测当前 page.url() 的 hostname，若已是 zhipin.com → 跳过 goto
+  //
+  // 安全考量（hook 审计反馈）：
+  //   - ❌ 不能用 currentUrl.includes('zhipin.com') — query 参数含 zhipin.com 会假阳性
+  //     （如 https://evil.com/redirect?url=https://zhipin.com）
+  //   - ✅ 用 URL parse 提取 hostname（origin 一部分，不含 query/path）
+  //   - ✅ 路径 regex 不要强求尾斜杠（/web/geek/jobs 实际无尾斜杠）
+  //   - ✅ page.url() 可能 null（page closed）→ 防御
+  const currentUrl = page.url() ?? ''
+  let alreadyOnBoss = false
+  try {
+    if (currentUrl && currentUrl !== 'about:blank') {
+      const u = new URL(currentUrl)
+      // hostname 严格等于 zhipin.com（不含 m. 等子域，除非显式支持）
+      if (u.hostname === 'zhipin.com' || u.hostname.endsWith('.zhipin.com')) {
+        // 路径前缀匹配（不强求尾斜杠）
+        const path = u.pathname
+        if (
+          path.startsWith('/web/geek') ||
+          path.startsWith('/job_detail')
+        ) {
+          alreadyOnBoss = true
+        }
+      }
+    }
+  } catch {
+    // URL parse 失败 → 保守走 goto
+    alreadyOnBoss = false
+  }
 
-  // 如果 recommend 也被重定向，抛错
+  if (!alreadyOnBoss) {
+    // 首次跑 / 不在 BOSS 域 → 必须 goto 安全入口
+    await page.goto('https://www.zhipin.com/web/geek/recommend', {
+      waitUntil: 'domcontentloaded',
+      timeout: 30_000,
+    })
+  }
+
+  // 如果 recommend 也被重定向（仍 about:blank 或 /user/），抛错
   if (page.url() === 'about:blank' || page.url().includes('/user/')) {
     throw new Error('登录已失效，请先运行 bapply login 重新扫码登录')
   }
