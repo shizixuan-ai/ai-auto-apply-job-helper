@@ -33,6 +33,8 @@ export interface SearchResultLite {
   welfare?: string[]
   skills?: string[]
   link?: string
+  /** Sprint 2B：招聘方 HR 的 BOSS 加密 uid（friend/add 第二参数） */
+  hrUid?: string
 }
 
 /** handler 入参 */
@@ -64,6 +66,8 @@ export interface FeishuJobFields {
   JD摘要: string
   /** 飞书日期字段要毫秒时间戳（不是 ISO 字符串） */
   匹配时间: number
+  /** Sprint 2B：HR 加密 uid（friend/add 第二参数 uid） */
+  HR_UID?: string
 }
 
 /** 依赖注入（生产 vs 单测可换） */
@@ -161,6 +165,11 @@ export async function runSearchAndWrite(
         JD摘要: jd.slice(0, JD_SNIPPET_MAX),
         // 飞书日期字段要毫秒时间戳（不是 ISO 字符串）
         匹配时间: Date.now(),
+      }
+      // Sprint 2B：HR 加密 uid（sync-handler 后续读取用）
+      // 仅在 truthy 时设置，避免飞书表出现 HR_UID: undefined
+      if (job.hrUid) {
+        fields.HR_UID = job.hrUid
       }
       await deps.createRecord(fields)
       written++

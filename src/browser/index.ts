@@ -346,6 +346,26 @@ export interface SearchResult {
   welfare: string[]
   skills: string[]
   link: string
+  /**
+   * 招聘方 HR 的 BOSS 加密 uid（Sprint 2B）
+   *
+   * BOSS API 字段名：encryptUserId（推断，与 encryptJobId 对仗）
+   * Sprint 2B commit 1 在 searchJobs 内加了 console.log 验证；
+   * 若实测字段名不同（如 encryptedUserId / hrEncryptId），按实测结果调整。
+   */
+  hrUid?: string
+}
+
+/**
+ * 从 BOSS API 单个 job 对象提取 HR 加密 uid（Sprint 2B）
+ *
+ * 优先字段：encryptUserId（推断，与 encryptJobId 对仗）
+ * 备选字段：encryptedUserId / hrEncryptId（实测后可调整）
+ *
+ * 导出供单测使用（避免 page.evaluate mock 复杂性）
+ */
+export function extractHrUid(job: any): string | undefined {
+  return job?.encryptUserId || job?.encryptedUserId || job?.hrEncryptId
 }
 
 /** DOM-First 滚动预加载 + 摘取（API 降级时的 fallback） */
@@ -432,7 +452,23 @@ export async function searchJobs(
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       })
-      return await res.json()
+      const json = await res.json()
+      // Sprint 2B commit 1 验证（user 要求）：打印 BOSS API 用户相关字段
+      // 仅在 BOSS_SEARCH_DEBUG=1 时输出（避免生产环境噪音）
+      // 字段名不对时改下面 .hrUid 解析即可
+      if (process.env.BOSS_SEARCH_DEBUG === '1') {
+        const firstJob = json?.zpData?.jobList?.[0]
+        if (firstJob) {
+          const userKeys = Object.keys(firstJob).filter((k) =>
+            /user|hr|encrypt/i.test(k),
+          )
+          console.log('[searchJobs] BOSS API 用户相关字段（验证用）:')
+          for (const k of userKeys) {
+            console.log(`  ${k}: ${firstJob[k]}`)
+          }
+        }
+      }
+      return json
     } catch (e: any) {
       return { error: e.message }
     }
@@ -455,6 +491,10 @@ export async function searchJobs(
       welfare: job.welfareList ?? [],
       skills: job.skills ?? [],
       link: job.link ?? '',
+      // Sprint 2B：HR 加密 uid（friend/add 第二参数 uid）
+      // 推断字段名 encryptUserId，与 encryptJobId 对仗
+      // 实测后若不同，按 console.log 输出调整此处
+      hrUid: extractHrUid(job),
     }))
 
     // ---- Phase 2.5: --city 警告（详见 ADR-0003 + city-utils.ts） ----

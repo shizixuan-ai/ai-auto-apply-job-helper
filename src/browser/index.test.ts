@@ -12,7 +12,7 @@
 // ============================================================
 
 import { describe, it, expect, vi } from 'vitest'
-import { sendGreeting, fetchJobDetail } from './index.js'
+import { sendGreeting, fetchJobDetail, extractHrUid } from './index.js'
 import { GuardError, type GuardDecision } from './guard.js'
 
 // ------------------------------------------------------------
@@ -189,5 +189,43 @@ describe('fetchJobDetail — fallback selector 链', () => {
 
     await expect(fetchJobDetail(page as any, 'X')).rejects.toThrow(/ERR_NAME_NOT_RESOLVED/)
     expect(page.waitForSelector).not.toHaveBeenCalled()
+  })
+})
+
+// ============================================================
+// Sprint 2B: extractHrUid 单元测试
+// ------------------------------------------------------------
+// 验证 BOSS API 字段名 fallback chain 行为
+// （避免 searchJobs 整函数 mock 复杂性）
+// ============================================================
+
+describe('extractHrUid (Sprint 2B)', () => {
+  it('TEST 1: 优先取 encryptUserId（推断主字段名）', () => {
+    expect(extractHrUid({ encryptUserId: 'hr_main' })).toBe('hr_main')
+  })
+
+  it('TEST 2: fallback 到 encryptedUserId', () => {
+    expect(extractHrUid({ encryptedUserId: 'hr_alt1' })).toBe('hr_alt1')
+  })
+
+  it('TEST 3: fallback 到 hrEncryptId', () => {
+    expect(extractHrUid({ hrEncryptId: 'hr_alt2' })).toBe('hr_alt2')
+  })
+
+  it('TEST 4: 都缺返 undefined（缺 hrUid 不阻塞 search-and-write）', () => {
+    expect(extractHrUid({ encryptJobId: 'job_xxx' })).toBeUndefined()
+  })
+
+  it('TEST 5: job 本身是 undefined/null → undefined（不抛）', () => {
+    expect(extractHrUid(undefined)).toBeUndefined()
+    expect(extractHrUid(null)).toBeUndefined()
+  })
+
+  it('TEST 6: 多个字段都有时取优先级最高的（encryptUserId 优先）', () => {
+    expect(extractHrUid({
+      encryptUserId: 'hr_main',
+      encryptedUserId: 'hr_alt1',
+      hrEncryptId: 'hr_alt2',
+    })).toBe('hr_main')
   })
 })

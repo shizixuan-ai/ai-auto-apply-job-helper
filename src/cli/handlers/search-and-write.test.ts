@@ -119,4 +119,50 @@ describe('runSearchAndWrite', () => {
     const actualCall = (deps.createRecord as any).mock.calls[0][0]
     expect(actualCall.JD摘要).toBe('JD for B')
   })
+
+  // ----------------------------------------------------------
+  // TEST 7: Sprint 2B — HR_UID 字段透传（写飞书）
+  // ----------------------------------------------------------
+
+  it('TEST 7: job.hrUid 有值时 → createRecord fields 含 HR_UID（sync 后续读取用）', async () => {
+    // Arrange: jobA 带 hrUid, jobB 不带
+    const JOB_A_WITH_HRUID = {
+      ...JOB_A,
+      hrUid: 'hr_enc_aaa',
+    } as unknown as Job
+    const deps = {
+      searchJobs: vi.fn(async () => [JOB_A_WITH_HRUID, JOB_B]),
+      fetchJobDetail: vi.fn(async (jobId: string) =>
+        jobId === 'jobA_encryptedId' ? 'JD for A' : 'JD for B',
+      ),
+      scoreJob: vi.fn(async (jd: string) => 0.92), // 都通过
+      createRecord: vi.fn(async () => ({ record_id: 'rec_new' })),
+      resolveResume: vi.fn(async () => ({ summary: SAMPLE_RESUME, source: 'md' as const, warnings: [] })),
+      llm: {} as unknown,
+      threshold: 0.85,
+    }
+
+    // Act
+    await runSearchAndWrite(
+      { keyword: '前端', city: '杭州', write: true, dryRun: false, noThreshold: false, limit: 10 },
+      deps,
+    )
+
+    // Assert: 2 个 createRecord call
+    expect(deps.createRecord).toHaveBeenCalledTimes(2)
+
+    // jobA 应该有 HR_UID
+    const jobACall = (deps.createRecord as any).mock.calls.find(
+      (c: any[]) => c[0].BOSS_ID === 'jobA_encryptedId',
+    )
+    expect(jobACall).toBeDefined()
+    expect(jobACall[0].HR_UID).toBe('hr_enc_aaa')
+
+    // jobB 不带 hrUid → fields 中不应有 HR_UID 键（避免 undefined 写入飞书）
+    const jobBCall = (deps.createRecord as any).mock.calls.find(
+      (c: any[]) => c[0].BOSS_ID === 'jobB_encryptedId',
+    )
+    expect(jobBCall).toBeDefined()
+    expect('HR_UID' in jobBCall[0]).toBe(false)
+  })
 })
