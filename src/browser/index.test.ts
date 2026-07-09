@@ -199,13 +199,13 @@ describe('fetchJobDetail — fallback selector 链', () => {
 // （避免 searchJobs 整函数 mock 复杂性）
 // ============================================================
 
-describe('extractHrUid (Sprint 2B)', () => {
-  it('TEST 1: 优先取 encryptUserId（推断主字段名）', () => {
-    expect(extractHrUid({ encryptUserId: 'hr_main' })).toBe('hr_main')
+describe('extractHrUid (Sprint 2B — probe 验证后修正)', () => {
+  it('TEST 1: 优先取 encryptBossId（probe 验证的 BOSS 真实字段名）', () => {
+    expect(extractHrUid({ encryptBossId: 'hr_main' })).toBe('hr_main')
   })
 
-  it('TEST 2: fallback 到 encryptedUserId', () => {
-    expect(extractHrUid({ encryptedUserId: 'hr_alt1' })).toBe('hr_alt1')
+  it('TEST 2: fallback 到 encryptedBossId', () => {
+    expect(extractHrUid({ encryptedBossId: 'hr_alt1' })).toBe('hr_alt1')
   })
 
   it('TEST 3: fallback 到 hrEncryptId', () => {
@@ -221,11 +221,16 @@ describe('extractHrUid (Sprint 2B)', () => {
     expect(extractHrUid(null)).toBeUndefined()
   })
 
-  it('TEST 6: 多个字段都有时取优先级最高的（encryptUserId 优先）', () => {
+  it('TEST 6: 多个字段都有时取优先级最高的（encryptBossId 优先）', () => {
     expect(extractHrUid({
-      encryptUserId: 'hr_main',
-      encryptedUserId: 'hr_alt1',
+      encryptBossId: 'hr_main',
+      encryptedBossId: 'hr_alt1',
       hrEncryptId: 'hr_alt2',
     })).toBe('hr_main')
+  })
+
+  it('TEST 7 (回归防护): 旧推断字段名 encryptUserId 不再被识别', () => {
+    // 防止有人把 fallback chain 加回 encryptUserId（probe 已证明不存在）
+    expect(extractHrUid({ encryptUserId: 'hr_wrong' })).toBeUndefined()
   })
 })

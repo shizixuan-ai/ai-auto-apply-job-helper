@@ -349,9 +349,9 @@ export interface SearchResult {
   /**
    * 招聘方 HR 的 BOSS 加密 uid（Sprint 2B）
    *
-   * BOSS API 字段名：encryptUserId（推断，与 encryptJobId 对仗）
-   * Sprint 2B commit 1 在 searchJobs 内加了 console.log 验证；
-   * 若实测字段名不同（如 encryptedUserId / hrEncryptId），按实测结果调整。
+   * BOSS API 真实字段名：encryptBossId（probe 验证 2026-07-09）
+   * 之前推断的 encryptUserId 是错的（BOSS 把 HR 也叫 "Boss"）
+   * 契约测试基线：tests/fixtures/boss-schema.json
    */
   hrUid?: string
 }
@@ -359,13 +359,13 @@ export interface SearchResult {
 /**
  * 从 BOSS API 单个 job 对象提取 HR 加密 uid（Sprint 2B）
  *
- * 优先字段：encryptUserId（推断，与 encryptJobId 对仗）
- * 备选字段：encryptedUserId / hrEncryptId（实测后可调整）
+ * 实测字段名：encryptBossId（probe 验证 2026-07-09）
+ * 备选字段：encryptedBossId / hrEncryptId（BOSS 改版时扩展 fallback）
  *
  * 导出供单测使用（避免 page.evaluate mock 复杂性）
  */
 export function extractHrUid(job: any): string | undefined {
-  return job?.encryptUserId || job?.encryptedUserId || job?.hrEncryptId
+  return job?.encryptBossId || job?.encryptedBossId || job?.hrEncryptId
 }
 
 /** DOM-First 滚动预加载 + 摘取（API 降级时的 fallback） */
@@ -535,8 +535,8 @@ export async function searchJobs(
       skills: job.skills ?? [],
       link: job.link ?? '',
       // Sprint 2B：HR 加密 uid（friend/add 第二参数 uid）
-      // 推断字段名 encryptUserId，与 encryptJobId 对仗
-      // 实测后若不同，按 console.log 输出调整此处
+      // 实测字段名 encryptBossId（probe 验证 2026-07-09）
+      // 契约基线：tests/fixtures/boss-schema.json userRelatedFields
       hrUid: extractHrUid(job),
     }))
 
