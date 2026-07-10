@@ -25,6 +25,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { matchRules } from '../smoke/rule-matcher.mjs'
 import { runSmokeAgents } from '../smoke/smoke-agent-runner.mjs'
+import { computeVerdict } from '../smoke/verdict.mjs'
 
 // ============================================================
 // 路径
@@ -203,46 +204,8 @@ function writeReport(commitSha, report) {
 }
 
 /**
- * verdict 决策树（与设计文档 §"block/warn 边界"一致）
+ * verdict 决策树已抽到 scripts/smoke/verdict.mjs（独立模块，可直接 import 测）
  */
-function computeVerdict(results) {
-  let hasBlock = false
-  let hasWarn = false
-
-  for (const r of results) {
-    if (r.status === 'passed') continue
-
-    if (r.status === 'timeout') {
-      // timeout 默认 warn，但如果是 required_for 触发的升级为 block
-      // （MVP 阶段：先全部 warn，后续细化）
-      hasWarn = true
-      continue
-    }
-
-    if (r.status === 'failed') {
-      // 硬契约检测（关键词匹配）
-      const combined = `${r.stdout ?? ''}${r.stderr ?? ''}`
-      const hardContractPatterns = [
-        /encryptBossId.*missing/i,
-        /encryptJobId.*missing/i,
-        /jobDetail.*0\s*\/\s*\d+/i, // selector 命中 0%
-        /HR_UID.*not found/i,
-        /FieldNameNotFound/i,
-      ]
-      const isHardContract = hardContractPatterns.some((p) => p.test(combined))
-
-      if (isHardContract) {
-        hasBlock = true
-      } else {
-        hasWarn = true
-      }
-    }
-  }
-
-  if (hasBlock) return 'BLOCK'
-  if (hasWarn) return 'WARN'
-  return 'OK'
-}
 
 function printTerminalReport(report) {
   console.log('')
