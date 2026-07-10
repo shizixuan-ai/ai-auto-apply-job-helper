@@ -104,6 +104,8 @@ async function runOneAgent(trigger, log) {
       shell: true,
       stdio: ['ignore', 'pipe', 'pipe'],
       // detached: false（默认）— 跟随 Node 进程，hook 退出时一起清理
+      // Sprint Smoke 4：透传 process.env 让子进程能访问 .env 加载的变量
+      env: { ...process.env },
     })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

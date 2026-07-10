@@ -71,6 +71,15 @@ describe('pre-commit hook — verdict 决策树', () => {
     ])
     expect(result).toBe('BLOCK')
   })
+
+  it('TEST 8: feishu-schema-verify exit 2 (SKIP) → WARN（环境缺失，非契约破坏）', async () => {
+    // exit 2 → script 在 runner 里被 catch 成 status='failed'（无 special status）
+    // 但 stderr 含 "SKIP（环境未就绪）" 不算硬契约 → WARN
+    const result = await runVerdict([
+      { id: 'a', status: 'failed', exitCode: 2, stdout: '', stderr: 'SKIP（环境未就绪）', duration_ms: 100, error: null },
+    ])
+    expect(result).toBe('WARN')
+  })
 })
 
 /**

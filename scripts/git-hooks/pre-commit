@@ -20,7 +20,7 @@
 // ============================================================
 
 import { execSync } from 'node:child_process'
-import { writeFileSync, mkdirSync } from 'node:fs'
+import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { matchRules } from '../smoke/rule-matcher.mjs'
@@ -34,6 +34,31 @@ const __dirname = dirname(__filename)
 const PROJECT_ROOT = join(__dirname, '..', '..')
 const RULES_PATH = join(PROJECT_ROOT, 'scripts', 'smoke', 'rules.yaml')
 const REPORT_DIR = join(PROJECT_ROOT, '.claude', 'smoke-reports')
+
+// ============================================================
+// 加载 .env（让 feishu-schema-verify 等需要 env 的 trigger 能跑）
+// ------------------------------------------------------------
+// Sprint Smoke 4：pre-commit hook 由 git 直接调用，env 没传给子 shell
+// 这里手解析 KEY=VALUE 注入到 process.env（不引 dotenv 依赖，保持 0-dep）
+// 已存在的 env 优先（不覆盖）
+// ============================================================
+function loadDotEnv() {
+  const envPath = join(PROJECT_ROOT, '.env')
+  if (!existsSync(envPath)) return
+  const text = readFileSync(envPath, 'utf-8')
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const eq = trimmed.indexOf('=')
+    if (eq === -1) continue
+    const key = trimmed.slice(0, eq).trim()
+    const value = trimmed.slice(eq + 1).trim().replace(/^"(.*)"$/, '$1').replace(/^'(.*)'$/, '$1')
+    if (!(key in process.env)) {
+      process.env[key] = value
+    }
+  }
+}
+loadDotEnv()
 
 // ============================================================
 // 颜色（终端 ANSI）

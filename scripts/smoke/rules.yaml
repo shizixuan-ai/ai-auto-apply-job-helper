@@ -23,6 +23,7 @@
 # ============================================================
 
 rules:
+  # 规则 1：Boss 抓取层变更 → 跑真实 BOSS API 探针
   - pattern: "src/browser/**"
     required_for:
       - "src/browser/index.ts"
@@ -33,8 +34,18 @@ rules:
         timeout_sec: 60
         reason: "BOSS 抓取层变更 — 验证真实 API schema 不漂移（encryptBossId 等关键字段）"
 
+  # 规则 2：飞书表 schema 变更 → 验证必填字段都还在
+  - pattern: "src/feishu/**"
+    required_for:
+      - "src/feishu/index.ts"
+    skip_when: "! [ -n \"$FEISHU_APP_TOKEN\" ]"
+    triggers:
+      - id: feishu-schema-verify
+        command: "npx tsx scripts/verify-feishu-schema.mjs"
+        timeout_sec: 30
+        reason: "飞书表 schema 变更 — 验证 HR_UID/打招呼状态/打招呼时间 必填字段都在"
+
 # ============================================================
 # 后续 Sprint 加：
-#   - src/feishu/** → feishu-schema-verify
 #   - src/cli/handlers/** → cli-smoke（search --dry-run --limit 1）
 # ============================================================
