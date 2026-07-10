@@ -45,7 +45,14 @@ rules:
         timeout_sec: 30
         reason: "飞书表 schema 变更 — 验证 HR_UID/打招呼状态/打招呼时间 必填字段都在"
 
-# ============================================================
-# 后续 Sprint 加：
-#   - src/cli/handlers/** → cli-smoke（search --dry-run --limit 1）
-# ============================================================
+  # 规则 3：CLI handler 变更 → 端到端 smoke（search --dry-run，不写飞书）
+  - pattern: "src/cli/handlers/**"
+    required_for:
+      - "src/cli/handlers/search-and-write.ts"
+      - "src/cli/handlers/sync-handler.ts"
+    skip_when: "! curl -s http://localhost:9222/json/version > /dev/null"
+    triggers:
+      - id: cli-smoke
+        command: "npx tsx scripts/cli-smoke.mjs"
+        timeout_sec: 90
+        reason: "CLI handler 变更 — 验证 search 链路 + 评分 + 端到端参数传递"
