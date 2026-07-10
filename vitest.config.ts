@@ -19,6 +19,10 @@ export default defineConfig({
     // - 单测（*.test.ts）也会加载 setup.ts，但单测不发 HTTP 所以无副作用
     // ============================================================
     setupFiles: ['./tests/integration/setup.ts'],
+    // ============================================================
+    // Sprint Smoke 1：smoke runner 测试在 scripts/ 下
+    // ============================================================
+    include: ['src/**/*.test.ts', 'tests/**/*.test.ts', 'scripts/**/*.test.ts'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'text-summary'],
