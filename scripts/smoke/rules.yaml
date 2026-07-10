@@ -1,0 +1,40 @@
+# ============================================================
+# Sprint Smoke rules.yaml — MVP（2026-07-10）
+# ============================================================
+# 目的：定义哪些文件 pattern 改动 → 触发哪些真实验证
+#
+# 字段说明：
+#   pattern       — glob（picomatch），匹配 staged 文件路径
+#   required_for  — 精确文件名（不是 glob）。仅这些文件改 → 才强制触发
+#                   （避免改了 src/browser/logger.ts 也要跑 probe）
+#   triggers[]    — 触发列表
+#     id          — 稳定标识（log grep + report 聚合用）
+#     command     — 要执行的命令（shell 解析）
+#     timeout_sec — 单 Agent 超时
+#     reason      — 人类可读解释（report 里显示）
+#   skip_when     — shell 命令（exit 0 表示要 skip）。例：
+#                   "! curl -s http://localhost:9222/json/version > /dev/null"
+#                   CDP 不在时 curl 失败（exit 非 0）→ ! 翻转 → true → skip
+#
+# 策略（MVP）：
+#   - src/browser/index.ts 改 → 强制跑 boss-probe（CDP 缺失时 skip）
+#   - src/browser/** 其他文件改 → 不触发（避免 logger.ts 改也跑 60s probe）
+#   - 其他目录改 → 不触发真实验证（按 hook 决策）
+# ============================================================
+
+rules:
+  - pattern: "src/browser/**"
+    required_for:
+      - "src/browser/index.ts"
+    skip_when: "! curl -s http://localhost:9222/json/version > /dev/null"
+    triggers:
+      - id: boss-probe
+        command: "npx tsx scripts/probe-boss-api.mjs Java后端"
+        timeout_sec: 60
+        reason: "BOSS 抓取层变更 — 验证真实 API schema 不漂移（encryptBossId 等关键字段）"
+
+# ============================================================
+# 后续 Sprint 加：
+#   - src/feishu/** → feishu-schema-verify
+#   - src/cli/handlers/** → cli-smoke（search --dry-run --limit 1）
+# ============================================================
