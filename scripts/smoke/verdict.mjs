@@ -20,8 +20,15 @@
 //   - jobDetail.*0\s*\/\s*\d+     selector 命中 0%
 //   - HR_UID.*not found           飞书表必填字段缺失
 //   - FieldNameNotFound           飞书表字段名错
+//   - jd length \d+ < \d+         Sprint 2E: JD 长度不足（懒加载假绿直接证据）
+//   - LazyLoadError.*懒加载        Sprint 2E: 只匹配 throw（避免 console.warn 降级提示误判）
 //
 // 其他 failed / timeout → WARN（不阻塞 commit）
+//
+// Sprint 2E 决策 5 修订：原 pattern /懒加载未完成/ 会误命中 console.warn 降级路径
+//   （wapi 返了但短 → console.warn + 降级 page.goto → 最终成功）。
+//   改用 /LazyLoadError.*懒加载/ 精准匹配 throw 出来的错误。
+//   console.warn 不再有 BLOCK 副作用，但 /jd length \d+ < \d+/ 仍兜底（命中即 BLOCK）。
 // ============================================================
 
 // 硬契约关键词（与 pre-commit.mjs 原内嵌版本一致）
@@ -31,6 +38,8 @@ const HARD_CONTRACT_PATTERNS = [
   /jobDetail.*0\s*\/\s*\d+/i, // selector 命中 0%
   /HR_UID.*not found/i,
   /FieldNameNotFound/i,
+  /jd length \d+ < \d+/i,   // Sprint 2E: JD 长度不足硬契约（懒加载假绿直接证据）
+  /LazyLoadError.*懒加载/,  // Sprint 2E: 只匹配 throw（避免 console.warn 降级提示误判 BLOCK）
 ]
 
 /**

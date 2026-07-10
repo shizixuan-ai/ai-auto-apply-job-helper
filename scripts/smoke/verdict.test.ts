@@ -179,4 +179,45 @@ describe('verdict.computeVerdict — 决策树', () => {
     ]
     expect(computeVerdict(results)).toBe('BLOCK')
   })
+
+  it('TEST 13: Sprint 2E — jd length 数字 < 阈值 → BLOCK（懒加载假绿）', () => {
+    const results = [
+      mockResult({
+        id: 'a',
+        status: 'failed',
+        exitCode: 1,
+        stdout: 'verify-jd-length: job1 jd length 487 < 500（懒加载假绿）',
+      }),
+    ]
+    expect(computeVerdict(results)).toBe('BLOCK')
+  })
+
+  it('TEST 14: Sprint 2E — LazyLoadError 完整 message → BLOCK', () => {
+    const results = [
+      mockResult({
+        id: 'a',
+        status: 'failed',
+        exitCode: 1,
+        stderr: 'LazyLoadError: 懒加载未完成 — 所有 selector 都未拿到完整 JD（≥ 500 字符）\n' +
+          '  cause: all_selectors_lazy\n' +
+          '  selectors tried: .job-sec-text, .info-primary\n' +
+          '  length history: .job-sec-text: [300, 450, 487] → jd length 487 < 500',
+      }),
+    ]
+    expect(computeVerdict(results)).toBe('BLOCK')
+  })
+
+  it('TEST 15: Sprint 2E — console.warn 降级提示（无 LazyLoadError）→ WARN（不误判 BLOCK）', () => {
+    // 决策 5 修订证据：wapi 返了但长度不够 → console.warn("懒加载未完成") → 降级 page.goto 成功
+    // 这种场景 stderr 含"懒加载未完成"但没 "LazyLoadError:" 前缀 → 不应 BLOCK
+    const results = [
+      mockResult({
+        id: 'a',
+        status: 'failed',
+        exitCode: 1,
+        stderr: '[fetchJobDetail] wapi 返 487 字符 < 500（懒加载未完成），降级到 page.goto',
+      }),
+    ]
+    expect(computeVerdict(results)).toBe('WARN')
+  })
 })

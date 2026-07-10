@@ -56,3 +56,15 @@ rules:
         command: "npx tsx scripts/cli-smoke.mjs"
         timeout_sec: 90
         reason: "CLI handler 变更 — 验证 search 链路 + 评分 + 端到端参数传递"
+
+  # 规则 4：browser 抓取层变更 → JD 长度硬契约验证（防御懒加载假绿）
+  - pattern: "src/browser/**"
+    required_for:
+      - "src/browser/index.ts"
+      - "src/browser/lazy-load-error.ts"
+    skip_when: "! curl -s http://localhost:9222/json/version > /dev/null"
+    triggers:
+      - id: jd-length-verify
+        command: "node scripts/verify-jd-length.mjs"
+        timeout_sec: 60
+        reason: "Sprint 2E：fetchJobDetail 拿到的 JD 必须 ≥ MIN_JD_LENGTH (500)，防御 BOSS 首屏懒加载假绿"
