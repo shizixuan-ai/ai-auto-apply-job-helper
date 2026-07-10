@@ -14,7 +14,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "probe:boss": "BOSS_SEARCH_PROBE=1 tsx scripts/probe-boss-api.mjs",
-    "probe:boss:debug": "BOSS_SEARCH_PROBE=1 BOSS_SEARCH_DEBUG=1 tsx scripts/probe-boss-api.mjs"
+    "probe:boss:debug": "BOSS_SEARCH_PROBE=1 BOSS_SEARCH_DEBUG=1 tsx scripts/probe-boss-api.mjs",
+    "smoke": "tsx scripts/git-hooks/pre-commit",
+    "prepare": "git config core.hooksPath scripts/git-hooks"
   },
   "dependencies": {
     "chalk": "^5.4.1",

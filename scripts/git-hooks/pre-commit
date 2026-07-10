@@ -1,0 +1,257 @@
+#!/usr/bin/env node
+// ============================================================
+// git pre-commit hook — Sprint Smoke 3
+// ============================================================
+// 触发：每次 git commit（任何工具/编辑器/CLI 都拦）
+// 流程：
+//   1. git diff --cached --name-only → changedFiles
+//   2. matchRules(changedFiles, rules.yaml) → triggers, skipped
+//   3. runSmokeAgents(triggers) → results
+//   4. verdict 决策树 → exit 0/1
+//   5. 写 .claude/smoke-reports/{commit-sha}.json（机器可读）
+//   6. 终端彩色报告（人类可读）
+//
+// 退出码：
+//   0 = 允许 commit（OK 或纯 WARN）
+//   1 = 阻止 commit（任一 BLOCK）
+//
+// 绕过：
+//   git commit --no-verify 跳过本 hook（不推荐，但保留逃生口）
+// ============================================================
+
+import { execSync } from 'node:child_process'
+import { writeFileSync, mkdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { matchRules } from '../smoke/rule-matcher.mjs'
+import { runSmokeAgents } from '../smoke/smoke-agent-runner.mjs'
+
+// ============================================================
+// 路径
+// ============================================================
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
+const PROJECT_ROOT = join(__dirname, '..', '..')
+const RULES_PATH = join(PROJECT_ROOT, 'scripts', 'smoke', 'rules.yaml')
+const REPORT_DIR = join(PROJECT_ROOT, '.claude', 'smoke-reports')
+
+// ============================================================
+// 颜色（终端 ANSI）
+// ============================================================
+const COLOR = {
+  reset: '\x1b[0m',
+  red: '\x1b[31m',
+  green: '\x1b[32m',
+  yellow: '\x1b[33m',
+  cyan: '\x1b[36m',
+  bold: '\x1b[1m',
+  dim: '\x1b[2m',
+}
+
+// ============================================================
+// 主流程
+// ============================================================
+
+main().catch((err) => {
+  console.error(`${COLOR.red}❌ pre-commit smoke 崩溃:${COLOR.reset}`, err)
+  // 崩溃时 fail-open（让 commit 能走，避免 hook bug 阻塞开发）
+  // 但要警告用户
+  console.error(`${COLOR.yellow}⚠️  smoke hook 自身出错，fail-open 放行 commit。建议修复 hook。${COLOR.reset}`)
+  process.exit(0)
+})
+
+async function main() {
+  const startedAt = Date.now()
+
+  // 1. 拿 staged 文件
+  const changedFiles = getStagedFiles()
+  if (changedFiles.length === 0) {
+    console.log(`${COLOR.dim}[smoke] 没有 staged 文件，跳过${COLOR.reset}`)
+    process.exit(0)
+  }
+
+  // 2. 匹配规则
+  const { triggers, skipped } = matchRules(changedFiles, RULES_PATH)
+
+  // 3. 打印 skipped 提示
+  if (skipped.length > 0) {
+    console.log(`${COLOR.yellow}⏭️  ${skipped.length} rule 因环境跳过:${COLOR.reset}`)
+    for (const s of skipped) {
+      console.log(`   ${COLOR.dim}rule #${s.ruleIndex}: ${s.reason}${COLOR.reset}`)
+    }
+  }
+
+  // 4. 跑真实验证（如果有 trigger）
+  let results = []
+  if (triggers.length > 0) {
+    console.log(`${COLOR.cyan}🧪 smoke: 跑 ${triggers.length} 真实验证...${COLOR.reset}`)
+    results = await runSmokeAgents(triggers, { totalTimeoutMs: 300_000 })
+  } else {
+    console.log(`${COLOR.dim}[smoke] changedFiles 没命中任何 trigger，跳过${COLOR.reset}`)
+    process.exit(0)
+  }
+
+  const elapsedMs = Date.now() - startedAt
+
+  // 5. verdict 决策树
+  const verdict = computeVerdict(results)
+
+  // 6. 写 JSON report
+  const commitSha = getHeadCommit() || 'unknown'
+  const report = {
+    commit: commitSha,
+    timestamp: new Date().toISOString(),
+    elapsed_ms: elapsedMs,
+    verdict,
+    changed_files: changedFiles,
+    triggers_executed: triggers.length,
+    rules_skipped: skipped.length,
+    results: results.map((r) => ({
+      id: r.id,
+      status: r.status,
+      exitCode: r.exitCode,
+      duration_ms: r.duration_ms,
+      error: r.error,
+      // stdout/stderr 截前 500 字符（避免 report 过大）
+      stdout_preview: r.stdout?.slice(0, 500),
+      stderr_preview: r.stderr?.slice(0, 500),
+    })),
+  }
+  writeReport(commitSha, report)
+
+  // 7. 终端报告
+  printTerminalReport(report)
+
+  // 8. exit code
+  if (verdict === 'BLOCK') {
+    console.log(`\n${COLOR.red}${COLOR.bold}❌ smoke hook 阻止 commit（verdict=BLOCK）${COLOR.reset}`)
+    console.log(`${COLOR.dim}绕过：git commit --no-verify（不推荐）${COLOR.reset}`)
+    process.exit(1)
+  }
+
+  if (verdict === 'WARN') {
+    console.log(`\n${COLOR.yellow}⚠️  smoke hook 警告（verdict=WARN，允许 commit）${COLOR.reset}`)
+  } else {
+    console.log(`\n${COLOR.green}✅ smoke hook 通过（verdict=OK）${COLOR.reset}`)
+  }
+  process.exit(0)
+}
+
+// ============================================================
+// Helpers
+// ============================================================
+
+function getStagedFiles() {
+  try {
+    const output = execSync('git diff --cached --name-only', {
+      cwd: PROJECT_ROOT,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    return output.split('\n').filter((f) => f.trim().length > 0)
+  } catch (err) {
+    console.error(`${COLOR.red}[smoke] git diff --cached 失败: ${err.message}${COLOR.reset}`)
+    return []
+  }
+}
+
+function getHeadCommit() {
+  try {
+    return execSync('git rev-parse --short HEAD', {
+      cwd: PROJECT_ROOT,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+  } catch {
+    return null
+  }
+}
+
+function writeReport(commitSha, report) {
+  try {
+    mkdirSync(REPORT_DIR, { recursive: true })
+    const path = join(REPORT_DIR, `${commitSha}.json`)
+    writeFileSync(path, JSON.stringify(report, null, 2), 'utf-8')
+  } catch (err) {
+    console.warn(`${COLOR.yellow}[smoke] 写 report 失败: ${err.message}${COLOR.reset}`)
+  }
+}
+
+/**
+ * verdict 决策树（与设计文档 §"block/warn 边界"一致）
+ */
+function computeVerdict(results) {
+  let hasBlock = false
+  let hasWarn = false
+
+  for (const r of results) {
+    if (r.status === 'passed') continue
+
+    if (r.status === 'timeout') {
+      // timeout 默认 warn，但如果是 required_for 触发的升级为 block
+      // （MVP 阶段：先全部 warn，后续细化）
+      hasWarn = true
+      continue
+    }
+
+    if (r.status === 'failed') {
+      // 硬契约检测（关键词匹配）
+      const combined = `${r.stdout ?? ''}${r.stderr ?? ''}`
+      const hardContractPatterns = [
+        /encryptBossId.*missing/i,
+        /encryptJobId.*missing/i,
+        /jobDetail.*0\s*\/\s*\d+/i, // selector 命中 0%
+        /HR_UID.*not found/i,
+        /FieldNameNotFound/i,
+      ]
+      const isHardContract = hardContractPatterns.some((p) => p.test(combined))
+
+      if (isHardContract) {
+        hasBlock = true
+      } else {
+        hasWarn = true
+      }
+    }
+  }
+
+  if (hasBlock) return 'BLOCK'
+  if (hasWarn) return 'WARN'
+  return 'OK'
+}
+
+function printTerminalReport(report) {
+  console.log('')
+  console.log(`${COLOR.bold}═══════════ SMOKE REPORT ═══════════${COLOR.reset}`)
+  console.log(`commit:     ${report.commit}`)
+  console.log(`verdict:    ${colorizeVerdict(report.verdict)}`)
+  console.log(`elapsed:    ${(report.elapsed_ms / 1000).toFixed(1)}s`)
+  console.log(`triggers:   ${report.triggers_executed} executed, ${report.rules_skipped} skipped`)
+  console.log('')
+
+  for (const r of report.results) {
+    const statusIcon = {
+      passed: `${COLOR.green}✅${COLOR.reset}`,
+      failed: `${COLOR.red}❌${COLOR.reset}`,
+      timeout: `${COLOR.yellow}⏱️ ${COLOR.reset}`,
+      skipped: `${COLOR.dim}⏭️ ${COLOR.reset}`,
+    }[r.status] || '?'
+
+    console.log(`${statusIcon} ${r.id} (${r.duration_ms}ms)`)
+    if (r.error) {
+      console.log(`     ${COLOR.dim}${r.error}${COLOR.reset}`)
+    }
+    if (r.stderr_preview && r.status !== 'passed') {
+      const preview = r.stderr_preview.split('\n').slice(0, 3).join('\n     ')
+      console.log(`     ${COLOR.red}${preview}${COLOR.reset}`)
+    }
+  }
+}
+
+function colorizeVerdict(v) {
+  const map = {
+    OK: `${COLOR.green}OK${COLOR.reset}`,
+    WARN: `${COLOR.yellow}WARN${COLOR.reset}`,
+    BLOCK: `${COLOR.red}${COLOR.bold}BLOCK${COLOR.reset}`,
+  }
+  return map[v] || v
+}

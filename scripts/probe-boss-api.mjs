@@ -106,13 +106,14 @@ try {
     if (/url|link/i.test(key)) return '[URL_OMITTED]'
     return value
   }
-  // gps 坐标是 PII，固定 anonymize（不依赖 sanitize 函数）
-  if (sanitized.gps && typeof sanitized.gps === 'object') {
-    sanitized.gps = { longitude: '[REDACTED]', latitude: '[REDACTED]' }
-  }
+  // Sprint Smoke 3 修复：把 sanitized 声明移到 sanitize 函数后（之前 TDZ 错）
   const sanitized = {}
   for (const [k, v] of Object.entries(firstJob)) {
     sanitized[k] = sanitize(k, v)
+  }
+  // gps 坐标是 PII，固定 anonymize（不依赖 sanitize 函数）
+  if (sanitized.gps && typeof sanitized.gps === 'object') {
+    sanitized.gps = { longitude: '[REDACTED]', latitude: '[REDACTED]' }
   }
   const userRelated = Object.keys(firstJob)
     .filter((k) => /user|hr|encrypt/i.test(k))
