@@ -19,6 +19,7 @@ import { connectToUserChrome, attachPlaywrightToCDP } from './cdp.js'
 import { withGuard, DEFAULT_GUARD_CONFIG, type GuardConfig, GuardError } from './guard.js'
 import { typeText, type TypeTextOptions } from './human.js'
 import { detectCityMismatch, type CityReportableJob } from './city-utils.js'
+import { LazyLoadError, DEFAULT_MIN_JD_LENGTH } from './lazy-load-error.js'
 
 // ============================================================
 // 常量
@@ -663,7 +664,9 @@ export const JD_SELECTORS: ReadonlyArray<string> = [
 /** 单个选择器独立超时（不要和 page.goto 的 30s 串行） */
 const JD_SELECTOR_TIMEOUT_MS = 3_000
 
-export async function fetchJobDetail(page: any, jobId: string, opts: { throttleMs?: number } = {}): Promise<string> {
+export async function fetchJobDetail(page: any, jobId: string, opts: { throttleMs?: number; minJdLength?: number } = {}): Promise<string> {
+  // Sprint 2E：测试可通过 opts.minJdLength=0 跳过长度校验（聚焦 selector 链测试）
+  const minJdLength = opts.minJdLength ?? DEFAULT_MIN_JD_LENGTH
   // ============================================================
   // Sprint 1A 修复 P0：先试 wapi JSON（带 cookie），失败再降级 page.goto
   // 原因：page.goto 高频触发 BOSS _security_check 反爬拦截
@@ -673,7 +676,11 @@ export async function fetchJobDetail(page: any, jobId: string, opts: { throttleM
   try {
     const jdFromWapi = await fetchJobDetailViaWapi(page, jobId)
     if (jdFromWapi && jdFromWapi.length > 0) {
-      return jdFromWapi
+      // Sprint 2E：wapi 返了但长度不够 → 视为懒加载未完成，降级
+      if (jdFromWapi.length >= minJdLength) {
+        return jdFromWapi
+      }
+      console.warn(`[fetchJobDetail] wapi 返 ${jdFromWapi.length} 字符 < ${minJdLength}（懒加载未完成），降级到 page.goto`)
     }
     // wapi 返了但 jobDesc 为空 → 降级
   } catch (err) {
@@ -686,28 +693,47 @@ export async function fetchJobDetail(page: any, jobId: string, opts: { throttleM
   // 尝试 2：降级到 page.goto + 限速（默认 3000ms，缓解反爬）
   // 测试时传 throttleMs: 0 跳过 sleep
   const throttleMs = opts.throttleMs ?? 3000
+  const fullUrl = `https://www.zhipin.com/job_detail/${jobId}.html`
+
+  // Sprint 2E 决策 3：throttleMs 之前 waitForSelector('body', 5s) 检查骨架
+  // 防止"等 3 秒后页面 404 / 空白"浪费 selector 探针时间
   if (throttleMs > 0) {
     await sleep(throttleMs)
   }
-  const fullUrl = `https://www.zhipin.com/job_detail/${jobId}.html`
   await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 })
 
+  // Sprint 2E 决策 3（实际实现）：page.goto 后等 body 骨架
+  // 防止"等 3 秒后页面 404 / 空白"浪费 selector 探针时间
+  await page.waitForSelector('body', { timeout: 5_000 })
+
   // Fallback selector 链：每个独立超时，返回首个非空文本
+  // Sprint 2E：替换 waitForSelector → waitForFunction(textLength >= MIN)
+  // 防御 BOSS 首屏只渲染 60% JD（懒加载），等文本稳定到足够长
   const triedSelectors: string[] = []
+  const lengthHistory: Record<string, number[]> = {}
   for (const selector of JD_SELECTORS) {
     triedSelectors.push(selector)
+    lengthHistory[selector] = []
     try {
-      await page.waitForSelector(selector, { timeout: JD_SELECTOR_TIMEOUT_MS })
+      await page.waitForFunction(
+        (sel: string, minLen: number) => {
+          const el = document.querySelector(sel)
+          return el !== null && (el.textContent ?? '').trim().length >= minLen
+        },
+        selector,
+        minJdLength,
+        { timeout: JD_SELECTOR_TIMEOUT_MS, polling: 500 },
+      )
     } catch {
       // 超时或未命中 → 试下一个
       continue
     }
     try {
       const jd = await page.$eval(selector, (el: any) => el.textContent?.trim() ?? '')
-      if (jd && jd.length > 0) {
+      if (jd && jd.length >= minJdLength) {
         return jd
       }
-      // 选择器命中但内容为空（BOSS 改了结构）→ 继续试下一个
+      // 选择器命中但长度不够（即使 waitForFunction resolve 了，仍二次校验）
       continue
     } catch {
       // $eval 失败（极少见：选择器 race condition）
@@ -715,14 +741,13 @@ export async function fetchJobDetail(page: any, jobId: string, opts: { throttleM
     }
   }
 
-  // 所有选择器都失败
-  throw new Error(
-    `fetchJobDetail 失败：尝试了 ${triedSelectors.length} 个选择器都未命中 JD 容器\n` +
-      `  URL: ${fullUrl}\n` +
-      `  已尝试: ${triedSelectors.join(', ')}\n` +
-      `  可能原因：(1) BOSS 又改 HTML（跑 scripts/probe-boss-selectors.sh 找新选择器）` +
-      ` (2) jobId 无效/岗位已下架 (3) 登录态失效`,
-  )
+  // 所有选择器都失败 → 抛 LazyLoadError（含 lengthHistory）
+  throw new LazyLoadError({
+    url: fullUrl,
+    selectors: triedSelectors,
+    lengthHistory,
+    cause: 'all_selectors_lazy',
+  })
 }
 
 /**

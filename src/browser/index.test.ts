@@ -22,6 +22,9 @@ function makeMockPage() {
   return {
     goto: vi.fn().mockResolvedValue(undefined),
     waitForSelector: vi.fn().mockResolvedValue(undefined),
+    // Sprint 2E：fetchJobDetail 改用 waitForFunction 防御懒加载
+    // 老测试需要这个 mock 默认 resolve（不触发超时）
+    waitForFunction: vi.fn().mockResolvedValue(undefined),
     $eval: vi.fn().mockResolvedValue(''),
     $: vi.fn().mockResolvedValue(null), // probe 不命中任何 selector
     click: vi.fn().mockResolvedValue(undefined),
@@ -120,12 +123,16 @@ describe('sendGreeting × GuardError', () => {
 // ============================================================
 
 describe('fetchJobDetail — fallback selector 链', () => {
+  // Sprint 2E：老 selector 链测试用 MIN_JD_LENGTH=0 跑（聚焦 selector 逻辑，不被长度校验干扰）
+  // 懒加载长度校验单独由 Sprint 2E-A/B/C 覆盖
+  const OLD_BEHAVIOR_OPTS = { throttleMs: 0, minJdLength: 0 } as any
+
   it('主选择器命中：返回 .job-sec-text 的文本', async () => {
     const page = makeMockPage()
     page.waitForSelector = vi.fn().mockResolvedValue(undefined)
     page.$eval = vi.fn().mockResolvedValue('主选择器拿到的 JD')
 
-    const jd = await fetchJobDetail(page as any, 'JOB123')
+    const jd = await fetchJobDetail(page as any, 'JOB123', OLD_BEHAVIOR_OPTS)
 
     expect(jd).toBe('主选择器拿到的 JD')
     expect(page.goto).toHaveBeenCalledWith(
@@ -136,22 +143,18 @@ describe('fetchJobDetail — fallback selector 链', () => {
 
   it('🚨 关键：主选择器超时，fallback 选择器命中 → 返回 fallback 文本', async () => {
     const page = makeMockPage()
-    // 第一次 waitForSelector 抛 timeout，第二次成功
-    page.waitForSelector = vi
+    page.waitForFunction = vi
       .fn()
-      .mockRejectedValueOnce(new Error('Timeout 3000ms exceeded'))
+      .mockRejectedValueOnce(new Error('waitForFunction timeout'))
       .mockResolvedValueOnce(undefined)
-    // $eval 只在最后那个 selector 被调用时返回文本
     page.$eval = vi.fn().mockImplementation(async (selector: string) => {
       if (selector === '.job-sec-text') throw new Error('主选择器拿不到')
       return 'fallback 拿到的 JD 内容'
     })
 
-    const jd = await fetchJobDetail(page as any, 'JOB456')
+    const jd = await fetchJobDetail(page as any, 'JOB456', OLD_BEHAVIOR_OPTS)
 
     expect(jd).toBe('fallback 拿到的 JD 内容')
-    // waitForSelector 至少被调用 2 次（主 + 至少 1 个 fallback）
-    expect(page.waitForSelector).toHaveBeenCalledTimes(2)
   })
 
   it('主选择器返空文本时，继续尝试 fallback（不返空串当成功）', async () => {
@@ -163,22 +166,26 @@ describe('fetchJobDetail — fallback selector 链', () => {
       return '真正有内容的 JD'
     })
 
-    const jd = await fetchJobDetail(page as any, 'JOB789')
+    const jd = await fetchJobDetail(page as any, 'JOB789', OLD_BEHAVIOR_OPTS)
 
     expect(jd).toBe('真正有内容的 JD')
   })
 
   it('🚨 所有选择器都失败：抛带 URL + 尝试列表的详细错误', async () => {
     const page = makeMockPage()
-    page.waitForSelector = vi.fn().mockRejectedValue(new Error('Timeout'))
+    // Sprint 2E 决策 3：body 骨架检查单独 resolve（不干扰"所有 selector 都失败"的本意）
+    page.waitForSelector = vi.fn().mockImplementation(async (sel: string) => {
+      if (sel === 'body') return undefined
+      throw new Error('Timeout')
+    })
     page.$eval = vi.fn().mockRejectedValue(new Error('not found'))
 
     // 传 throttleMs: 0 跳过限速 sleep（生产 3000ms 限速是为了反爬）
-    await expect(fetchJobDetail(page as any, 'BAD_JOB', { throttleMs: 0 })).rejects.toThrow(
+    await expect(fetchJobDetail(page as any, 'BAD_JOB', OLD_BEHAVIOR_OPTS)).rejects.toThrow(
       /job_detail\/BAD_JOB\.html/,
     )
     // 验证错误消息包含尝试过的选择器列表（让用户能立刻定位是哪个 selector 失效）
-    await expect(fetchJobDetail(page as any, 'BAD_JOB', { throttleMs: 0 })).rejects.toThrow(
+    await expect(fetchJobDetail(page as any, 'BAD_JOB', OLD_BEHAVIOR_OPTS)).rejects.toThrow(
       /\.job-sec-text.*job-detail-section/s,
     )
   })
@@ -187,7 +194,7 @@ describe('fetchJobDetail — fallback selector 链', () => {
     const page = makeMockPage()
     page.goto = vi.fn().mockRejectedValue(new Error('net::ERR_NAME_NOT_RESOLVED'))
 
-    await expect(fetchJobDetail(page as any, 'X')).rejects.toThrow(/ERR_NAME_NOT_RESOLVED/)
+    await expect(fetchJobDetail(page as any, 'X', OLD_BEHAVIOR_OPTS)).rejects.toThrow(/ERR_NAME_NOT_RESOLVED/)
     expect(page.waitForSelector).not.toHaveBeenCalled()
   })
 })
@@ -359,5 +366,110 @@ describe('searchJobs — Phase 1 跳过逻辑（Sprint 2D）', () => {
       // 同上
     }
     expect(page.goto).toHaveBeenCalled()
+  })
+})
+
+// ============================================================
+// Sprint 2E: fetchJobDetail 懒加载防御（ADR-0004）
+// ============================================================
+// 核心问题（2026-07-10 真实探针）：
+//   BOSS 首屏只渲染 60% JD（.job-sec-text textLength=551），
+//   等 3 秒才补齐到 917 字符。
+//   旧 waitForSelector 一出现就 resolve → 拿到不完整 JD → 假绿
+//
+// 修复方向：
+//   - 双路加 MIN_JD_LENGTH=500 长度校验
+//   - waitForFunction 替换 waitForSelector
+//   - 抛 LazyLoadError 含 lengthHistory
+// ============================================================
+
+describe('Sprint 2E: fetchJobDetail 懒加载防御', () => {
+  // helper：构造带 waitForFunction 的 mock page
+  // waitForFunction 调用时执行 fn(selector, MIN_JD_LENGTH)，fn 检查 mock DOM 长度
+  function makeLazyMockPage(opts: {
+    wapiResult: { ok: boolean; jd?: string; error?: string }
+    pageEvalResults?: string[]
+    /** mock DOM：每个 selector 对应的 textLength（默认全 0 = "未渲染"） */
+    selectorTextLengths?: Record<string, number>
+  }) {
+    const page = makeMockPage()
+    page.evaluate = vi.fn().mockResolvedValue(opts.wapiResult)
+    page.waitForFunction = vi.fn().mockImplementation(async (fn: any, sel: string, minLen: number) => {
+      const l = opts.selectorTextLengths?.[sel] ?? 0
+      if (l < minLen) throw new Error(`waitForFunction timeout (mock): selector ${sel} length ${l} < ${minLen}`)
+    })
+    // $eval 返回值序列
+    let evalIdx = 0
+    page.$eval = vi.fn().mockImplementation(async () => {
+      const v = opts.pageEvalResults?.[evalIdx] ?? '完整 JD 内容，长度足够'
+      evalIdx++
+      return v
+    })
+    return page
+  }
+
+  // ============================================================
+  // TEST A: wapi 返 0 字符 → 自动降级 page.goto
+  // ============================================================
+  it('Sprint 2E-A: wapi 返 ok 但 jd 长度 < MIN_JD_LENGTH → 视为懒加载未完成，降级到 page.goto', async () => {
+    // 完整 JD：每段 8 字符 × 100 段 = 800 字符 > 500
+    const fullJd = '完整 JD 内容 '.repeat(100)
+    const page = makeLazyMockPage({
+      wapiResult: { ok: true, jd: '太短了' }, // 4 字符，远 < 500
+      pageEvalResults: [fullJd],
+      selectorTextLengths: {
+        '.job-sec-text': fullJd.length, // DOM 已渲染完整（800 字符）
+      },
+    })
+
+    const jd = await fetchJobDetail(page as any, 'JOB_LAZY', { throttleMs: 0 })
+
+    expect(jd.length).toBeGreaterThan(500) // 拿到完整 JD，不是 wapi 的"太短了"
+    expect(page.goto).toHaveBeenCalled() // 走了降级路径
+  })
+
+  // ============================================================
+  // TEST B: page.waitForSelector 抛 → 但 waitForFunction 等到完整 → 返完整 JD
+  // ============================================================
+  it('Sprint 2E-B: waitForFunction 等到 textLength >= MIN → 返完整 JD（不等 waitForSelector）', async () => {
+    // wapi 失败 → 走 page.goto 降级
+    // waitForFunction resolve → 拿到完整 JD
+    const fullJd = '完整 JD 内容 '.repeat(100) // 800 字符 > 500
+    const page = makeLazyMockPage({
+      wapiResult: { ok: false, error: 'jobDesc 字段缺失或为空' },
+      pageEvalResults: [fullJd],
+      selectorTextLengths: {
+        '.job-sec-text': fullJd.length, // DOM 已渲染完整
+      },
+    })
+
+    const jd = await fetchJobDetail(page as any, 'JOB_OK', { throttleMs: 0 })
+
+    expect(jd).toBe(fullJd)
+    expect(page.waitForFunction).toHaveBeenCalled()
+  })
+
+  // ============================================================
+  // TEST C: 全部 selector waitForFunction 超时 → 抛 LazyLoadError with lengthHistory
+  // ============================================================
+  it('Sprint 2E-C: 所有 selector waitForFunction 超时 → 抛 LazyLoadError（含 lengthHistory）', async () => {
+    // wapi 失败 + 所有 waitForFunction 抛 timeout
+    const page = makeMockPage()
+    page.evaluate = vi.fn().mockResolvedValue({ ok: false, error: 'wapi fail' })
+    page.waitForFunction = vi.fn().mockRejectedValue(new Error('Timeout 10000ms exceeded'))
+    // $eval 也返空（万一 waitForFunction 跳过）
+    page.$eval = vi.fn().mockResolvedValue('')
+
+    await expect(
+      fetchJobDetail(page as any, 'JOB_FAIL', { throttleMs: 0 }),
+    ).rejects.toThrow(/LazyLoadError|懒加载|JD 长度/)
+
+    // 错误消息包含 selector 历史（让人能立刻定位）
+    try {
+      await fetchJobDetail(page as any, 'JOB_FAIL2', { throttleMs: 0 })
+    } catch (err: any) {
+      expect(err.message).toContain('.job-sec-text')
+      expect(err.message).toContain('textLength')
+    }
   })
 })
