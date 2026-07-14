@@ -2,6 +2,7 @@
 // 浏览器自动化层 — CDP 接管 + Stealth Fallback
 // ============================================================
 // 架构（参见 docs/research/boss-auto-apply-2026-06-research.md §5.2）：
+// 架构（参见 docs/research/boss-auto-apply-2026-06-research.md §5.2）：
 //
 //   CDP 接管模式（主路径）   → chromium.connectOverCDP(9222)
 //                              接管用户已登录的真 Chrome
@@ -20,6 +21,7 @@ import { withGuard, DEFAULT_GUARD_CONFIG, type GuardConfig, GuardError } from '.
 import { typeText, type TypeTextOptions } from './human.js'
 import { detectCityMismatch, type CityReportableJob } from './city-utils.js'
 import { LazyLoadError, DEFAULT_MIN_JD_LENGTH } from './lazy-load-error.js'
+import { robustEvaluate } from './robust-evaluate.js'
 
 // ============================================================
 // 常量
@@ -355,6 +357,19 @@ export interface SearchResult {
    * 契约测试基线：tests/fixtures/boss-schema.json
    */
   hrUid?: string
+  /**
+   * BOSS list-context lid（card.json 必传参数，Sprint 2026-07-12 实测确认）
+   *
+   * 来源：search/joblist.json 响应里 jobList[].lid
+   * 单 jobId 不够——必须 lid + securityId 才能拿到完整 JD
+   */
+  lid?: string
+  /**
+   * BOSS job securityId（card.json 必传参数，Sprint 2026-07-12 实测确认）
+   *
+   * 来源：search/joblist.json 响应里 jobList[].securityId
+   */
+  securityId?: string
 }
 
 /**
@@ -486,6 +501,9 @@ export async function searchJobs(
   const isDebug = process.env.BOSS_SEARCH_DEBUG === '1'
   const isProbe = process.env.BOSS_SEARCH_PROBE === '1'
 
+  // Sprint 2026-07-13 user-rolled-back：原本改为 robustEvaluate（ADR-0005），
+  //   因 BOSS 服务端风控拦截才是真实问题（参见 feedback_boss_anti_bot_status memory）
+  //   robustEvaluate 本身保留在 ./robust-evaluate.ts，后续 sprint 收编其他调用点
   const apiResult = await page.evaluate(async (body: any) => {
     try {
       const res = await fetch('https://www.zhipin.com/wapi/zpgeek/search/joblist.json', {
@@ -568,6 +586,10 @@ export async function searchJobs(
       // 实测字段名 encryptBossId（probe 验证 2026-07-09）
       // 契约基线：tests/fixtures/boss-schema.json userRelatedFields
       hrUid: extractHrUid(job),
+      // Sprint 2026-07-12：card.json 必传参数（实测确认 detail.json 已要求完整参数）
+      // 来源：search/joblist.json 响应里 jobList[].lid / jobList[].securityId
+      lid: job.lid,
+      securityId: job.securityId,
     }))
 
     // ---- Phase 2.5: --city 警告（详见 ADR-0003 + city-utils.ts） ----
@@ -664,30 +686,42 @@ export const JD_SELECTORS: ReadonlyArray<string> = [
 /** 单个选择器独立超时（不要和 page.goto 的 30s 串行） */
 const JD_SELECTOR_TIMEOUT_MS = 3_000
 
-export async function fetchJobDetail(page: any, jobId: string, opts: { throttleMs?: number; minJdLength?: number } = {}): Promise<string> {
+export async function fetchJobDetail(page: any, jobId: string, opts: { throttleMs?: number; minJdLength?: number; lid?: string; securityId?: string } = {}): Promise<string> {
   // Sprint 2E：测试可通过 opts.minJdLength=0 跳过长度校验（聚焦 selector 链测试）
   const minJdLength = opts.minJdLength ?? DEFAULT_MIN_JD_LENGTH
   // ============================================================
   // Sprint 1A 修复 P0：先试 wapi JSON（带 cookie），失败再降级 page.goto
   // 原因：page.goto 高频触发 BOSS _security_check 反爬拦截
+  //
+  // Sprint 2026-07-12 修复：
+  //   - 实测确认 detail.json?jobId=XXX 报 code:17 缺少必要参数
+  //   - 真实接口是 /wapi/zpgeek/job/card.json，需要 lid + securityId
+  //   - 缺 lid/securityId 时跳过 wapi 路径，直接走 page.goto 降级（向后兼容）
+  //   - card.json 的 zpData.jobCard.postDescription 就是完整 JD（929 字符实测）
   // ============================================================
 
-  // 尝试 1：wapi JSON（在 BOSS 域内 fetch，带页面 cookie + UA）
-  try {
-    const jdFromWapi = await fetchJobDetailViaWapi(page, jobId)
-    if (jdFromWapi && jdFromWapi.length > 0) {
-      // Sprint 2E：wapi 返了但长度不够 → 视为懒加载未完成，降级
-      if (jdFromWapi.length >= minJdLength) {
-        return jdFromWapi
+  // 尝试 1：wapi JSON（仅在 ctx 完整时尝试；缺 ctx 直接降级）
+  if (opts.lid && opts.securityId) {
+    try {
+      const jdFromWapi = await fetchJobDetailViaWapi(page, jobId, opts.lid, opts.securityId)
+      if (jdFromWapi && jdFromWapi.length > 0) {
+        // Sprint 2E：wapi 返了但长度不够 → 视为懒加载未完成，降级
+        if (jdFromWapi.length >= minJdLength) {
+          return jdFromWapi
+        }
+        console.warn(`[fetchJobDetail] wapi 返 ${jdFromWapi.length} 字符 < ${minJdLength}（懒加载未完成），降级到 page.goto`)
       }
-      console.warn(`[fetchJobDetail] wapi 返 ${jdFromWapi.length} 字符 < ${minJdLength}（懒加载未完成），降级到 page.goto`)
+      // wapi 返了但 postDescription 为空 → 降级
+    } catch (err) {
+      // wapi 失败（缺参数 / 网络 / 解析）→ 降级到 page.goto
+      // 不静默吞：Sprint 1A 假绿零容忍
+      const msg = err instanceof Error ? err.message : String(err)
+      console.warn(`[fetchJobDetail] wapi 失败，降级到 page.goto: ${msg}`)
     }
-    // wapi 返了但 jobDesc 为空 → 降级
-  } catch (err) {
-    // wapi 失败（无 zp_token / 网络 / 解析）→ 降级到 page.goto
-    // 不静默吞：Sprint 1A 假绿零容忍
-    const msg = err instanceof Error ? err.message : String(err)
-    console.warn(`[fetchJobDetail] wapi 失败，降级到 page.goto: ${msg}`)
+  } else {
+    // 缺 ctx — 老路径（CLI greet / sync-handler 默认 GenerateGreeting）只拿 jobId
+    // 没法调 card.json（缺 lid/securityId），直接走 page.goto
+    console.warn('[fetchJobDetail] opts.lid/securityId 缺失，跳过 wapi 路径，直接 page.goto')
   }
 
   // 尝试 2：降级到 page.goto + 限速（默认 3000ms，缓解反爬）
@@ -751,38 +785,52 @@ export async function fetchJobDetail(page: any, jobId: string, opts: { throttleM
 }
 
 /**
- * Sprint 1A P0 修复：通过 BOSS wapi JSON 抓取 JD（在 BOSS 域内 fetch，带 cookie）
+ * Sprint 2026-07-12 修复：通过 BOSS card.json 抓取 JD（在 BOSS 域内 fetch，带 cookie）
  * 避免 page.goto 触发 _security_check 反爬
  *
- * 端点：/wapi/zpgeek/job/detail.json?jobId=XXX
+ * 端点：/wapi/zpgeek/job/card.json?lid=XXX&securityId=XXX&sessionId=
  * 关键：
  *   - 必须在 BOSS 域内 fetch（CORS + cookie 限制）
- *   - 需要 zp_token cookie（搜索页就带）
- *   - 返 JSON：{ zpData: { jobDetail: { jobDesc: "..." } } }
+ *   - 实测确认：detail.json?jobId=XXX 单参数报 code:17，必须用 card.json + lid + securityId
+ *   - 实测确认：Zp_token header 不影响响应（不影响 = 不必加）
+ *   - 返 JSON：{ zpData: { jobCard: { postDescription: "..." } } } — 929 字符完整 JD
+ *   - 契约基线：2026-07-12 curl 实测
  */
-async function fetchJobDetailViaWapi(page: any, jobId: string): Promise<string> {
+async function fetchJobDetailViaWapi(page: any, jobId: string, lid: string, securityId: string): Promise<string> {
   // 在 BOSS 域内 fetch（page.evaluate 内 this = window）
-  const result = await page.evaluate(async (jobId: string) => {
+  // ⚠️ page.evaluate(fn, arg) 只支持 1 个参数 — 多个参数必须包对象
+  console.log(`[fetchJobDetailViaWapi] jobId=${jobId} lid=${lid} securityId=${securityId?.slice(0,20)}...`)
+  // Sprint 2026-07-14 / task #30：page.evaluate → robustEvaluate
+  //   治 BOSS SPA navigation race（ADR-0005 后续项）
+  //   行为契约：race 类错误重试 ≤3 次；非 race（业务错）立即抛
+  const result = await robustEvaluate(page, async (args: unknown) => {
+    const { lid, securityId } = args as { lid: string; securityId: string }
     try {
-      const resp = await fetch(`/wapi/zpgeek/job/detail.json?jobId=${encodeURIComponent(jobId)}`, {
-        credentials: 'include',  // 带 cookie
-        headers: { Accept: 'application/json' },
-      })
+      const resp = await fetch(
+        `/wapi/zpgeek/job/card.json?lid=${encodeURIComponent(lid)}&securityId=${encodeURIComponent(securityId)}&sessionId=`,
+        {
+          credentials: 'include',  // 带 cookie
+          headers: { Accept: 'application/json' },
+        }
+      )
       if (!resp.ok) {
         return { ok: false, error: `HTTP ${resp.status}` }
       }
       const data: any = await resp.json()
-      const jd = data?.zpData?.jobDetail?.jobDesc
+      if (data?.code !== 0) {
+        return { ok: false, error: `BOSS code=${data?.code} message=${data?.message}` }
+      }
+      const jd = data?.zpData?.jobCard?.postDescription
       if (typeof jd !== 'string' || jd.length === 0) {
-        return { ok: false, error: 'jobDesc 字段缺失或为空' }
+        return { ok: false, error: 'postDescription 字段缺失或为空' }
       }
       return { ok: true, jd }
     } catch (e: any) {
       return { ok: false, error: e?.message ?? String(e) }
     }
-  }, jobId)
+  }, { lid, securityId })
 
-  if (!result?.ok) {
+  if (!result?.ok || !result.jd) {
     throw new Error(result?.error ?? 'wapi 返回未知错误')
   }
   return result.jd
@@ -848,8 +896,11 @@ export async function sendGreeting(
       page,
       async () => {
         // page.evaluate 在浏览器上下文执行 fetch（带 cookie + Referer）
-        const data = await page.evaluate(
-          async ({ url, body }: { url: string; body: string }) => {
+        // Sprint 2026-07-14 / task #30：page.evaluate → robustEvaluate（ADR-0005 后续项）
+        const data = await robustEvaluate(
+          page,
+          async (args: unknown) => {
+            const { url, body } = args as { url: string; body: string }
             const resp = await fetch(url, {
               method: 'POST',
               headers: {

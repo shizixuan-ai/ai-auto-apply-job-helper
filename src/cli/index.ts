@@ -247,7 +247,7 @@ program
 
         const deps = {
           searchJobs: async (_k: string, _c?: string) => jobs,   // 复用上面的搜索结果
-          fetchJobDetail: (id: string) => fetchJobDetail(page, id),
+          fetchJobDetail: (id: string, ctx?: { lid?: string; securityId?: string }) => fetchJobDetail(page, id, ctx),
           scoreJob: (jd: string, summary: any, _llm: unknown) => scoreJob(jd, summary, llm),
           createRecord: async (fields: any) => {
             // dryRun 走 no-op；write 走真写

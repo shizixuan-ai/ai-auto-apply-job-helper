@@ -28,8 +28,9 @@ function makeMockPage() {
     $eval: vi.fn().mockResolvedValue(''),
     $: vi.fn().mockResolvedValue(null), // probe 不命中任何 selector
     click: vi.fn().mockResolvedValue(undefined),
-    // wapi 调用默认返 ok=false（jobDesc 缺失），触发降级到 page.goto
-    evaluate: vi.fn().mockResolvedValue({ ok: false, error: 'jobDesc 字段缺失或为空' }),
+    // wapi 调用默认返 ok=false（postDescription 缺失），触发降级到 page.goto
+    // Sprint 2026-07-12：fetchJobDetailViaWapi 改读 zpData.jobCard.postDescription
+    evaluate: vi.fn().mockResolvedValue({ ok: false, error: 'postDescription 字段缺失或为空' }),
     mouse: { move: vi.fn().mockResolvedValue(undefined) },
     focus: vi.fn().mockResolvedValue(undefined),
     keyboard: {

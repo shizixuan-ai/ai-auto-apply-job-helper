@@ -35,6 +35,10 @@ export interface SearchResultLite {
   link?: string
   /** Sprint 2B：招聘方 HR 的 BOSS 加密 uid（friend/add 第二参数） */
   hrUid?: string
+  /** Sprint 2026-07-12：card.json 必传参数（来自 search/joblist.json） */
+  lid?: string
+  /** Sprint 2026-07-12：card.json 必传参数（来自 search/joblist.json） */
+  securityId?: string
 }
 
 /** handler 入参 */
@@ -73,7 +77,12 @@ export interface FeishuJobFields {
 /** 依赖注入（生产 vs 单测可换） */
 export interface SearchWriteDeps {
   searchJobs: (keyword: string, city?: string) => Promise<SearchResultLite[]>
-  fetchJobDetail: (jobId: string) => Promise<string>
+  /**
+   * Sprint 2026-07-12：签名扩展为 (jobId, ctx)
+   * ctx 来自 SearchResult 的 lid + securityId，让 fetchJobDetail 走 card.json wapi 路径
+   * 老测试用 (jobId) 单参 — TypeScript 允许少传 optional 参数
+   */
+  fetchJobDetail: (jobId: string, ctx?: { lid?: string; securityId?: string }) => Promise<string>
   scoreJob: (jd: string, summary: ResumeSummary, llm: unknown) => Promise<number>
   createRecord: (fields: FeishuJobFields) => Promise<{ record_id: string }>
   resolveResume: () => Promise<ResumeResolution>
@@ -141,7 +150,7 @@ export async function runSearchAndWrite(
   // 3) 逐个处理
   for (const job of jobs) {
     try {
-      const jd = await deps.fetchJobDetail(job.id)
+      const jd = await deps.fetchJobDetail(job.id, { lid: job.lid, securityId: job.securityId })
       const score = await deps.scoreJob(jd, resume.summary, deps.llm)
       scored++
 
