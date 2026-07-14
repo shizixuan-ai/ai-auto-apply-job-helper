@@ -357,7 +357,17 @@ program
   .argument('<jobId>', '岗位 ID（encryptJobId）')
   .option('--headless', '无头模式运行', true)
   .option('--cdp', '通过 CDP 连接已有 Chrome')
-  .action(async (jobId: string, options: { headless: boolean; cdp?: boolean }) => {
+  // Sprint 2026-07-14 / task #34：加 lid/securityId 选项
+  //   原因：fetchJobDetail 优先走 card.json wapi（需要 lid + securityId）
+  //   greet 是独立命令，必须手动传 ctx（来自 search 输出）
+  .option('--lid <lid>', 'BOSS list-context lid（来自 search 输出）')
+  .option('--security-id <sid>', 'BOSS job securityId（来自 search 输出）')
+  .action(async (jobId: string, options: {
+    headless: boolean
+    cdp?: boolean
+    lid?: string
+    securityId?: string
+  }) => {
     const start = Date.now()
     let status: BaselineRecord['status'] = 'ok'
     const cdp = options.cdp ?? program.opts().cdp ?? false
@@ -367,7 +377,11 @@ program
 
     try {
       console.log(chalk.cyan('📥 正在抓取岗位详情...'))
-      const jd = await fetchJobDetail(page, jobId)
+      // Sprint 2026-07-14 / task #34：传 lid/securityId 让 fetchJobDetail 走 wapi 路径
+      const jd = await fetchJobDetail(page, jobId, {
+        lid: options.lid,
+        securityId: options.securityId,
+      })
 
       const resumeSummary = buildResumeSummary({
         skills: ['TypeScript', 'React', 'Node.js'],
