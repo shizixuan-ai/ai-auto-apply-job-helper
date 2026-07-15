@@ -15,8 +15,9 @@ export type ApplyStatus = 'pending' | 'greeted' | 'replied' | 'interviewing' | '
  *   - pending:          待发送（search-and-write 写入时的初态）
  *   - sent:             已发送（BOSS friend/add code=0）
  *   - failed:           业务失败（message 过长 / BOSS 其他 code / 网络错误）
- *   - rate_limited:     触发限额（BOSS code=99991604）
- *   - security_blocked: 风控拦截（BOSS code=99991603）
+ *   - rate_limited:     触发限额（BOSS chatRemindDialog.content 含"120 位 BOSS"，master 限流语义）
+ *   - security_blocked: 风控拦截（预留，探针 P3 未实测触发）
+ *   - session_expired:  BOSS code=1011 "当前登录状态已失效"（探针 P1/P2/P3 实测）
  *
  * 注意：枚举值是英文（代码可读），写飞书时翻译成中文标签。
  */
@@ -26,6 +27,8 @@ export type GreetStatus =
   | 'failed'
   | 'rate_limited'
   | 'security_blocked'
+  /** Sprint 2026-07-14 新增：探针 P1/P2/P3 实测 bossCode=1011 */
+  | 'session_expired'
 
 /** 岗位信息 */
 export interface Job {

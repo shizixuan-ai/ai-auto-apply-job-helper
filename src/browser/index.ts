@@ -858,8 +858,9 @@ function sleep(ms: number): Promise<void> {
 // GuardError 仍由 withGuard 抛出（abort_today / abort）→ send-handler.ts 映射到 exit code
 // ============================================================
 
-/** 招呼语最大长度（BOSS friend/add message 字段上限） */
-const MESSAGE_MAX = 200
+/** 限流判定：BOSS chatRemindDialog.content 含此串 → master 算 SUCCESS（参考 master platform.ts:533） */
+const CHAT_REMIND_120_LIMIT = '您今天已与120位BOSS沟通'
+
 const FRIEND_ADD_URL = 'https://www.zhipin.com/wapi/zpgeek/friend/add.json'
 
 export type SendGreetingAction =
@@ -867,69 +868,78 @@ export type SendGreetingAction =
   | 'failed'
   | 'rate_limited'
   | 'security_blocked'
+  /** Sprint 2026-07-14 新增：bossCode=1011 "当前登录状态已失效"（探针 P1/P2/P3 实测） */
+  | 'session_expired'
 
 export interface SendGreetingResult {
   action: SendGreetingAction
-  /** 仅 action='sent' 时有值（来自 BOSS zpData） */
+  /** 仅 action='sent' 时有值（来自 BOSS zpData — 探针 P3 实测字段 encBossId） */
   friendId?: string
   chatId?: string
-  /** failed / rate_limited / security_blocked 都有：保留 BOSS message 便于调试 */
+  /** failed / rate_limited / security_blocked / session_expired 都有：保留 BOSS message 便于调试 */
   error?: string
 }
 
 export async function sendGreeting(
   page: any,
   jobId: string,
-  hrId: string,
-  message: string,
+  lid: string,
+  securityId: string,
 ): Promise<SendGreetingResult> {
-  // 前置守卫：message 长度必须在 HTTP 调用之前校验（防 BOSS 拒绝后浪费配额）
-  if (message.length > MESSAGE_MAX) {
-    return {
-      action: 'failed',
-      error: `message 长度 ${message.length} 超过上限 ${MESSAGE_MAX} 字`,
-    }
-  }
-
   try {
     return await withGuard(
       page,
       async () => {
-        // page.evaluate 在浏览器上下文执行 fetch（带 cookie + Referer）
-        // Sprint 2026-07-14 / task #30：page.evaluate → robustEvaluate（ADR-0005 后续项）
+        // P3 协议（探针实测 bossCode=0）：
+        //   URL: ?securityId=...&jobId=...&lid=...
+        //   Body: null
+        //   Headers: Zp_token=<bst cookie> + Cookie=<全量 cookie>（★ Cookie 冗余是关键，P1 失败证明 Zp_token 不足）
+        // Sprint 2026-07-14 / task #30 + task #41 + ADR-0007
+        //
+        // 关键：cookie 提取 + fetch 必须在**同一次** robustEvaluate（page.evaluate 调用）内完成，
+        // 否则浏览器上下文断开后 document.cookie 不可访问
         const data = await robustEvaluate(
           page,
           async (args: unknown) => {
-            const { url, body } = args as { url: string; body: string }
+            const { url } = args as { url: string }
+            // 在浏览器上下文一次性：取 cookie + fetch
+            const zpToken = document.cookie.match(/(?:^|;\s*)bst=([^;]+)/)?.[1] ?? ''
+            const cookieHeader = document.cookie
             const resp = await fetch(url, {
               method: 'POST',
               headers: {
-                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                Zp_token: zpToken,
+                Cookie: cookieHeader,
               },
-              body,
+              body: null,
               credentials: 'include',
             })
             return await resp.json()
           },
           {
-            url: FRIEND_ADD_URL,
-            body: `gid=${encodeURIComponent(jobId)}&uid=${encodeURIComponent(hrId)}&message=${encodeURIComponent(message)}&expectInfo=0`,
+            url: `${FRIEND_ADD_URL}?securityId=${encodeURIComponent(securityId)}&jobId=${encodeURIComponent(jobId)}&lid=${encodeURIComponent(lid)}`,
           },
         )
 
-        // 解析 BOSS 响应（参考 boss-zhipin-bot README 错误码）
+        // 解析 BOSS 响应（按探针 P3 raw.zpData + master 限流语义）：
         if (data?.code === 0) {
+          // P3 实测：zpData 含 greeting / encBossId / securityId
           return {
             action: 'sent' as const,
-            friendId: data.zpData?.friendId,
+            friendId: data.zpData?.encBossId,
             chatId: data.zpData?.chatId,
           }
         }
-        if (data?.code === 99991603) {
-          return { action: 'security_blocked' as const, error: data?.message }
+        // master platform.ts:533：chatRemindDialog.content 含 "120 次" 算 SUCCESS
+        if (data?.zpData?.bizData?.chatRemindDialog?.content?.includes(CHAT_REMIND_120_LIMIT)) {
+          return {
+            action: 'sent' as const,
+            error: data.zpData.bizData.chatRemindDialog.content,
+          }
         }
-        if (data?.code === 99991604) {
-          return { action: 'rate_limited' as const, error: data?.message }
+        // 探针 P1/P2 实测：bossCode=1011 "当前登录状态已失效"
+        if (data?.code === 1011) {
+          return { action: 'session_expired' as const, error: data?.message }
         }
         return {
           action: 'failed' as const,

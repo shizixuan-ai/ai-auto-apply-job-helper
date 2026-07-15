@@ -69,46 +69,50 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
     const { runSendCommand } = await import('./send-handler.js')
 
     const result = await runSendCommand(
-      { jobId: 'j1', hrUid: 'hr_test', message: '你好' },
+      { jobId: 'j1', lid: 'lid_test', securityId: 'sec_test' },
       deps,
     )
 
     expect(result.action).toBe('ok')
     expect(result.reason).toMatch(/成功/)
-    // Sprint 2A.2: 4 参数签名（hrUid 来自 opts）
+    // Sprint 2026-07-14 / task #41 / ADR-0007：4 参数签名 (page, jobId, lid, securityId)
     expect(deps.sendGreeting).toHaveBeenCalledWith(
       { mockPage: true },
       'j1',
-      'hr_test',
-      '你好',
+      'lid_test',
+      'sec_test',
     )
   })
 
-  it('缺 message → action="invalid_args" 且不调 sendGreeting', async () => {
+  it('缺 lid → action="invalid_args" 且不调 sendGreeting', async () => {
     const deps = makeDeps()
     const { runSendCommand } = await import('./send-handler.js')
 
-    const result = await runSendCommand({ jobId: 'j1', hrUid: 'hr_test' }, deps)
+    // 故意省略 lid 以触发 invalid_args
+    const result = await runSendCommand(
+      { jobId: 'j1', securityId: 'sec_test' } as any,
+      deps,
+    )
 
     expect(result.action).toBe('invalid_args')
-    expect(result.reason).toMatch(/请通过 -m/)
+    expect(result.reason).toMatch(/-l/)
     expect(deps.sendGreeting).not.toHaveBeenCalled()
     // invalid_args 也不该创建 session
     expect(deps.createSession).not.toHaveBeenCalled()
   })
 
-  it('Sprint 2A.2: 缺 hrUid → action="invalid_args" 且不调 sendGreeting', async () => {
+  it('缺 securityId → action="invalid_args" 且不调 sendGreeting', async () => {
     const deps = makeDeps()
     const { runSendCommand } = await import('./send-handler.js')
 
-    // cast: 故意省略 hrUid 以触发 invalid_args
+    // 故意省略 securityId 以触发 invalid_args
     const result = await runSendCommand(
-      { jobId: 'j1', message: 'hi' } as any,
+      { jobId: 'j1', lid: 'lid_test' } as any,
       deps,
     )
 
     expect(result.action).toBe('invalid_args')
-    expect(result.reason).toMatch(/-u/)
+    expect(result.reason).toMatch(/-s/)
     expect(deps.sendGreeting).not.toHaveBeenCalled()
     expect(deps.createSession).not.toHaveBeenCalled()
   })
@@ -121,7 +125,7 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
     const { runSendCommand } = await import('./send-handler.js')
 
     const result = await runSendCommand(
-      { jobId: 'j1', hrUid: 'hr_test', message: 'hi' },
+      { jobId: 'j1', lid: 'lid_test', securityId: 'sec_test' },
       deps,
     )
 
@@ -138,7 +142,7 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
     const { runSendCommand } = await import('./send-handler.js')
 
     const result = await runSendCommand(
-      { jobId: 'j1', hrUid: 'hr_test', message: 'hi' },
+      { jobId: 'j1', lid: 'lid_test', securityId: 'sec_test' },
       deps,
     )
 
@@ -153,7 +157,7 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
     const { runSendCommand } = await import('./send-handler.js')
 
     const result = await runSendCommand(
-      { jobId: 'j1', hrUid: 'hr_test', message: 'hi' },
+      { jobId: 'j1', lid: 'lid_test', securityId: 'sec_test' },
       deps,
     )
 
@@ -169,7 +173,7 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
     const { runSendCommand } = await import('./send-handler.js')
 
     const result = await runSendCommand(
-      { jobId: 'j1', hrUid: 'hr_test', message: 'hi' },
+      { jobId: 'j1', lid: 'lid_test', securityId: 'sec_test' },
       deps,
     )
 
@@ -183,7 +187,7 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
     })
     const { runSendCommand } = await import('./send-handler.js')
 
-    await runSendCommand({ jobId: 'j1', hrUid: 'hr_test', message: 'hi' }, deps)
+    await runSendCommand({ jobId: 'j1', lid: 'lid_test', securityId: 'sec_test' }, deps)
 
     expect(deps.closeSession).toHaveBeenCalledTimes(1)
   })
@@ -195,7 +199,7 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
     })
     const { runSendCommand } = await import('./send-handler.js')
 
-    await runSendCommand({ jobId: 'j1', hrUid: 'hr_test', message: 'hi' }, deps)
+    await runSendCommand({ jobId: 'j1', lid: 'lid_test', securityId: 'sec_test' }, deps)
 
     // 关键：即使 GuardError 抛出，session 必须清理（防 Chrome 泄漏）
     expect(deps.closeSession).toHaveBeenCalledTimes(1)
@@ -205,7 +209,7 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
     const deps = makeDeps()
     const { runSendCommand } = await import('./send-handler.js')
 
-    await runSendCommand({ jobId: 'j1', hrUid: 'hr_test', message: 'hi', cdp: true }, deps)
+    await runSendCommand({ jobId: 'j1', lid: 'lid_test', securityId: 'sec_test', cdp: true }, deps)
 
     expect(deps.createSession).toHaveBeenCalledWith(true)
   })
@@ -214,7 +218,7 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
     const deps = makeDeps()
     const { runSendCommand } = await import('./send-handler.js')
 
-    await runSendCommand({ jobId: 'j1', hrUid: 'hr_test', message: 'hi' }, deps)
+    await runSendCommand({ jobId: 'j1', lid: 'lid_test', securityId: 'sec_test' }, deps)
 
     expect(deps.createSession).toHaveBeenCalledWith(false)
   })
@@ -233,7 +237,7 @@ describe('runSendCommand — Sprint 2A.2: Feishu writeback', () => {
     const { runSendCommand } = await import('./send-handler.js')
 
     const result = await runSendCommand(
-      { jobId: 'j1', hrUid: 'hr_test', message: 'hi', recordId: 'rec_001' },
+      { jobId: 'j1', lid: 'lid_test', securityId: 'sec_test', recordId: 'rec_001' },
       deps,
     )
 
@@ -255,7 +259,7 @@ describe('runSendCommand — Sprint 2A.2: Feishu writeback', () => {
     const { runSendCommand } = await import('./send-handler.js')
 
     const result = await runSendCommand(
-      { jobId: 'j1', hrUid: 'hr_test', message: 'hi', recordId: 'rec_002' },
+      { jobId: 'j1', lid: 'lid_test', securityId: 'sec_test', recordId: 'rec_002' },
       deps,
     )
 
@@ -276,7 +280,7 @@ describe('runSendCommand — Sprint 2A.2: Feishu writeback', () => {
     const { runSendCommand } = await import('./send-handler.js')
 
     await runSendCommand(
-      { jobId: 'j1', hrUid: 'hr_test', message: 'hi' },
+      { jobId: 'j1', lid: 'lid_test', securityId: 'sec_test' },
       deps,
     )
 
@@ -291,7 +295,7 @@ describe('runSendCommand — Sprint 2A.2: Feishu writeback', () => {
     const { runSendCommand } = await import('./send-handler.js')
 
     const result = await runSendCommand(
-      { jobId: 'j1', hrUid: 'hr_test', message: 'hi', recordId: 'rec_003' },
+      { jobId: 'j1', lid: 'lid_test', securityId: 'sec_test', recordId: 'rec_003' },
       deps,
     )
 
@@ -310,7 +314,7 @@ describe('runSendCommand — Sprint 2A.2: Feishu writeback', () => {
     const { runSendCommand } = await import('./send-handler.js')
 
     const result = await runSendCommand(
-      { jobId: 'j1', hrUid: 'hr_test', message: 'hi', recordId: 'rec_004' },
+      { jobId: 'j1', lid: 'lid_test', securityId: 'sec_test', recordId: 'rec_004' },
       deps,
     )
 

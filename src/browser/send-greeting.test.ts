@@ -1,189 +1,172 @@
 // ============================================================
-// sendGreeting — Sprint 2A RED 测试（friend/add 第一步）
+// sendGreeting — Sprint 2026-07-14 task #41（ADR-0007 P3 协议）
 // ============================================================
-// 覆盖 5 条 RED 用例，对应 §3.5 流程图 4 的 5 个结局：
+// 覆盖 5 条用例，对应探针 P3 实测 + master 限流语义：
 //
-//   1. happy path: BOSS code=0 → action="sent"，friendId/chatId 解析
-//   2. message 长度 > 200 → action="failed"，不发起 HTTP 请求（前置守卫）
-//   3. 风控: BOSS code=99991603 → action="security_blocked"
-//   4. 限速: BOSS code=99991604 → action="rate_limited"
-//   5. 其他 BOSS 错误: 非 0 code → action="failed"，error 含 BOSS message
-//
-// TDD 状态：RED（friend/add API 实现未到位，期望测试失败）
+//   1. happy path: BOSS code=0 + zpData.encBossId → action="sent"
+//   2. master 限流语义: chatRemindDialog.content 含 "120 次" → action="sent"
+//   3. 探针实测: BOSS code=1011 "当前登录状态已失效" → action="session_expired"
+//   4. 其他 BOSS code → action="failed"，error 含 BOSS message
+//   5. fetch 异常 → action="failed"，error 含原始 message
 //
 // Mock 策略：
-//   - mockPage.evaluate 是唯一被调用的 HTTP 出口
-//   - 不调真实 Chrome / 真实 BOSS
-//   - 当前 sendGreeting 是 DOM-based（page.goto chat + typeText + click）
-//     → 必然抛错 → 全部测试 RED
+//   - sendGreeting 内部只调 page.evaluate 1 次（robustEvaluate 包 fetch）
+//   - cookie 提取 + fetch 在浏览器上下文**同一次**执行（避免 context 断开）
+//   - mockPage.evaluate.mockResolvedValueOnce 直接返 BOSS 响应
+//
+// TDD 状态：GREEN（按 ADR-0007 P3 探针实测证据写测试）
 // ============================================================
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { sendGreeting } from './index.js'
 
 // ============================================================
-// 预期接口（GREEN 后会从 src/browser/index.ts export 出来）
+// Fixture：mock page（只 mock 1 次 evaluate）
 // ============================================================
 
-interface SendGreetingResult {
-  action: 'sent' | 'failed' | 'rate_limited' | 'security_blocked'
-  friendId?: string
-  chatId?: string
-  error?: string
-}
-
-// ============================================================
-// Fixture：mock page
-// ------------------------------------------------------------
-// 至少需要：
-//   - evaluate: sendGreeting 内部 page.evaluate(fetch friend/add) 用
-//   - $:        withGuard → probeRiskSignals → probeGroup 会调 page.$
-//               不命中任何 selector（返 null）→ 不会误触发风控
-// ============================================================
-
-function makeMockPage() {
+function makeMockPage(evaluateResult: unknown) {
   return {
-    evaluate: vi.fn(),
-    $: vi.fn().mockResolvedValue(null),
+    evaluate: vi.fn().mockResolvedValueOnce(evaluateResult),
+    $: vi.fn().mockResolvedValue(null), // withGuard probe → 不命中 selector
   }
 }
 
+const SAMPLE_JOB_ID = '89d4f6843ce5961f0nF83dm9FFdR'
+const SAMPLE_LID = '1a9ABvRMl3R.search.1'
+const SAMPLE_SECURITY_ID = 'esknqGib9UMBo-O1E14211s0Gf2Ocd_ZIETnSCRgff7Gwa55_aQKubwnNTBbv5dFESmNRBbnEklyg9XU9qnXKWZU7mh83vzYltaJZRxqsKcUXEPvR_L0IQpX3J5HJOUldjghxBDbD2E3URXz-PJm7qiBoyrfx7HpRhWRpf2VbfI3snZHqznzMlFxnkzZKwCE7nuoqUxzJQR9THufAothrg~~'
+
 // ============================================================
-// 5 个 RED 测试
+// 5 个测试（按 ADR-0007 决策）
 // ============================================================
 
-describe('sendGreeting — Sprint 2A friend/add 协议', () => {
-  let mockPage: ReturnType<typeof makeMockPage>
-
-  beforeEach(() => {
-    mockPage = makeMockPage()
-  })
-
+describe('sendGreeting — Sprint 2026-07-14 P3 协议 (ADR-0007)', () => {
   // ----------------------------------------------------------
-  // TEST 1: happy path
+  // TEST 1: happy path — 探针 P3 raw.zpData 实测
   // ----------------------------------------------------------
 
-  it('TEST 1: BOSS code=0 + zpData.status=success → action="sent"，friendId/chatId 解析', async () => {
-    // Arrange
-    mockPage.evaluate.mockResolvedValueOnce({
+  it('TEST 1: BOSS code=0 + zpData.encBossId → action="sent"，friendId 解析为 encBossId', async () => {
+    // Arrange：探针 P3 raw 响应（来自 tests/fixtures/friend-add-schema.json）
+    const mockPage = makeMockPage({
       code: 0,
-      message: 'ok',
+      message: 'Success',
       zpData: {
-        status: 'success',
-        friendId: 'friend_abc123',
-        chatId: 'chat_xyz789',
+        showGreeting: true,
+        greeting: '7年Java高并发实战...',
+        bossSource: 0,
+        securityId: 'esknqGib9UMBo-O1E14211s0Gf2Ocd_Z...',
+        source: '',
+        encBossId: 'e2043def326cf10d0XN509i-E1s~',
       },
     })
 
-    // Act
     const result = await sendGreeting(
       mockPage as any,
-      'job_enc_7',
-      'hr_enc_99',
-      '你好，我对贵公司该岗位很感兴趣',
+      SAMPLE_JOB_ID,
+      SAMPLE_LID,
+      SAMPLE_SECURITY_ID,
     )
 
-    // Assert
     expect(result.action).toBe('sent')
-    expect(result.friendId).toBe('friend_abc123')
-    expect(result.chatId).toBe('chat_xyz789')
-    // 防"假绿"：必须确认 page.evaluate 被实际调用（不是硬编码返回）
+    // ★ 关键：friendId 应解析 zpData.encBossId（不是 friendId / chatId）
+    expect(result.friendId).toBe('e2043def326cf10d0XN509i-E1s~')
+    // 防"假绿"：page.evaluate 必须被实际调用 1 次（robustEvaluate 包装）
     expect(mockPage.evaluate).toHaveBeenCalledTimes(1)
   })
 
   // ----------------------------------------------------------
-  // TEST 2: length 校验（前置守卫，不发起 HTTP）
+  // TEST 2: master 限流语义 — chatRemindDialog.content 含 "120 次"
   // ----------------------------------------------------------
 
-  it('TEST 2: message 长度 > 200 → action="failed"，不发起 HTTP 请求', async () => {
-    // Arrange
-    const longMsg = 'a'.repeat(201) // 201 字符，触发超过 MESSAGE_MAX=200
-
-    // Act
-    const result = await sendGreeting(
-      mockPage as any,
-      'job_enc_7',
-      'hr_enc_99',
-      longMsg,
-    )
-
-    // Assert
-    expect(result.action).toBe('failed')
-    expect(result.error).toMatch(/长度|200|过长/)
-    // 关键：长度校验必须在 HTTP 调用之前（防"发了再被 BOSS 拒绝"）
-    expect(mockPage.evaluate).not.toHaveBeenCalled()
-  })
-
-  // ----------------------------------------------------------
-  // TEST 3: 风控
-  // ----------------------------------------------------------
-
-  it('TEST 3: BOSS code=99991603（verify required）→ action="security_blocked"', async () => {
-    // Arrange
-    mockPage.evaluate.mockResolvedValueOnce({
-      code: 99991603,
-      message: 'verify required',
+  it('TEST 2: chatRemindDialog.content 含 "120 位 BOSS" → action="sent"（master 限流算 SUCCESS）', async () => {
+    const mockPage = makeMockPage({
+      code: 1, // master platform.ts:531 PushResultStatus.FAIL
+      message: '今日已达上限',
+      zpData: {
+        bizData: {
+          chatRemindDialog: {
+            content: '您今天已与120位BOSS沟通，超出当日限制',
+          },
+        },
+      },
     })
 
-    // Act
     const result = await sendGreeting(
       mockPage as any,
-      'job_enc_7',
-      'hr_enc_99',
-      '你好',
+      SAMPLE_JOB_ID,
+      SAMPLE_LID,
+      SAMPLE_SECURITY_ID,
     )
 
-    // Assert
-    expect(result.action).toBe('security_blocked')
-    expect(mockPage.evaluate).toHaveBeenCalledTimes(1)
+    // master 语义：120 次算 SUCCESS（boss 自动开聊）
+    expect(result.action).toBe('sent')
+    expect(result.error).toMatch(/120位BOSS/)
   })
 
   // ----------------------------------------------------------
-  // TEST 4: 限速
+  // TEST 3: 探针实测 — bossCode=1011 → session_expired（新增 action）
   // ----------------------------------------------------------
 
-  it('TEST 4: BOSS code=99991604（too many requests）→ action="rate_limited"', async () => {
-    // Arrange
-    mockPage.evaluate.mockResolvedValueOnce({
-      code: 99991604,
-      message: 'too many requests today',
+  it('TEST 3: BOSS code=1011 "当前登录状态已失效" → action="session_expired"', async () => {
+    const mockPage = makeMockPage({
+      code: 1011,
+      message: '当前登录状态已失效',
+      zpData: {},
     })
 
-    // Act
     const result = await sendGreeting(
       mockPage as any,
-      'job_enc_7',
-      'hr_enc_99',
-      '你好',
+      SAMPLE_JOB_ID,
+      SAMPLE_LID,
+      SAMPLE_SECURITY_ID,
     )
 
-    // Assert
-    expect(result.action).toBe('rate_limited')
-    expect(mockPage.evaluate).toHaveBeenCalledTimes(1)
+    // Sprint 2026-07-14 新增：bossCode=1011 区分于 security_blocked
+    expect(result.action).toBe('session_expired')
+    expect(result.error).toMatch(/登录状态已失效/)
   })
 
   // ----------------------------------------------------------
-  // TEST 5: 其他 BOSS 错误
+  // TEST 4: 其他 BOSS code → failed
   // ----------------------------------------------------------
 
-  it('TEST 5: BOSS 其他非 0 code（如岗位下架）→ action="failed"，error 含 BOSS message', async () => {
-    // Arrange
-    mockPage.evaluate.mockResolvedValueOnce({
+  it('TEST 4: BOSS 其他 code（如岗位下架）→ action="failed"，error 含 BOSS message', async () => {
+    const mockPage = makeMockPage({
       code: 99999999,
       message: '岗位已下架',
+      zpData: {},
     })
 
-    // Act
     const result = await sendGreeting(
       mockPage as any,
-      'job_enc_7',
-      'hr_enc_99',
-      '你好',
+      SAMPLE_JOB_ID,
+      SAMPLE_LID,
+      SAMPLE_SECURITY_ID,
     )
 
-    // Assert
     expect(result.action).toBe('failed')
     // 关键：原始 BOSS message 必须保留到 error（用户调试依据）
     expect(result.error).toMatch(/岗位已下架/)
+  })
+
+  // ----------------------------------------------------------
+  // TEST 5: fetch 异常 → failed
+  // ----------------------------------------------------------
+
+  it('TEST 5: fetch 抛异常（如 Cookie 缺失 / Network error）→ action="failed"，error 含原始 message', async () => {
+    // mock evaluate 返 rejected promise（模拟 fetch 抛错）
+    const mockPage = {
+      evaluate: vi.fn().mockRejectedValueOnce(new Error('Network error')),
+      $: vi.fn().mockResolvedValue(null),
+    }
+
+    const result = await sendGreeting(
+      mockPage as any,
+      SAMPLE_JOB_ID,
+      SAMPLE_LID,
+      SAMPLE_SECURITY_ID,
+    )
+
+    expect(result.action).toBe('failed')
+    expect(result.error).toMatch(/Network error/)
   })
 })

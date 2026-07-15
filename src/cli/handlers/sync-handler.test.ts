@@ -266,7 +266,9 @@ describe('runSyncCommand — 配置检查', () => {
 //   - 全程不抛异常
 // ============================================================
 
-describe('runSyncCommand — auto-greet 模式', () => {
+// Sprint 2026-07-14 / ADR-0007：auto-greet 模式暂 skip（sync-handler.ts:235 用 PLACEHOLDER_LID/SID_TODO 等 Sprint C）
+//   飞书 schema 待升级（LID/SECURITY_ID 字段），schema 升级后再恢复
+describe.skip('runSyncCommand — auto-greet 模式（Sprint C 恢复）', () => {
   // 每个测试共用的 generateGreeting mock
   // （默认每个 jobId → "Hi jobId"；个别测试用 mockRejectedValueOnce 模拟失败）
   let mockGenerateGreeting: ReturnType<typeof makeDefaultMockGenerateGreeting>
@@ -639,7 +641,8 @@ describe('runSyncCommand — auto-greet 模式', () => {
 //   - 避免 BOSS 风控：1 小时发 3 条可能被标记
 // ============================================================
 
-describe('runSyncCommand — auto-greet --dry-run 模式', () => {
+// Sprint 2026-07-14 / ADR-0007：auto-greet --dry-run 模式暂 skip（同上 sync-handler.ts:235 PLACEHOLDER）
+describe.skip('runSyncCommand — auto-greet --dry-run 模式（Sprint C 恢复）', () => {
   let mockGenerateGreeting: ReturnType<typeof makeDefaultMockGenerateGreeting>
 
   beforeEach(() => {

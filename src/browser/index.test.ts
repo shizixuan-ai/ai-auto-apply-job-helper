@@ -88,23 +88,26 @@ describe('sendGreeting × GuardError', () => {
     })
 
     await expect(
-      sendGreeting(page as any, 'JOB123', 'HR456', 'hello'),
+      sendGreeting(page as any, 'JOB123', 'lid_test', 'security_id_test'),
     ).rejects.toBeInstanceOf(GuardError)
   })
 
-  it('正常路径：BOSS code=0 → action="sent"，friendId/chatId 解析', async () => {
+  it('正常路径：BOSS code=0 → action="sent"，friendId 解析为 encBossId', async () => {
     const page = makeMockPage()
-    // Sprint 2A: page.evaluate 返 BOSS friend/add 响应
+    // Sprint 2026-07-14 / task #41 / ADR-0007 P3：page.evaluate 返 BOSS friend/add 响应
+    //   字段名按探针 P3 raw.zpData 实测：encBossId（不是 friendId）
     page.evaluate = vi.fn().mockResolvedValue({
       code: 0,
-      message: 'ok',
-      zpData: { status: 'success', friendId: 'friend_xyz', chatId: 'chat_abc' },
+      message: 'Success',
+      zpData: {
+        encBossId: 'friend_xyz',
+        greeting: '...',
+      },
     })
 
-    const result = await sendGreeting(page as any, 'JOB123', 'HR456', 'hi')
+    const result = await sendGreeting(page as any, 'JOB123', 'lid_test', 'security_id_test')
     expect(result.action).toBe('sent')
     expect(result.friendId).toBe('friend_xyz')
-    expect(result.chatId).toBe('chat_abc')
   })
 })
 

@@ -423,11 +423,13 @@ program
   .command('send')
   .description('发送打招呼消息并更新状态')
   .argument('<jobId>', '岗位 ID')
-  .requiredOption('-u, --hr-uid <hrUid>', '招聘方 HR 加密 uid（friend/add 第二参数）')
-  .option('-m, --message <message>', '话术内容')
+  // Sprint 2026-07-14 / ADR-0007 P3 协议：移除 -u/--hr-uid 和 -m/--message
+  //   改用 -l/--lid + -s/--security-id（来自 search 输出）
+  .requiredOption('-l, --lid <lid>', 'BOSS list-context lid（来自 search 输出）')
+  .requiredOption('-s, --security-id <securityId>', 'BOSS 风控 token（来自 search 输出）')
   .option('--record-id <recordId>', '飞书记录 ID（如有，写回打招呼状态）')
   .option('--cdp', '通过 CDP 连接已有 Chrome')
-  .action(async (jobId: string, options: { hrUid: string; message?: string; recordId?: string; cdp?: boolean }) => {
+  .action(async (jobId: string, options: { lid: string; securityId: string; recordId?: string; cdp?: boolean }) => {
     const start = Date.now()
     const cdp = options.cdp ?? program.opts().cdp ?? false
 
@@ -455,7 +457,7 @@ program
     // P0 fix: 调 runSendCommand 把 GuardError / 业务错误统一转 Result
     // CLI 层只负责 exit code 映射 + 友好输出，不再 unhandled rejection
     const result = await runSendCommand(
-      { jobId, hrUid: options.hrUid, message: options.message, recordId: options.recordId, cdp },
+      { jobId, lid: options.lid, securityId: options.securityId, recordId: options.recordId, cdp },
       { writeGreetingStatus },
     )
 

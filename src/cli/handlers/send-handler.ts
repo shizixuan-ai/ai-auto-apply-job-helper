@@ -36,6 +36,8 @@ const STATUS_LABEL: Record<GreetStatus, string> = {
   failed: '失败',
   rate_limited: '触发限额',
   security_blocked: '风控拦截',
+  /** Sprint 2026-07-14 新增：探针 P1/P2/P3 实测 bossCode=1011 */
+  session_expired: '登录已失效',
 }
 
 // ============================================================
@@ -45,10 +47,16 @@ const STATUS_LABEL: Record<GreetStatus, string> = {
 export interface SendCommandOptions {
   /** 岗位 ID（encryptJobId） */
   jobId: string
-  /** 招聘方 HR 加密 uid（friend/add 第二参数 uid） */
-  hrUid: string
-  /** 话术内容（-m / --message） */
-  message?: string
+  /**
+   * BOSS list-context lid（Sprint 2026-07-14 / ADR-0007 P3 协议必传）
+   * 来源：search/joblist.json 响应 jobList[].lid
+   */
+  lid: string
+  /**
+   * BOSS 风控 token（同上必传）
+   * 来源：search/joblist.json 响应 jobList[].securityId
+   */
+  securityId: string
   /** 飞书记录 ID（如果有，写回打招呼状态） */
   recordId?: string
   /** 是否通过 CDP 连接已有 Chrome */
@@ -60,11 +68,15 @@ export interface SendCommandOptions {
  * 全部 optional，handler 在缺省时回退到 src/browser/index.js 的真实实现
  */
 export interface SendCommandDeps {
+  /**
+   * sendGreeting 签名（Sprint 2026-07-14 / task #41 / ADR-0007 P3 协议）：
+   *   (page, jobId, lid, securityId) — 不再传 hrUid / message
+   */
   sendGreeting?: (
     page: any,
     jobId: string,
-    hrId: string,
-    message: string,
+    lid: string,
+    securityId: string,
   ) => Promise<SendGreetingResult>
   createSession?: (cdp: boolean) => Promise<any>
   closeSession?: (session: any) => Promise<void>
@@ -104,16 +116,17 @@ export async function runSendCommand(
   deps: SendCommandDeps = {},
 ): Promise<SendCommandResult> {
   // 1. 参数校验（早返回，避免创建不必要的 session）
-  if (!opts.message) {
+  // Sprint 2026-07-14 / ADR-0007：移除 message / hrUid 校验 → 改为 lid / securityId
+  if (!opts.lid) {
     return {
       action: 'invalid_args',
-      reason: '请通过 -m 指定话术内容',
+      reason: '请通过 -l 指定 BOSS list-context lid（来自 search 输出）',
     }
   }
-  if (!opts.hrUid) {
+  if (!opts.securityId) {
     return {
       action: 'invalid_args',
-      reason: '请通过 -u 指定 HR 加密 uid（friend/add 第二参数）',
+      reason: '请通过 -s 指定 BOSS 风控 token securityId（来自 search 输出）',
     }
   }
 
@@ -126,8 +139,8 @@ export async function runSendCommand(
   const session = await createSessionFn(opts.cdp ?? false)
   let sendResult: SendGreetingResult | null = null
   try {
-    // Sprint 2A.2: 4 参数签名（hrUid 从 opts 拿，CLI 通过 -u 透传）
-    sendResult = await sendGreetingFn(session.page, opts.jobId, opts.hrUid, opts.message)
+    // Sprint 2026-07-14 / ADR-0007：4 参数签名 (page, jobId, lid, securityId)
+    sendResult = await sendGreetingFn(session.page, opts.jobId, opts.lid, opts.securityId)
   } catch (err) {
     // P0 fix: GuardError 必须捕获 → 透传为同 action 的 result
     if (err instanceof GuardError) {

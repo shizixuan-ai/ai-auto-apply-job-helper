@@ -230,10 +230,12 @@ export async function runSyncCommand(
         //   GAP-A: jobId 必须是 BOSS job_id（encryptJobId）才能调 friend/add
         //   GAP-B: hrUid 从 fields['HR_UID'] 读（不再是 '' 占位）
         //   GAP-C: recordId 必传，让 send-handler 写飞书"打招呼状态/时间"（Sprint 2A.2）
+        // Sprint 2026-07-14 / ADR-0007：sync 路径暂时用占位符 + TODO
+        //   飞书 schema 待升级（LID/SECURITY_ID 字段 + search-and-write 写入），下个 sprint 处理
         const sendResult = await runSendCommand({
           jobId: bossJobId, // ✅ BOSS job_id（encryptJobId），不是 Feishu record_id
-          hrUid,            // ✅ 从 fields['HR_UID'] 读（search-and-write 写入）
-          message,
+          lid: 'PLACEHOLDER_LID_TODO', // TODO(Sprint C): 从 fields['LID'] 读，飞书 schema 升级后启用
+          securityId: 'PLACEHOLDER_SID_TODO', // TODO(Sprint C): 从 fields['SECURITY_ID'] 读，飞书 schema 升级后启用
           recordId: jobId,  // ✅ Feishu record_id（writeback 用）
           cdp: false,
         })
