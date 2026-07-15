@@ -190,5 +190,9 @@ export async function connectToUserChrome(): Promise<CDPWrapper> {
  */
 export async function attachPlaywrightToCDP(wrapper: CDPWrapper) {
   const { chromium } = await import('playwright')
-  return await chromium.connectOverCDP(wrapper.cdpURL)
+  // Sprint 临时修复：playwright 1.52+ 在 connectOverCDP 时自动调 Browser.setDownloadBehavior，
+  // 新版 Chrome 拒绝 "Browser context management is not supported"。
+  // noDefaults: true 关闭默认覆盖（acceptDownloads/focusEmulation/mediaEmulation），
+  // 适合接管用户的真 Chrome。
+  return await chromium.connectOverCDP(wrapper.cdpURL, { noDefaults: true })
 }

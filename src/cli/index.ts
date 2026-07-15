@@ -329,6 +329,13 @@ program
         if (job.labels.length) console.log(`     标签: ${job.labels.join('、')}`)
         if (job.brandStage) console.log(`     阶段: ${job.brandStage}  |  规模: ${job.brandScale}  |  行业: ${job.brandIndustry}`)
         if (job.welfare.length) console.log(`     福利: ${job.welfare.join('、')}`)
+        // Sprint 2026-07-15 / task #43：补打 send 必需三件套（不截断，防 2026-07-14 静默截断教训）
+        //   - jobId → encryptJobId（send CLI 第一参数）
+        //   - lid   → BOSS list-context（card.json 必传）
+        //   - securityId → BOSS 风控 token（完整 200+ 字符不截断；终端换行/截断由 user 复制时自行处理）
+        console.log(`     ${chalk.dim('🔑 jobId:')}        ${job.id}`)
+        console.log(`     ${chalk.dim('🆔 lid:')}          ${job.lid ?? '(无)'}`)
+        console.log(`     ${chalk.dim('🔐 securityId:')}   ${job.securityId ?? '(无)'}`)
         console.log()
       })
     } catch (err: any) {

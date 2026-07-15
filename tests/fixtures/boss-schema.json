@@ -1,33 +1,31 @@
 {
   "_meta": {
-    "capturedAt": "2026-07-12T08:54:53.597Z",
+    "capturedAt": "2026-07-15T03:49:10.964Z",
     "source": "BOSS /wapi/zpgeek/search/joblist.json",
     "jobListIndex": 0,
     "note": "契约测试的\"黄金基准\"。BOSS 改版时重新跑 npm run probe:boss 覆盖。"
   },
   "sampleJob": {
-    "securityId": "PITJtPRZEjz0X-p1uPNTfQS4bK081857WhYBuf8Ntgv2h_CiYJn0RdETwr-PNzNDBd0KjDJa6Kp_BQILt86slRYaN8NdIKMc5grF58yKjRxeqpPV9ds4jEbWlMUmjzTcUq0daH8Wk-M6GR-pX967c2F66oTLuwbNI3F9m5dXggFszztZzMUxLhbLkG22g3Egiy_KMja0C7SNG8rFrxwsi4HdCZVftrPh5VkK0EB-Tml3Myq3zBXmxEzfzX2hmd1Aum5USRbc15ceEOKQnnidD0uyRZ0vwVwM3LKPFyown1J0eypP",
-    "bossAvatar": "https://img.bosszhipin.com/boss/avatar/avatar_5.png",
+    "securityId": "4wfRWjZyj8WaX-x1D3ew1XEHPylobLEVaubo-xO_SlFc4dPIX_-1i5PRRNird8cA2btgHaM9twHH0zFIS7lojRJAqFu4oV5VpF4ITPaUIpO83SMc4v4l8_Zm8TrHEEZ662Zd4edEhvvimt_UUqEtiEaTpZKkJo7vLwuCty8clbHVdStV_3KUgqDhE-y335Ulb995N_E7ClyzaKPJKHesLMT2X_HcjC7Ddv1zUeN8nCQwC5sAj2a7UuHg__UXlGoHeEETlHEnp1AzmatgOxVDA-hPQX2RDipBrA9FZjMqh6shwbw~",
+    "bossAvatar": "https://img.bosszhipin.com/beijin/upload/avatar/20211104/607f1f3d68754fd042259cb59e4ea5fbcaa1864d313620ff03b92e483a7ffae509a5a622011281f7_s.png",
     "bossCert": 3,
-    "encryptBossId": "7b6bbfcc3c092b810nZ83d2-E1VU",
-    "bossName": "王先生",
+    "encryptBossId": "9d4a16eb7e4807b30n1y29i0FVQ~",
+    "bossName": "王女士",
     "bossTitle": "猎头顾问",
     "goldHunter": 1,
     "bossOnline": false,
-    "encryptJobId": "a8d82445861e66100nZ93Nq5GVBV",
+    "encryptJobId": "9dbcc772cd47a91f0nBy3N-9EVVY",
     "expectId": 1555182142,
-    "jobName": "机器人系统架构工程师",
-    "lid": "23t84VHlUk1.search.1",
-    "salaryDesc": "40-60K",
+    "jobName": "AIDC供配电架构师",
+    "lid": "P3dmZvaZdA.search.1",
+    "salaryDesc": "30-60K",
     "jobLabels": [
       "5-10年",
       "本科"
     ],
     "jobValidStatus": 1,
     "iconWord": "",
-    "skills": [
-      "分布式技术"
-    ],
+    "skills": [],
     "jobExperience": "5-10年",
     "daysPerWeekDesc": "",
     "leastMonthDesc": "",
@@ -49,41 +47,45 @@
     "isShield": 0,
     "atsDirectPost": false,
     "gps": {
-      "longitude": 120.28551712446922,
-      "latitude": 30.328761461555377
+      "longitude": 119.90479157865919,
+      "latitude": 30.247955809529124
     },
     "afterNameIcons": [],
     "beforeNameIcons": [
       "https://img.bosszhipin.com/static/file/2022/cy4fi6cada1655206055291.png"
     ],
     "encryptBrandId": "",
-    "brandName": "杭州某小型人工智...",
+    "brandName": "杭州某小型储能公司",
     "brandLogo": "https://...",
     "brandStageName": "A轮",
-    "brandIndustry": "人工智能",
+    "brandIndustry": "储能",
     "brandScaleName": "20-99人",
     "welfareList": [
-      "年终奖",
-      "五险一金",
-      "绩效奖金",
+      "带薪年假",
+      "餐补",
+      "节假日加班费",
+      "工龄奖",
+      "节日福利",
       "零食下午茶",
-      "团建聚餐",
-      "有无线网",
       "加班补助",
-      "保底工资"
+      "年终奖",
+      "交通补助",
+      "股票期权",
+      "团建聚餐",
+      "住房补贴"
     ],
-    "industry": 100028,
+    "industry": 101209,
     "contact": false,
     "showTopPosition": false
   },
   "userRelatedFields": [
     {
       "key": "encryptBossId",
-      "value": "7b6bbfcc3c092b810nZ83d2-E1VU"
+      "value": "9d4a16eb7e4807b30n1y29i0FVQ~"
     },
     {
       "key": "encryptJobId",
-      "value": "a8d82445861e66100nZ93Nq5GVBV"
+      "value": "9dbcc772cd47a91f0nBy3N-9EVVY"
     },
     {
       "key": "encryptBrandId",

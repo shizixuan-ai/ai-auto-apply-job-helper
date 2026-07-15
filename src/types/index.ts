@@ -65,6 +65,24 @@ export interface Job {
   link?: string
   /** 招聘方 HR 的 BOSS 加密 uid（Sprint 2A：sendGreeting friend/add 需要） */
   hrUid?: string
+  /**
+   * BOSS list-context lid（card.json 必传参数，Sprint 2026-07-12 实测确认）
+   *
+   * 来源：search/joblist.json 响应里 jobList[].lid
+   * 单 jobId 不够——必须 lid + securityId 才能拿到完整 JD
+   *
+   * Sprint 2026-07-15：补到 Job interface（之前 SearchResult 有，Job 缺，CLI 输出 / sync 路径用不到）
+   */
+  lid?: string
+  /**
+   * BOSS job securityId（card.json 必传参数，Sprint 2026-07-12 实测确认）
+   *
+   * 来源：search/joblist.json 响应里 jobList[].securityId
+   * 完整 200+ 字符，send CLI 真发时必传（否则 friend/add bossCode=1011）
+   *
+   * Sprint 2026-07-15：补到 Job interface（同上 gap）
+   */
+  securityId?: string
   /** 打招呼状态（Sprint 2A：handler 写回飞书） */
   greetStatus?: GreetStatus
   /** 打招呼时间（毫秒时间戳，飞书日期字段 type=5） */

@@ -44,17 +44,23 @@ const RISK_SELECTORS: Pick<
   sliderSelectors: [
     '.slider-verify',
     '.nc-container',
-    '[class*="slide"]:not([style*="display: none"])',
+    // Sprint 2026-07-15：收窄 selector，剔除详情页 `omnibus-slider-main` 等装饰元素的误判
+    //   旧：'[class*="slide"]:not([style*="display: none"])' ← 匹配到详情页的 UI 容器
+    //   新：仅匹配含 `verify` 的 slider class + 已知真滑块 class
+    //   不影响真滑块（geetest / 阿里云 nc-container / slider-verify）检测
+    '[class*="slide"][class*="verify"]:not([style*="display: none"]), .geetest_slider',
   ],
   rateLimitSelectors: [
     '.daily-limit-tip',
     '.rate-limit-modal',
-    '[class*="limit"]:not([style*="display: none"])',
+    // Sprint 2026-07-15：删除 `class*="limit"` 子串匹配（误判详情页 `.character-limit` / `.input-limit` 等装饰元素）
+    //   纯靠白名单 class 覆盖，治本策略同 slider
   ],
   loginExpiredSelectors: [
     '.session-timeout-modal',
     '.login-expired',
-    '[class*="expired"]:not([style*="display: none"])',
+    // Sprint 2026-07-15：删除 `class*="expired"` 子串匹配（同上治本策略）
+    //   未来 BOSS 改版加新 class 时再补白名单
   ],
 }
 
