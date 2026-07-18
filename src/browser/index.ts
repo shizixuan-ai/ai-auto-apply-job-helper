@@ -340,6 +340,24 @@ export async function loginByQR(page: any): Promise<void> {
 // 搜索岗位 — API + DOM 混合模式
 // ============================================================
 
+/**
+ * BOSS 搜索过滤参数（DEEP probe 2026-07-18 抓包实测）
+ *
+ * BOSS wapi/zpgeek/search/joblist.json 接受这些为【string 顶层字段】
+ * （city 是 number，过滤码是 string——DEEP postData 逐个确认）
+ * 空串/undefined 不会塞进请求体。
+ */
+export interface SearchFilters {
+  /** 职位类型码，如 "1901" */
+  jobType?: string
+  /** 薪资范围码，如 "406" */
+  salary?: string
+  /** 工作经验码，如 "106" */
+  experience?: string
+  /** 学历码，如 "203" */
+  degree?: string
+}
+
 export interface SearchResult {
   id: string
   title: string
@@ -443,6 +461,7 @@ export async function searchJobs(
   page: any,
   keyword: string,
   city?: string,
+  filters?: SearchFilters,
 ): Promise<SearchResult[]> {
   // ---- Phase 1: 安全入口 ----
   // Sprint 2D 修复：避免连续跑 search 时的 BOSS SPA navigation race
@@ -496,10 +515,23 @@ export async function searchJobs(
     query: keyword,
     scene: 1,
     page: 1,
-    pageSize: 20,
+    pageSize: 15,
   }
   if (city && CITY_CODES[city]) {
     apiBody.city = CITY_CODES[city]
+  }
+
+  // Sprint 2026-07-18：过滤参数（DEEP probe 抓包实测）
+  //   BOSS 接受 jobType/salary/experience/degree 为 string 顶层字段。
+  //   只塞"有值"的——空串/undefined 不进 body，保证无 filter 调用的 apiBody
+  //   与改动前逐字节一致（回归安全）。
+  if (filters) {
+    for (const key of ['jobType', 'salary', 'experience', 'degree'] as const) {
+      const value = filters[key]
+      if (value) {
+        apiBody[key] = value
+      }
+    }
   }
 
   // ⚠️ Sprint 2B P0 修复：env 判断移到 host 代码（page.evaluate 在浏览器上下文，

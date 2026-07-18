@@ -477,3 +477,76 @@ describe('Sprint 2E: fetchJobDetail 懒加载防御', () => {
     }
   })
 })
+
+// ============================================================
+// searchJobs — 搜索过滤参数（DEEP probe 2026-07-18 实测）
+// ------------------------------------------------------------
+// DEEP probe 抓包确认：BOSS wapi/zpgeek/search/joblist.json 接受
+//   jobType / salary / experience / degree 为【string 顶层字段】
+//   （city 是 number，这几个过滤码是 string）
+// searchJobs 新增可选第 4 参 filters?: SearchFilters
+// 约束：只塞"有值"的 filter，空值/undefined 不进 body（回归安全）
+// ============================================================
+describe('searchJobs — 过滤参数（DEEP probe）', () => {
+  function makeFilterPage(currentUrl = 'https://www.zhipin.com/web/geek/recommend') {
+    return {
+      goto: vi.fn().mockResolvedValue(undefined),
+      url: vi.fn().mockReturnValue(currentUrl),
+      evaluate: vi.fn().mockResolvedValue({
+        code: 0,
+        zpData: { jobList: [{ encryptJobId: 'fake', jobName: 'fake', brandName: 'fake' }] },
+      }),
+    }
+  }
+
+  // page.evaluate(fn, apiBody) —— 第 2 个参数就是 apiBody
+  function capturedApiBody(page: ReturnType<typeof makeFilterPage>) {
+    return page.evaluate.mock.calls[0][1]
+  }
+
+  it('filter-1: 传 4 个 filter → apiBody 含 string 字段（jobType/salary/experience/degree）', async () => {
+    const page = makeFilterPage()
+    await searchJobs(page as any, 'Java', undefined, {
+      jobType: '1901',
+      salary: '406',
+      experience: '106',
+      degree: '203',
+    })
+    const body = capturedApiBody(page)
+    expect(body.jobType).toBe('1901')
+    expect(body.salary).toBe('406')
+    expect(body.experience).toBe('106')
+    expect(body.degree).toBe('203')
+    // 均为 string（DEEP 实测格式）
+    expect(typeof body.jobType).toBe('string')
+    expect(typeof body.salary).toBe('string')
+  })
+
+  it('filter-2: 不传 filters → apiBody 无这些 key（回归安全，与旧行为一致）', async () => {
+    const page = makeFilterPage()
+    await searchJobs(page as any, 'Java')
+    const body = capturedApiBody(page)
+    expect(body).not.toHaveProperty('jobType')
+    expect(body).not.toHaveProperty('salary')
+    expect(body).not.toHaveProperty('experience')
+    expect(body).not.toHaveProperty('degree')
+    // 基础字段仍在
+    expect(body.query).toBe('Java')
+    expect(body.scene).toBe(1)
+    // pageSize 与 CLI --limit 默认对齐（15）
+    expect(body.pageSize).toBe(15)
+  })
+
+  it('filter-3: 空串/undefined 的 filter 不塞进 body（只塞有值的）', async () => {
+    const page = makeFilterPage()
+    await searchJobs(page as any, 'Java', undefined, {
+      jobType: '1901',
+      salary: '',
+      experience: undefined,
+    })
+    const body = capturedApiBody(page)
+    expect(body.jobType).toBe('1901')
+    expect(body).not.toHaveProperty('salary')
+    expect(body).not.toHaveProperty('experience')
+  })
+})
