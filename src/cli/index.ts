@@ -6,6 +6,15 @@
 // 命令: init | login | search | greet | send
 // ============================================================
 
+// Sprint 2026-07-18 bug fix：dotenv 必须早于所有 import 求值
+//   原因：src/browser/lazy-load-error.ts:24 是叶子模块 + module-level 求值
+//         `Number(process.env.MIN_JD_LENGTH_THRESHOLD ?? 500)`
+//   若不提前：lazy-load-error 先求值 → process.env 还没注入 → DEFAULT_MIN_JD_LENGTH 锁死 500
+//           即使 .env 写 300 也不生效
+//   ESM 副作用 import 在 import 解析时立即执行 → 早于 cli/index.ts 其他 import 链路
+//   同模块导入顺序见 src/config/index.ts:1
+import 'dotenv/config'
+
 import { Command } from 'commander'
 import chalk from 'chalk'
 import readline from 'node:readline/promises'
@@ -100,7 +109,7 @@ program
       console.log()
       console.log(chalk.cyan('🔍 检查飞书 API 连通性...'))
 
-      await listRecords('test', 'test')
+      await listRecords(config.feishu.appToken ?? 'test', config.feishu.tableId ?? 'test')
       console.log(chalk.green('✅ 飞书 API 连通正常'))
     } catch (err: any) {
       status = 'fail'
@@ -190,16 +199,128 @@ program
 
 program
   .command('search')
-  .description('搜索岗位并展示列表')
+  .description('搜索岗位并展示列表（加 --write 进入 LLM 评分 + 写飞书模式）')
   .argument('<keyword>', '搜索关键词，如 "前端开发"')
   .option('-c, --city <city>', '城市，如 "北京"')
   .option('--headless', '无头模式运行', false)
   .option('--cdp', '通过 CDP 连接已有 Chrome')
-  .action(async (keyword: string, options: { city?: string; headless: boolean; cdp?: boolean }) => {
+  // ===== Sprint 1A 引入 =====
+  .option('--write', '真写飞书（不传 = 仅展示；与 --dry-run 互斥）', false)
+  .option('--dry-run', '走完整流程但 createRecord 是 no-op', false)
+  .option('--no-threshold', '不过滤（所有 scored 都算 passed，不写 BOSS）')
+  .option('-l, --limit <n>', '最多处理 N 个岗位', (v) => Number(v), 10)
+  .action(async (keyword: string, options: {
+    city?: string
+    headless: boolean
+    cdp?: boolean
+    write: boolean
+    dryRun: boolean
+    threshold: boolean      // commander 自动从 --no-threshold 派生
+    limit: number
+  }) => {
     const start = Date.now()
     let status: BaselineRecord['status'] = 'ok'
     let resultCount = 0
     const cdp = options.cdp ?? program.opts().cdp ?? false
+
+    // ===== Sprint 1A: --write / --dry-run 模式 =====
+    if (options.write || options.dryRun) {
+      if (options.write && options.dryRun) {
+        console.error(chalk.red('❌ --write 与 --dry-run 互斥，只能二选一'))
+        process.exit(2)
+      }
+
+      // 走 runSearchAndWrite 流程
+      const config = loadConfig()
+      // 写飞书前必须配 appToken/tableId（用 ?? 提供 fallback 让 TS narrow）
+      const appToken = config.feishu.appToken ?? ''
+      const tableId = config.feishu.tableId ?? ''
+      if (!appToken || !tableId) {
+        console.error(chalk.red('❌ --write / --dry-run 需要 FEISHU_APP_TOKEN 和 FEISHU_TABLE_ID（参考 .env.example）'))
+        process.exit(2)
+      }
+      const session = cdp
+        ? await createCDPSession()
+        : await createBrowserSession(!options.headless)
+      const page = session.page
+
+      try {
+        // 1) 搜索
+        const jobs = await searchJobs(page, keyword, options.city)
+        resultCount = jobs.length
+
+        // 2) 构造 deps
+        const llm = createLLM(config)
+        const { resolveResume } = await import('../resume/resolver.js')
+        const { scoreJob } = await import('../scoring/index.js')
+
+        const deps = {
+          searchJobs: async (_k: string, _c?: string) => jobs,   // 复用上面的搜索结果
+          fetchJobDetail: (id: string, ctx?: { lid?: string; securityId?: string }) => fetchJobDetail(page, id, ctx),
+          scoreJob: (jd: string, summary: any, _llm: unknown) => scoreJob(jd, summary, llm),
+          createRecord: async (fields: any) => {
+            // dryRun 走 no-op；write 走真写
+            if (options.dryRun) return { record_id: 'dry-run-noop' }
+            return createRecord(appToken, tableId, fields)
+          },
+          resolveResume: () => resolveResume(),
+          llm,
+          threshold: config.scoreThreshold,
+        }
+
+        // 3) 调 handler
+        const { runSearchAndWrite } = await import('../cli/handlers/search-and-write.js')
+        const result = await runSearchAndWrite(
+          {
+            keyword,
+            city: options.city,
+            write: options.write,        // dryRun 模式 opts.write = false
+            dryRun: options.dryRun,
+            noThreshold: options.threshold === false,
+            limit: options.limit,
+          },
+          deps,
+        )
+
+        // 4) 打印报告
+        if (result.action === 'error') {
+          console.error(chalk.red(`❌ ${result.error}`))
+          status = 'fail'
+          process.exit(1)
+        }
+
+        console.log(chalk.cyan(`\n📊 搜索并评分结果 (mode=${options.write ? 'WRITE' : 'DRY-RUN'}):\n`))
+        console.log(`  总岗位: ${chalk.bold(result.total)}`)
+        console.log(`  评分成功: ${chalk.bold(result.scored)}`)
+        console.log(`  通过阈值 (${config.scoreThreshold}): ${chalk.green(result.passed)}`)
+        console.log(`  写入飞书: ${chalk.green(result.written)}`)
+        console.log(`  失败: ${chalk.red(result.failed)}`)
+        console.log(`  简历来源: ${result.resumeSource}`)
+        if (result.resumeWarnings.length) {
+          console.log(`  ${chalk.yellow('⚠️ 警告：')}`)
+          result.resumeWarnings.forEach((w) => console.log(`    - ${w}`))
+        }
+        if (options.dryRun) {
+          console.log(chalk.yellow(`\n💡 提示：当前是 --dry-run 模式，没真写飞书。加 --write 真写。`))
+        }
+      } catch (err: any) {
+        status = 'fail'
+        throw err
+      } finally {
+        await closeBrowserSession(session)
+        await writeBaselineRecord({
+          ts: new Date().toISOString(),
+          command: options.write ? 'search-write' : 'search-dry-run',
+          duration_ms: Date.now() - start,
+          http_code: null,
+          result_count: resultCount,
+          status,
+        })
+      }
+      return
+    }
+
+    // ===== 老逻辑：纯展示（无 --write / --dry-run）=====
     const session = cdp
       ? await createCDPSession()
       : await createBrowserSession(!options.headless)
@@ -217,6 +338,13 @@ program
         if (job.labels.length) console.log(`     标签: ${job.labels.join('、')}`)
         if (job.brandStage) console.log(`     阶段: ${job.brandStage}  |  规模: ${job.brandScale}  |  行业: ${job.brandIndustry}`)
         if (job.welfare.length) console.log(`     福利: ${job.welfare.join('、')}`)
+        // Sprint 2026-07-15 / task #43：补打 send 必需三件套（不截断，防 2026-07-14 静默截断教训）
+        //   - jobId → encryptJobId（send CLI 第一参数）
+        //   - lid   → BOSS list-context（card.json 必传）
+        //   - securityId → BOSS 风控 token（完整 200+ 字符不截断；终端换行/截断由 user 复制时自行处理）
+        console.log(`     ${chalk.dim('🔑 jobId:')}        ${job.id}`)
+        console.log(`     ${chalk.dim('🆔 lid:')}          ${job.lid ?? '(无)'}`)
+        console.log(`     ${chalk.dim('🔐 securityId:')}   ${job.securityId ?? '(无)'}`)
         console.log()
       })
     } catch (err: any) {
@@ -245,7 +373,17 @@ program
   .argument('<jobId>', '岗位 ID（encryptJobId）')
   .option('--headless', '无头模式运行', true)
   .option('--cdp', '通过 CDP 连接已有 Chrome')
-  .action(async (jobId: string, options: { headless: boolean; cdp?: boolean }) => {
+  // Sprint 2026-07-14 / task #34：加 lid/securityId 选项
+  //   原因：fetchJobDetail 优先走 card.json wapi（需要 lid + securityId）
+  //   greet 是独立命令，必须手动传 ctx（来自 search 输出）
+  .option('--lid <lid>', 'BOSS list-context lid（来自 search 输出）')
+  .option('--security-id <sid>', 'BOSS job securityId（来自 search 输出）')
+  .action(async (jobId: string, options: {
+    headless: boolean
+    cdp?: boolean
+    lid?: string
+    securityId?: string
+  }) => {
     const start = Date.now()
     let status: BaselineRecord['status'] = 'ok'
     const cdp = options.cdp ?? program.opts().cdp ?? false
@@ -255,7 +393,11 @@ program
 
     try {
       console.log(chalk.cyan('📥 正在抓取岗位详情...'))
-      const jd = await fetchJobDetail(page, jobId)
+      // Sprint 2026-07-14 / task #34：传 lid/securityId 让 fetchJobDetail 走 wapi 路径
+      const jd = await fetchJobDetail(page, jobId, {
+        lid: options.lid,
+        securityId: options.securityId,
+      })
 
       const resumeSummary = buildResumeSummary({
         skills: ['TypeScript', 'React', 'Node.js'],
@@ -297,17 +439,43 @@ program
   .command('send')
   .description('发送打招呼消息并更新状态')
   .argument('<jobId>', '岗位 ID')
-  .option('-m, --message <message>', '话术内容')
+  // Sprint 2026-07-14 / ADR-0007 P3 协议：移除 -u/--hr-uid 和 -m/--message
+  //   改用 -l/--lid + -s/--security-id（来自 search 输出）
+  .requiredOption('-l, --lid <lid>', 'BOSS list-context lid（来自 search 输出）')
+  .requiredOption('-s, --security-id <securityId>', 'BOSS 风控 token（来自 search 输出）')
+  .option('--record-id <recordId>', '飞书记录 ID（如有，写回打招呼状态）')
   .option('--cdp', '通过 CDP 连接已有 Chrome')
-  .action(async (jobId: string, options: { message?: string; cdp?: boolean }) => {
+  .action(async (jobId: string, options: { lid: string; securityId: string; recordId?: string; cdp?: boolean }) => {
     const start = Date.now()
     const cdp = options.cdp ?? program.opts().cdp ?? false
 
     console.log(chalk.cyan(`📤 正在向岗位 ${jobId} 发送打招呼...`))
 
+    // Sprint 2A.2: 构造 writeGreetingStatus 依赖（用 config.feishu.appToken/tableId）
+    //   - 缺配置时降级为 no-op（handler 会调它，result.reason 标注"飞书写入失败"）
+    let writeGreetingStatus: ((recordId: string, status: string, greetedAt: number) => Promise<unknown>) | undefined
+    try {
+      const config = loadConfig()
+      if (config.feishu.appToken && config.feishu.tableId) {
+        const appToken = config.feishu.appToken
+        const tableId = config.feishu.tableId
+        writeGreetingStatus = async (recordId, status, greetedAt) => {
+          return updateRecord(appToken, tableId, recordId, {
+            打招呼状态: status,
+            打招呼时间: greetedAt,
+          })
+        }
+      }
+    } catch {
+      // loadConfig 失败不阻塞 send（writeGreetingStatus 保持 undefined → 跳过飞书写入）
+    }
+
     // P0 fix: 调 runSendCommand 把 GuardError / 业务错误统一转 Result
     // CLI 层只负责 exit code 映射 + 友好输出，不再 unhandled rejection
-    const result = await runSendCommand({ jobId, message: options.message, cdp })
+    const result = await runSendCommand(
+      { jobId, lid: options.lid, securityId: options.securityId, recordId: options.recordId, cdp },
+      { writeGreetingStatus },
+    )
 
     // 被动基线观测：在每个 case 的 process.exit 之前同步写入
     // （await writeBaselineRecord 在 process.exit 前会丢——async 不等 exit）

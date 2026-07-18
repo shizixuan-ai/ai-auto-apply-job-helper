@@ -2,6 +2,7 @@
 // 浏览器自动化层 — CDP 接管 + Stealth Fallback
 // ============================================================
 // 架构（参见 docs/research/boss-auto-apply-2026-06-research.md §5.2）：
+// 架构（参见 docs/research/boss-auto-apply-2026-06-research.md §5.2）：
 //
 //   CDP 接管模式（主路径）   → chromium.connectOverCDP(9222)
 //                              接管用户已登录的真 Chrome
@@ -19,6 +20,8 @@ import { connectToUserChrome, attachPlaywrightToCDP } from './cdp.js'
 import { withGuard, DEFAULT_GUARD_CONFIG, type GuardConfig, GuardError } from './guard.js'
 import { typeText, type TypeTextOptions } from './human.js'
 import { detectCityMismatch, type CityReportableJob } from './city-utils.js'
+import { LazyLoadError, DEFAULT_MIN_JD_LENGTH } from './lazy-load-error.js'
+import { robustEvaluate } from './robust-evaluate.js'
 
 // ============================================================
 // 常量
@@ -41,17 +44,23 @@ const RISK_SELECTORS: Pick<
   sliderSelectors: [
     '.slider-verify',
     '.nc-container',
-    '[class*="slide"]:not([style*="display: none"])',
+    // Sprint 2026-07-15：收窄 selector，剔除详情页 `omnibus-slider-main` 等装饰元素的误判
+    //   旧：'[class*="slide"]:not([style*="display: none"])' ← 匹配到详情页的 UI 容器
+    //   新：仅匹配含 `verify` 的 slider class + 已知真滑块 class
+    //   不影响真滑块（geetest / 阿里云 nc-container / slider-verify）检测
+    '[class*="slide"][class*="verify"]:not([style*="display: none"]), .geetest_slider',
   ],
   rateLimitSelectors: [
     '.daily-limit-tip',
     '.rate-limit-modal',
-    '[class*="limit"]:not([style*="display: none"])',
+    // Sprint 2026-07-15：删除 `class*="limit"` 子串匹配（误判详情页 `.character-limit` / `.input-limit` 等装饰元素）
+    //   纯靠白名单 class 覆盖，治本策略同 slider
   ],
   loginExpiredSelectors: [
     '.session-timeout-modal',
     '.login-expired',
-    '[class*="expired"]:not([style*="display: none"])',
+    // Sprint 2026-07-15：删除 `class*="expired"` 子串匹配（同上治本策略）
+    //   未来 BOSS 改版加新 class 时再补白名单
   ],
 }
 
@@ -346,6 +355,39 @@ export interface SearchResult {
   welfare: string[]
   skills: string[]
   link: string
+  /**
+   * 招聘方 HR 的 BOSS 加密 uid（Sprint 2B）
+   *
+   * BOSS API 真实字段名：encryptBossId（probe 验证 2026-07-09）
+   * 之前推断的 encryptUserId 是错的（BOSS 把 HR 也叫 "Boss"）
+   * 契约测试基线：tests/fixtures/boss-schema.json
+   */
+  hrUid?: string
+  /**
+   * BOSS list-context lid（card.json 必传参数，Sprint 2026-07-12 实测确认）
+   *
+   * 来源：search/joblist.json 响应里 jobList[].lid
+   * 单 jobId 不够——必须 lid + securityId 才能拿到完整 JD
+   */
+  lid?: string
+  /**
+   * BOSS job securityId（card.json 必传参数，Sprint 2026-07-12 实测确认）
+   *
+   * 来源：search/joblist.json 响应里 jobList[].securityId
+   */
+  securityId?: string
+}
+
+/**
+ * 从 BOSS API 单个 job 对象提取 HR 加密 uid（Sprint 2B）
+ *
+ * 实测字段名：encryptBossId（probe 验证 2026-07-09）
+ * 备选字段：encryptedBossId / hrEncryptId（BOSS 改版时扩展 fallback）
+ *
+ * 导出供单测使用（避免 page.evaluate mock 复杂性）
+ */
+export function extractHrUid(job: any): string | undefined {
+  return job?.encryptBossId || job?.encryptedBossId || job?.hrEncryptId
 }
 
 /** DOM-First 滚动预加载 + 摘取（API 降级时的 fallback） */
@@ -403,12 +445,48 @@ export async function searchJobs(
   city?: string,
 ): Promise<SearchResult[]> {
   // ---- Phase 1: 安全入口 ----
-  await page.goto('https://www.zhipin.com/web/geek/recommend', {
-    waitUntil: 'domcontentloaded',
-    timeout: 30_000,
-  })
+  // Sprint 2D 修复：避免连续跑 search 时的 BOSS SPA navigation race
+  //   前一次 search 留下的 URL（如 /web/geek/jobs?query=...）若与目标同源，
+  //   BOSS 客户端路由会 redirect → 中断 Playwright page.goto → throws
+  // 解决：检测当前 page.url() 的 hostname，若已是 zhipin.com → 跳过 goto
+  //
+  // 安全考量（hook 审计反馈）：
+  //   - ❌ 不能用 currentUrl.includes('zhipin.com') — query 参数含 zhipin.com 会假阳性
+  //     （如 https://evil.com/redirect?url=https://zhipin.com）
+  //   - ✅ 用 URL parse 提取 hostname（origin 一部分，不含 query/path）
+  //   - ✅ 路径 regex 不要强求尾斜杠（/web/geek/jobs 实际无尾斜杠）
+  //   - ✅ page.url() 可能 null（page closed）→ 防御
+  const currentUrl = page.url() ?? ''
+  let alreadyOnBoss = false
+  try {
+    if (currentUrl && currentUrl !== 'about:blank') {
+      const u = new URL(currentUrl)
+      // hostname 严格等于 zhipin.com（不含 m. 等子域，除非显式支持）
+      if (u.hostname === 'zhipin.com' || u.hostname.endsWith('.zhipin.com')) {
+        // 路径前缀匹配（不强求尾斜杠）
+        const path = u.pathname
+        if (
+          path.startsWith('/web/geek') ||
+          path.startsWith('/job_detail')
+        ) {
+          alreadyOnBoss = true
+        }
+      }
+    }
+  } catch {
+    // URL parse 失败 → 保守走 goto
+    alreadyOnBoss = false
+  }
 
-  // 如果 recommend 也被重定向，抛错
+  if (!alreadyOnBoss) {
+    // 首次跑 / 不在 BOSS 域 → 必须 goto 安全入口
+    await page.goto('https://www.zhipin.com/web/geek/recommend', {
+      waitUntil: 'domcontentloaded',
+      timeout: 30_000,
+    })
+  }
+
+  // 如果 recommend 也被重定向（仍 about:blank 或 /user/），抛错
   if (page.url() === 'about:blank' || page.url().includes('/user/')) {
     throw new Error('登录已失效，请先运行 bapply login 重新扫码登录')
   }
@@ -424,6 +502,14 @@ export async function searchJobs(
     apiBody.city = CITY_CODES[city]
   }
 
+  // ⚠️ Sprint 2B P0 修复：env 判断移到 host 代码（page.evaluate 在浏览器上下文，
+  //    process.env / node:fs / process.cwd() 都不可用 —— 之前会导致 ReferenceError）
+  const isDebug = process.env.BOSS_SEARCH_DEBUG === '1'
+  const isProbe = process.env.BOSS_SEARCH_PROBE === '1'
+
+  // Sprint 2026-07-13 user-rolled-back：原本改为 robustEvaluate（ADR-0005），
+  //   因 BOSS 服务端风控拦截才是真实问题（参见 feedback_boss_anti_bot_status memory）
+  //   robustEvaluate 本身保留在 ./robust-evaluate.ts，后续 sprint 收编其他调用点
   const apiResult = await page.evaluate(async (body: any) => {
     try {
       const res = await fetch('https://www.zhipin.com/wapi/zpgeek/search/joblist.json', {
@@ -432,11 +518,58 @@ export async function searchJobs(
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       })
-      return await res.json()
+      const json = await res.json()
+      return json
     } catch (e: any) {
       return { error: e.message }
     }
   }, apiBody)
+
+  // 调试/探针：page.evaluate 之外做（host 有完整 Node API）
+  if ((isDebug || isProbe) && apiResult?.zpData?.jobList?.[0]) {
+    const firstJob = apiResult.zpData.jobList[0]
+    if (isDebug) {
+      const userKeys = Object.keys(firstJob).filter((k) =>
+        /user|hr|encrypt/i.test(k),
+      )
+      console.log('[searchJobs] BOSS API 用户相关字段（验证用）:')
+      for (const k of userKeys) {
+        console.log(`  ${k}: ${firstJob[k]}`)
+      }
+    }
+    if (isProbe) {
+      const { writeFileSync, mkdirSync } = await import('node:fs')
+      const { dirname, resolve } = await import('node:path')
+      const schemaPath = resolve(process.cwd(), 'tests/fixtures/boss-schema.json')
+      mkdirSync(dirname(schemaPath), { recursive: true })
+      const sanitize = (key: string, value: unknown): unknown => {
+        if (typeof value !== 'string') return value
+        if (/name|brand|company|title|jobName/i.test(key)) {
+          return value.length > 10 ? value.slice(0, 8) + '...' : value
+        }
+        if (/url|link/i.test(key)) return '[URL_OMITTED]'
+        return value
+      }
+      const sanitized: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(firstJob)) {
+        sanitized[k] = sanitize(k, v)
+      }
+      const probePayload = {
+        _meta: {
+          capturedAt: new Date().toISOString(),
+          source: 'BOSS /wapi/zpgeek/search/joblist.json',
+          jobListIndex: 0,
+          note: '契约测试的"黄金基准"。BOSS 改版时重新跑 npm run probe:boss 覆盖。',
+        },
+        sampleJob: sanitized,
+        userRelatedFields: Object.keys(firstJob)
+          .filter((k) => /user|hr|encrypt/i.test(k))
+          .map((k) => ({ key: k, value: firstJob[k] })),
+      }
+      writeFileSync(schemaPath, JSON.stringify(probePayload, null, 2))
+      console.log(`[searchJobs] ✅ schema dumped to ${schemaPath}`)
+    }
+  }
 
   // API 成功 → 解析结构化数据
   if (apiResult.code === 0 && apiResult.zpData?.jobList?.length > 0) {
@@ -455,6 +588,14 @@ export async function searchJobs(
       welfare: job.welfareList ?? [],
       skills: job.skills ?? [],
       link: job.link ?? '',
+      // Sprint 2B：HR 加密 uid（friend/add 第二参数 uid）
+      // 实测字段名 encryptBossId（probe 验证 2026-07-09）
+      // 契约基线：tests/fixtures/boss-schema.json userRelatedFields
+      hrUid: extractHrUid(job),
+      // Sprint 2026-07-12：card.json 必传参数（实测确认 detail.json 已要求完整参数）
+      // 来源：search/joblist.json 响应里 jobList[].lid / jobList[].securityId
+      lid: job.lid,
+      securityId: job.securityId,
     }))
 
     // ---- Phase 2.5: --city 警告（详见 ADR-0003 + city-utils.ts） ----
@@ -498,6 +639,7 @@ export async function searchJobs(
   // ---- Fallback: API 失败，纯 DOM 提取 ----
   console.warn('⚠️ API 调用失败，降级到 DOM 提取模式')
   if (apiResult.message) console.warn(`   原因: ${apiResult.message}`)
+  if (apiResult.error) console.warn(`   异常: ${apiResult.error}`)  // Sprint 2B P0: page.evaluate fetch 抛错信息
 
   await page.goto(`https://www.zhipin.com/web/geek/job?query=${encodeURIComponent(keyword)}`, {
     waitUntil: 'domcontentloaded',
@@ -550,26 +692,88 @@ export const JD_SELECTORS: ReadonlyArray<string> = [
 /** 单个选择器独立超时（不要和 page.goto 的 30s 串行） */
 const JD_SELECTOR_TIMEOUT_MS = 3_000
 
-export async function fetchJobDetail(page: any, jobId: string): Promise<string> {
+export async function fetchJobDetail(page: any, jobId: string, opts: { throttleMs?: number; minJdLength?: number; lid?: string; securityId?: string } = {}): Promise<string> {
+  // Sprint 2E：测试可通过 opts.minJdLength=0 跳过长度校验（聚焦 selector 链测试）
+  const minJdLength = opts.minJdLength ?? DEFAULT_MIN_JD_LENGTH
+  // ============================================================
+  // Sprint 1A 修复 P0：先试 wapi JSON（带 cookie），失败再降级 page.goto
+  // 原因：page.goto 高频触发 BOSS _security_check 反爬拦截
+  //
+  // Sprint 2026-07-12 修复：
+  //   - 实测确认 detail.json?jobId=XXX 报 code:17 缺少必要参数
+  //   - 真实接口是 /wapi/zpgeek/job/card.json，需要 lid + securityId
+  //   - 缺 lid/securityId 时跳过 wapi 路径，直接走 page.goto 降级（向后兼容）
+  //   - card.json 的 zpData.jobCard.postDescription 就是完整 JD（929 字符实测）
+  // ============================================================
+
+  // 尝试 1：wapi JSON（仅在 ctx 完整时尝试；缺 ctx 直接降级）
+  if (opts.lid && opts.securityId) {
+    try {
+      const jdFromWapi = await fetchJobDetailViaWapi(page, jobId, opts.lid, opts.securityId)
+      if (jdFromWapi && jdFromWapi.length > 0) {
+        // Sprint 2E：wapi 返了但长度不够 → 视为懒加载未完成，降级
+        if (jdFromWapi.length >= minJdLength) {
+          return jdFromWapi
+        }
+        console.warn(`[fetchJobDetail] wapi 返 ${jdFromWapi.length} 字符 < ${minJdLength}（懒加载未完成），降级到 page.goto`)
+      }
+      // wapi 返了但 postDescription 为空 → 降级
+    } catch (err) {
+      // wapi 失败（缺参数 / 网络 / 解析）→ 降级到 page.goto
+      // 不静默吞：Sprint 1A 假绿零容忍
+      const msg = err instanceof Error ? err.message : String(err)
+      console.warn(`[fetchJobDetail] wapi 失败，降级到 page.goto: ${msg}`)
+    }
+  } else {
+    // 缺 ctx — 老路径（CLI greet / sync-handler 默认 GenerateGreeting）只拿 jobId
+    // 没法调 card.json（缺 lid/securityId），直接走 page.goto
+    console.warn('[fetchJobDetail] opts.lid/securityId 缺失，跳过 wapi 路径，直接 page.goto')
+  }
+
+  // 尝试 2：降级到 page.goto + 限速（默认 3000ms，缓解反爬）
+  // 测试时传 throttleMs: 0 跳过 sleep
+  const throttleMs = opts.throttleMs ?? 3000
   const fullUrl = `https://www.zhipin.com/job_detail/${jobId}.html`
+
+  // Sprint 2E 决策 3：throttleMs 之前 waitForSelector('body', 5s) 检查骨架
+  // 防止"等 3 秒后页面 404 / 空白"浪费 selector 探针时间
+  if (throttleMs > 0) {
+    await sleep(throttleMs)
+  }
   await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 })
 
+  // Sprint 2E 决策 3（实际实现）：page.goto 后等 body 骨架
+  // 防止"等 3 秒后页面 404 / 空白"浪费 selector 探针时间
+  await page.waitForSelector('body', { timeout: 5_000 })
+
   // Fallback selector 链：每个独立超时，返回首个非空文本
+  // Sprint 2E：替换 waitForSelector → waitForFunction(textLength >= MIN)
+  // 防御 BOSS 首屏只渲染 60% JD（懒加载），等文本稳定到足够长
   const triedSelectors: string[] = []
+  const lengthHistory: Record<string, number[]> = {}
   for (const selector of JD_SELECTORS) {
     triedSelectors.push(selector)
+    lengthHistory[selector] = []
     try {
-      await page.waitForSelector(selector, { timeout: JD_SELECTOR_TIMEOUT_MS })
+      await page.waitForFunction(
+        (sel: string, minLen: number) => {
+          const el = document.querySelector(sel)
+          return el !== null && (el.textContent ?? '').trim().length >= minLen
+        },
+        selector,
+        minJdLength,
+        { timeout: JD_SELECTOR_TIMEOUT_MS, polling: 500 },
+      )
     } catch {
       // 超时或未命中 → 试下一个
       continue
     }
     try {
       const jd = await page.$eval(selector, (el: any) => el.textContent?.trim() ?? '')
-      if (jd && jd.length > 0) {
+      if (jd && jd.length >= minJdLength) {
         return jd
       }
-      // 选择器命中但内容为空（BOSS 改了结构）→ 继续试下一个
+      // 选择器命中但长度不够（即使 waitForFunction resolve 了，仍二次校验）
       continue
     } catch {
       // $eval 失败（极少见：选择器 race condition）
@@ -577,53 +781,187 @@ export async function fetchJobDetail(page: any, jobId: string): Promise<string> 
     }
   }
 
-  // 所有选择器都失败
-  throw new Error(
-    `fetchJobDetail 失败：尝试了 ${triedSelectors.length} 个选择器都未命中 JD 容器\n` +
-      `  URL: ${fullUrl}\n` +
-      `  已尝试: ${triedSelectors.join(', ')}\n` +
-      `  可能原因：(1) BOSS 又改 HTML（跑 scripts/probe-boss-selectors.sh 找新选择器）` +
-      ` (2) jobId 无效/岗位已下架 (3) 登录态失效`,
-  )
+  // 所有选择器都失败 → 抛 LazyLoadError（含 lengthHistory）
+  throw new LazyLoadError({
+    url: fullUrl,
+    selectors: triedSelectors,
+    lengthHistory,
+    cause: 'all_selectors_lazy',
+  })
+}
+
+/**
+ * Sprint 2026-07-12 修复：通过 BOSS card.json 抓取 JD（在 BOSS 域内 fetch，带 cookie）
+ * 避免 page.goto 触发 _security_check 反爬
+ *
+ * 端点：/wapi/zpgeek/job/card.json?lid=XXX&securityId=XXX&sessionId=
+ * 关键：
+ *   - 必须在 BOSS 域内 fetch（CORS + cookie 限制）
+ *   - 实测确认：detail.json?jobId=XXX 单参数报 code:17，必须用 card.json + lid + securityId
+ *   - 实测确认：Zp_token header 不影响响应（不影响 = 不必加）
+ *   - 返 JSON：{ zpData: { jobCard: { postDescription: "..." } } } — 929 字符完整 JD
+ *   - 契约基线：2026-07-12 curl 实测
+ */
+async function fetchJobDetailViaWapi(page: any, jobId: string, lid: string, securityId: string): Promise<string> {
+  // 在 BOSS 域内 fetch（page.evaluate 内 this = window）
+  // ⚠️ page.evaluate(fn, arg) 只支持 1 个参数 — 多个参数必须包对象
+  console.log(`[fetchJobDetailViaWapi] jobId=${jobId} lid=${lid} securityId=${securityId?.slice(0,20)}...`)
+  // Sprint 2026-07-14 / task #30：page.evaluate → robustEvaluate
+  //   治 BOSS SPA navigation race（ADR-0005 后续项）
+  //   行为契约：race 类错误重试 ≤3 次；非 race（业务错）立即抛
+  const result = await robustEvaluate(page, async (args: unknown) => {
+    const { lid, securityId } = args as { lid: string; securityId: string }
+    try {
+      const resp = await fetch(
+        `https://www.zhipin.com/wapi/zpgeek/job/card.json?lid=${encodeURIComponent(lid)}&securityId=${encodeURIComponent(securityId)}&sessionId=`,
+        {
+          credentials: 'include',  // 带 cookie
+          headers: { Accept: 'application/json' },
+        }
+      )
+      if (!resp.ok) {
+        return { ok: false, error: `HTTP ${resp.status}` }
+      }
+      const data: any = await resp.json()
+      if (data?.code !== 0) {
+        return { ok: false, error: `BOSS code=${data?.code} message=${data?.message}` }
+      }
+      const jd = data?.zpData?.jobCard?.postDescription
+      if (typeof jd !== 'string' || jd.length === 0) {
+        return { ok: false, error: 'postDescription 字段缺失或为空' }
+      }
+      return { ok: true, jd }
+    } catch (e: any) {
+      return { ok: false, error: e?.message ?? String(e) }
+    }
+  }, { lid, securityId })
+
+  if (!result?.ok || !result.jd) {
+    throw new Error(result?.error ?? 'wapi 返回未知错误')
+  }
+  return result.jd
+}
+
+/** 简单的 sleep（不用 setTimeout 包装为了类型清晰） */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 // ============================================================
-// 发送打招呼消息（API 直调，不依赖 DOM）
+// 发送打招呼消息（Sprint 2A：friend/add API）
 // ============================================================
+//
+// 协议：POST https://www.zhipin.com/wapi/zpgeek/friend/add.json
+//   - 在 BOSS 域内 fetch（page.evaluate，带 cookie + Referer，CDP 复用登录态）
+//   - form-encoded body: gid=<jobId>&uid=<hrId>&message=<msg>&expectInfo=0
+//
+// 5 状态枚举（与飞书"打招呼状态"单选项严格对齐）：
+//   - sent:             BOSS code=0，zpData 有 friendId
+//   - failed:           业务错误（length>200 / BOSS 其他 code / 网络错误）
+//   - rate_limited:     BOSS code=99991604（"too many requests today"）
+//   - security_blocked: BOSS code=99991603（"verify required"）
+//
+// GuardError 仍由 withGuard 抛出（abort_today / abort）→ send-handler.ts 映射到 exit code
+// ============================================================
+
+/** 限流判定：BOSS chatRemindDialog.content 含此串 → master 算 SUCCESS（参考 master platform.ts:533） */
+const CHAT_REMIND_120_LIMIT = '您今天已与120位BOSS沟通'
+
+const FRIEND_ADD_URL = 'https://www.zhipin.com/wapi/zpgeek/friend/add.json'
+
+export type SendGreetingAction =
+  | 'sent'
+  | 'failed'
+  | 'rate_limited'
+  | 'security_blocked'
+  /** Sprint 2026-07-14 新增：bossCode=1011 "当前登录状态已失效"（探针 P1/P2/P3 实测） */
+  | 'session_expired'
+
+export interface SendGreetingResult {
+  action: SendGreetingAction
+  /** 仅 action='sent' 时有值（来自 BOSS zpData — 探针 P3 实测字段 encBossId） */
+  friendId?: string
+  chatId?: string
+  /** failed / rate_limited / security_blocked / session_expired 都有：保留 BOSS message 便于调试 */
+  error?: string
+}
 
 export async function sendGreeting(
   page: any,
   jobId: string,
-  message: string,
-  typeTextOptions?: TypeTextOptions,
-): Promise<boolean> {
-  return withGuard(
-    page,
-    async () => {
-      try {
-        // 方案：打开聊天页 → 人类节奏键入（typeText 模拟真人输入）→ 点击发送
-        await page.goto(`https://www.zhipin.com/web/chat?jobId=${jobId}`, {
-          waitUntil: 'networkidle',
-          timeout: 30_000,
-        })
-        await page.waitForSelector('#chat-input', { timeout: 10_000 })
+  lid: string,
+  securityId: string,
+): Promise<SendGreetingResult> {
+  try {
+    return await withGuard(
+      page,
+      async () => {
+        // P3 协议（探针实测 bossCode=0）：
+        //   URL: ?securityId=...&jobId=...&lid=...
+        //   Body: null
+        //   Headers: Zp_token=<bst cookie> + Cookie=<全量 cookie>（★ Cookie 冗余是关键，P1 失败证明 Zp_token 不足）
+        // Sprint 2026-07-14 / task #30 + task #41 + ADR-0007
+        //
+        // 关键：cookie 提取 + fetch 必须在**同一次** robustEvaluate（page.evaluate 调用）内完成，
+        // 否则浏览器上下文断开后 document.cookie 不可访问
+        const data = await robustEvaluate(
+          page,
+          async (args: unknown) => {
+            const { url } = args as { url: string }
+            // 在浏览器上下文一次性：取 cookie + fetch
+            const zpToken = document.cookie.match(/(?:^|;\s*)bst=([^;]+)/)?.[1] ?? ''
+            const cookieHeader = document.cookie
+            const resp = await fetch(url, {
+              method: 'POST',
+              headers: {
+                Zp_token: zpToken,
+                Cookie: cookieHeader,
+              },
+              body: null,
+              credentials: 'include',
+            })
+            return await resp.json()
+          },
+          {
+            url: `${FRIEND_ADD_URL}?securityId=${encodeURIComponent(securityId)}&jobId=${encodeURIComponent(jobId)}&lid=${encodeURIComponent(lid)}`,
+          },
+        )
 
-        // 用 typeText 替代直接 evaluate：触发真实键盘事件 + 随机延迟 + typo 注入
-        const result = await typeText(page, '#chat-input', message, typeTextOptions)
-        await page.click('.btn-send')
-
-        console.log(`✅ 已向岗位 ${jobId} 发送打招呼消息 (typed=${result.typed}, typos=${result.typos})`)
-        return true
-      } catch (err) {
-        // backlog #7: GuardError 必须透传（不让风控决策被业务 catch 吞掉）
-        // 业务错误（page.goto 抛 navigation timeout 等）仍返回 false
-        if (err instanceof GuardError) {
-          throw err
+        // 解析 BOSS 响应（按探针 P3 raw.zpData + master 限流语义）：
+        if (data?.code === 0) {
+          // P3 实测：zpData 含 greeting / encBossId / securityId
+          return {
+            action: 'sent' as const,
+            friendId: data.zpData?.encBossId,
+            chatId: data.zpData?.chatId,
+          }
         }
-        console.error(`❌ 向岗位 ${jobId} 发送消息失败:`, err)
-        return false
-      }
-    },
-    { config: GUARD_CONFIG, waitForUserConfirm: _waitForUserConfirm },
-  )
+        // master platform.ts:533：chatRemindDialog.content 含 "120 次" 算 SUCCESS
+        if (data?.zpData?.bizData?.chatRemindDialog?.content?.includes(CHAT_REMIND_120_LIMIT)) {
+          return {
+            action: 'sent' as const,
+            error: data.zpData.bizData.chatRemindDialog.content,
+          }
+        }
+        // 探针 P1/P2 实测：bossCode=1011 "当前登录状态已失效"
+        if (data?.code === 1011) {
+          return { action: 'session_expired' as const, error: data?.message }
+        }
+        return {
+          action: 'failed' as const,
+          error: data?.message ?? `BOSS 返 code=${data?.code}`,
+        }
+      },
+      { config: GUARD_CONFIG, waitForUserConfirm: _waitForUserConfirm },
+    )
+  } catch (err) {
+    // GuardError 必须透传（让 send-handler.ts 看到 abort_today / abort 决策）
+    if (err instanceof GuardError) {
+      throw err
+    }
+    // 业务错误（fetch 失败 / JSON 解析失败 / withGuard probe 抛错）
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error(`❌ sendGreeting 失败 (jobId=${jobId}):`, msg)
+    return { action: 'failed', error: msg }
+  }
 }

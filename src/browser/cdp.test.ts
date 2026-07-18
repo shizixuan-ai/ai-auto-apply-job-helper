@@ -247,7 +247,7 @@ describe('attachPlaywrightToCDP', () => {
     }
 
     await attachPlaywrightToCDP(wrapper)
-    expect(chromium.connectOverCDP).toHaveBeenCalledWith('http://127.0.0.1:9333')
+    expect(chromium.connectOverCDP).toHaveBeenCalledWith('http://127.0.0.1:9333', { noDefaults: true })
   })
 
   it('returns the Playwright Browser instance from connectOverCDP', async () => {

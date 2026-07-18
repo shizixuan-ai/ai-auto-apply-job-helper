@@ -25,7 +25,20 @@ import {
   createCDPSession,
   closeBrowserSession,
   sendGreeting,
+  type SendGreetingResult,
 } from '../../browser/index.js'
+import type { GreetStatus } from '../../types/index.js'
+
+/** GreetStatus → 飞书"打招呼状态"单选中文 label 映射（与 add-sprint-2a-fields.mjs options 严格对齐） */
+const STATUS_LABEL: Record<GreetStatus, string> = {
+  pending: '待发送',
+  sent: '已发送',
+  failed: '失败',
+  rate_limited: '触发限额',
+  security_blocked: '风控拦截',
+  /** Sprint 2026-07-14 新增：探针 P1/P2/P3 实测 bossCode=1011 */
+  session_expired: '登录已失效',
+}
 
 // ============================================================
 // 类型
@@ -34,8 +47,18 @@ import {
 export interface SendCommandOptions {
   /** 岗位 ID（encryptJobId） */
   jobId: string
-  /** 话术内容（-m / --message） */
-  message?: string
+  /**
+   * BOSS list-context lid（Sprint 2026-07-14 / ADR-0007 P3 协议必传）
+   * 来源：search/joblist.json 响应 jobList[].lid
+   */
+  lid: string
+  /**
+   * BOSS 风控 token（同上必传）
+   * 来源：search/joblist.json 响应 jobList[].securityId
+   */
+  securityId: string
+  /** 飞书记录 ID（如果有，写回打招呼状态） */
+  recordId?: string
   /** 是否通过 CDP 连接已有 Chrome */
   cdp?: boolean
 }
@@ -45,13 +68,31 @@ export interface SendCommandOptions {
  * 全部 optional，handler 在缺省时回退到 src/browser/index.js 的真实实现
  */
 export interface SendCommandDeps {
+  /**
+   * sendGreeting 签名（Sprint 2026-07-14 / task #41 / ADR-0007 P3 协议）：
+   *   (page, jobId, lid, securityId) — 不再传 hrUid / message
+   */
   sendGreeting?: (
     page: any,
     jobId: string,
-    message: string,
-  ) => Promise<boolean>
+    lid: string,
+    securityId: string,
+  ) => Promise<SendGreetingResult>
   createSession?: (cdp: boolean) => Promise<any>
   closeSession?: (session: any) => Promise<void>
+  /**
+   * 写飞书记录（Sprint 2A.2）
+   *   - recordId: 飞书记录 ID
+   *   - status: 5 状态 GreetStatus
+   *   - greetedAt: 毫秒时间戳
+   *   - 由 CLI 层包装 updateRecord(config.feishu.appToken, tableId, ...)
+   *   - 失败不阻塞 send 主流程（仅 console.error + 写到 result.reason）
+   */
+  writeGreetingStatus?: (
+    recordId: string,
+    status: GreetStatus,
+    greetedAt: number,
+  ) => Promise<unknown>
 }
 
 export type SendCommandAction =
@@ -75,10 +116,17 @@ export async function runSendCommand(
   deps: SendCommandDeps = {},
 ): Promise<SendCommandResult> {
   // 1. 参数校验（早返回，避免创建不必要的 session）
-  if (!opts.message) {
+  // Sprint 2026-07-14 / ADR-0007：移除 message / hrUid 校验 → 改为 lid / securityId
+  if (!opts.lid) {
     return {
       action: 'invalid_args',
-      reason: '请通过 -m 指定话术内容',
+      reason: '请通过 -l 指定 BOSS list-context lid（来自 search 输出）',
+    }
+  }
+  if (!opts.securityId) {
+    return {
+      action: 'invalid_args',
+      reason: '请通过 -s 指定 BOSS 风控 token securityId（来自 search 输出）',
     }
   }
 
@@ -89,20 +137,16 @@ export async function runSendCommand(
 
   // 3. 创建 session + 执行 + 清理（finally 兜底防 Chrome 泄漏）
   const session = await createSessionFn(opts.cdp ?? false)
+  let sendResult: SendGreetingResult | null = null
   try {
-    const ok = await sendGreetingFn(session.page, opts.jobId, opts.message)
-    if (ok) {
-      return { action: 'ok', reason: '发送成功' }
-    }
-    return {
-      action: 'failed',
-      reason: '发送失败（详见 BOSS 页面或浏览器日志）',
-    }
+    // Sprint 2026-07-14 / ADR-0007：4 参数签名 (page, jobId, lid, securityId)
+    sendResult = await sendGreetingFn(session.page, opts.jobId, opts.lid, opts.securityId)
   } catch (err) {
     // P0 fix: GuardError 必须捕获 → 透传为同 action 的 result
     if (err instanceof GuardError) {
       const a = err.decision.action
       if (a === 'abort_today' || a === 'abort') {
+        // 风控触发时：未真正发起打招呼，不写飞书
         return {
           action: a,
           reason: err.decision.reason,
@@ -110,22 +154,43 @@ export async function runSendCommand(
       }
     }
     // 非 GuardError：业务错误（如 navigation timeout / page closed）
+    // → 标记为 failed，让飞书记录显示"失败"（如果 recordId 提供）
     const msg = err instanceof Error ? err.message : String(err)
-    return {
-      action: 'failed',
-      reason: `发送失败：${msg}`,
-    }
+    sendResult = { action: 'failed', error: msg }
   } finally {
     // closeSession 抛错不能掩盖原始 error（业务/GuardError）
     try {
       await closeSessionFn(session)
     } catch (closeErr) {
-      // 只在没业务错误时才抛 closeErr；否则静默（保留原始 error）
-      // （无法直接检测"是否有原始 error"，因为 catch 已经处理掉了——靠调用方感知）
-      // 选择保守策略：close 错误降级为 console.warn，不抛
       const msg = closeErr instanceof Error ? closeErr.message : String(closeErr)
       console.warn(`[send-handler] closeSession 失败（已忽略）: ${msg}`)
     }
+  }
+
+  // 4. Sprint 2A.2: 写飞书（如有 recordId）
+  //   - 写失败不阻塞 send 主流程（仅 console.error + 在 reason 标注）
+  let writebackNote = ''
+  if (sendResult && opts.recordId && deps.writeGreetingStatus) {
+    try {
+      await deps.writeGreetingStatus(opts.recordId, sendResult.action, Date.now())
+      writebackNote = '（飞书已更新）'
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error(`[send-handler] 写飞书失败（已忽略）: ${msg}`)
+      writebackNote = `（飞书写入失败: ${msg}）`
+    }
+  }
+
+  // 5. 5 状态 → 4 SendCommandAction 映射
+  if (sendResult.action === 'sent') {
+    return {
+      action: 'ok',
+      reason: `发送成功（friendId=${sendResult.friendId ?? 'n/a'}）${writebackNote}`,
+    }
+  }
+  return {
+    action: 'failed',
+    reason: `发送失败（${sendResult.action}）：${sendResult.error ?? '未知'}${writebackNote}`,
   }
 }
 

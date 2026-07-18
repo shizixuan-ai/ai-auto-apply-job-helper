@@ -61,6 +61,7 @@ function makeConfig(llmOverrides: Partial<AppConfig['llm']>): AppConfig {
     },
     boss: {},
     browser: {},
+    scoreThreshold: 0.85,
   }
 }
 

@@ -1,0 +1,58 @@
+{
+  "_meta": {
+    "capturedAt": "2026-07-14T09:20:38.504Z",
+    "source": "BOSS /wapi/zpgeek/friend/add.json",
+    "method": "context.cookies() + Node fetch (CDP 接管)",
+    "mode": "really_send (1 jobId)",
+    "city": "--really-send",
+    "sampleJobEncryptJobId": "89d4f6843ce5961f0nF83dm9FFdR",
+    "sampleJobLid": "1a9ABvRMl3R.search.1",
+    "sampleJobBossIdPrefix": "e2043def",
+    "note": "⚠️ 真发探针，每个 style 都会真正调 1 次 friend/add"
+  },
+  "styles": [
+    {
+      "styleId": "P1-master-query-only",
+      "mode": "really_send",
+      "httpStatus": 200,
+      "bossCode": 1011,
+      "bossMessage": "当前登录状态已失效",
+      "raw": {
+        "code": 1011,
+        "message": "当前登录状态已失效",
+        "zpData": {}
+      }
+    },
+    {
+      "styleId": "P2-ours-form-body",
+      "mode": "really_send",
+      "httpStatus": 200,
+      "bossCode": 1011,
+      "bossMessage": "当前登录状态已失效",
+      "raw": {
+        "code": 1011,
+        "message": "当前登录状态已失效",
+        "zpData": {}
+      }
+    },
+    {
+      "styleId": "P3-master-full",
+      "mode": "really_send",
+      "httpStatus": 200,
+      "bossCode": 0,
+      "bossMessage": "Success",
+      "raw": {
+        "code": 0,
+        "message": "Success",
+        "zpData": {
+          "showGreeting": true,
+          "greeting": "7年Java高并发实战，做过万级QPS的拍卖竞价系统，跟贵司这个岗位的要求很匹配。",
+          "bossSource": 0,
+          "securityId": "esknqGib9UMBo-O1E14211s0Gf2Ocd_ZIETnSCRgff7Gwa55_aQKubwnNTBbv5dFESmNRBbnEklyg9XU9qnXKWZU7mh83vzYltaJZRxqsKcUXEPvR_L0IQpX3J5HJOUldjghxBDbD2E3URXz-PJm7qiBoyrfx7HpRhWRpf2VbfI3snZHqznzMlFxnkzZKwCE7nuoqUxzJQR9THufAothrg~~",
+          "source": "",
+          "encBossId": "e2043def326cf10d0XN509i-E1s~"
+        }
+      }
+    }
+  ]
+}

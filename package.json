@@ -4,7 +4,7 @@
   "description": "AI 自动投递简历辅助工具 - BOSS 直聘",
   "type": "module",
   "bin": {
-    "bapply": "./src/cli/index.ts"
+    "bapply": "./bin/bapply.js"
   },
   "scripts": {
     "dev": "tsx src/cli/index.ts",
@@ -12,7 +12,16 @@
     "start": "node dist/cli/index.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "probe:boss": "BOSS_SEARCH_PROBE=1 tsx scripts/probe-boss-api.mjs",
+    "probe:boss:debug": "BOSS_SEARCH_PROBE=1 BOSS_SEARCH_DEBUG=1 tsx scripts/probe-boss-api.mjs",
+    "probe:friend-add": "tsx scripts/probe-friend-add.mjs",
+    "probe:friend-add:really": "tsx scripts/probe-friend-add.mjs --really-send",
+    "build:poc": "node scripts/build-poc-bundle.mjs",
+    "verify:feishu": "tsx scripts/verify-feishu-schema.mjs",
+    "smoke:cli": "tsx scripts/cli-smoke.mjs",
+    "smoke": "tsx scripts/git-hooks/pre-commit",
+    "prepare": "git config core.hooksPath scripts/git-hooks"
   },
   "dependencies": {
     "chalk": "^5.4.1",
@@ -22,6 +31,7 @@
     "ora": "^8.2.0",
     "playwright": "^1.52.0",
     "playwright-extra": "^4.3.6",
+    "protobufjs": "^8.7.0",
     "puppeteer-core": "^25.0.2",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "zod": "^3.24.3"
@@ -29,8 +39,11 @@
   "devDependencies": {
     "@types/node": "^22.14.1",
     "@vitest/coverage-v8": "^4.1.9",
+    "esbuild": "^0.28.1",
+    "msw": "^2.15.0",
     "tsx": "^4.19.3",
     "typescript": "^5.8.3",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.9",
+    "yaml": "^2.9.0"
   }
 }

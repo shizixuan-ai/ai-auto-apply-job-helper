@@ -26,8 +26,9 @@ function makeDeps(overrides: Partial<{
   sendGreeting: any
   createSession: any
   closeSession: any
+  writeGreetingStatus: any
 }> = {}) {
-  const sendGreeting = overrides.sendGreeting ?? vi.fn().mockResolvedValue(true)
+  const sendGreeting = overrides.sendGreeting ?? vi.fn().mockResolvedValue({ action: 'sent', friendId: 'f_default' })
   const session = {
     page: { mockPage: true },
     browser: { close: vi.fn().mockResolvedValue(undefined) },
@@ -38,7 +39,9 @@ function makeDeps(overrides: Partial<{
     overrides.createSession ?? vi.fn().mockResolvedValue(session)
   const closeSession =
     overrides.closeSession ?? vi.fn().mockResolvedValue(undefined)
-  return { sendGreeting, createSession, closeSession }
+  const writeGreetingStatus =
+    overrides.writeGreetingStatus ?? vi.fn().mockResolvedValue(undefined)
+  return { sendGreeting, createSession, closeSession, writeGreetingStatus }
 }
 
 function makeGuardDecision(action: 'abort_today' | 'abort', reason: string) {
@@ -59,36 +62,58 @@ function makeGuardDecision(action: 'abort_today' | 'abort', reason: string) {
 // ============================================================
 
 describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
-  it('happy path: sendGreeting 返 true → action="ok", reason 含 "成功"', async () => {
+  it('happy path: sendGreeting 返 {action:"sent"} → action="ok", reason 含 "成功"', async () => {
     const deps = makeDeps({
-      sendGreeting: vi.fn().mockResolvedValue(true),
+      sendGreeting: vi.fn().mockResolvedValue({ action: 'sent', friendId: 'f1' }),
     })
     const { runSendCommand } = await import('./send-handler.js')
 
     const result = await runSendCommand(
-      { jobId: 'j1', message: '你好' },
+      { jobId: 'j1', lid: 'lid_test', securityId: 'sec_test' },
       deps,
     )
 
     expect(result.action).toBe('ok')
     expect(result.reason).toMatch(/成功/)
+    // Sprint 2026-07-14 / task #41 / ADR-0007：4 参数签名 (page, jobId, lid, securityId)
     expect(deps.sendGreeting).toHaveBeenCalledWith(
       { mockPage: true },
       'j1',
-      '你好',
+      'lid_test',
+      'sec_test',
     )
   })
 
-  it('缺 message → action="invalid_args" 且不调 sendGreeting', async () => {
+  it('缺 lid → action="invalid_args" 且不调 sendGreeting', async () => {
     const deps = makeDeps()
     const { runSendCommand } = await import('./send-handler.js')
 
-    const result = await runSendCommand({ jobId: 'j1' }, deps)
+    // 故意省略 lid 以触发 invalid_args
+    const result = await runSendCommand(
+      { jobId: 'j1', securityId: 'sec_test' } as any,
+      deps,
+    )
 
     expect(result.action).toBe('invalid_args')
-    expect(result.reason).toMatch(/请通过 -m/)
+    expect(result.reason).toMatch(/-l/)
     expect(deps.sendGreeting).not.toHaveBeenCalled()
     // invalid_args 也不该创建 session
+    expect(deps.createSession).not.toHaveBeenCalled()
+  })
+
+  it('缺 securityId → action="invalid_args" 且不调 sendGreeting', async () => {
+    const deps = makeDeps()
+    const { runSendCommand } = await import('./send-handler.js')
+
+    // 故意省略 securityId 以触发 invalid_args
+    const result = await runSendCommand(
+      { jobId: 'j1', lid: 'lid_test' } as any,
+      deps,
+    )
+
+    expect(result.action).toBe('invalid_args')
+    expect(result.reason).toMatch(/-s/)
+    expect(deps.sendGreeting).not.toHaveBeenCalled()
     expect(deps.createSession).not.toHaveBeenCalled()
   })
 
@@ -100,7 +125,7 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
     const { runSendCommand } = await import('./send-handler.js')
 
     const result = await runSendCommand(
-      { jobId: 'j1', message: 'hi' },
+      { jobId: 'j1', lid: 'lid_test', securityId: 'sec_test' },
       deps,
     )
 
@@ -117,7 +142,7 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
     const { runSendCommand } = await import('./send-handler.js')
 
     const result = await runSendCommand(
-      { jobId: 'j1', message: 'hi' },
+      { jobId: 'j1', lid: 'lid_test', securityId: 'sec_test' },
       deps,
     )
 
@@ -125,19 +150,20 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
     expect(result.reason).toMatch(/不可恢复/)
   })
 
-  it('sendGreeting 返 false（业务失败）→ action="failed"', async () => {
+  it('sendGreeting 返 {action:"failed"}（业务失败）→ action="failed"', async () => {
     const deps = makeDeps({
-      sendGreeting: vi.fn().mockResolvedValue(false),
+      sendGreeting: vi.fn().mockResolvedValue({ action: 'failed', error: 'BOSS 拒绝' }),
     })
     const { runSendCommand } = await import('./send-handler.js')
 
     const result = await runSendCommand(
-      { jobId: 'j1', message: 'hi' },
+      { jobId: 'j1', lid: 'lid_test', securityId: 'sec_test' },
       deps,
     )
 
     expect(result.action).toBe('failed')
     expect(result.reason).toMatch(/失败/)
+    expect(result.reason).toMatch(/BOSS 拒绝/)
   })
 
   it('sendGreeting 抛普通 Error（非 GuardError）→ action="failed", reason 含原始 message', async () => {
@@ -147,7 +173,7 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
     const { runSendCommand } = await import('./send-handler.js')
 
     const result = await runSendCommand(
-      { jobId: 'j1', message: 'hi' },
+      { jobId: 'j1', lid: 'lid_test', securityId: 'sec_test' },
       deps,
     )
 
@@ -157,11 +183,11 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
 
   it('成功路径: closeSession 在 finally 调用（即使 ok 也清理浏览器）', async () => {
     const deps = makeDeps({
-      sendGreeting: vi.fn().mockResolvedValue(true),
+      sendGreeting: vi.fn().mockResolvedValue({ action: 'sent' }),
     })
     const { runSendCommand } = await import('./send-handler.js')
 
-    await runSendCommand({ jobId: 'j1', message: 'hi' }, deps)
+    await runSendCommand({ jobId: 'j1', lid: 'lid_test', securityId: 'sec_test' }, deps)
 
     expect(deps.closeSession).toHaveBeenCalledTimes(1)
   })
@@ -173,7 +199,7 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
     })
     const { runSendCommand } = await import('./send-handler.js')
 
-    await runSendCommand({ jobId: 'j1', message: 'hi' }, deps)
+    await runSendCommand({ jobId: 'j1', lid: 'lid_test', securityId: 'sec_test' }, deps)
 
     // 关键：即使 GuardError 抛出，session 必须清理（防 Chrome 泄漏）
     expect(deps.closeSession).toHaveBeenCalledTimes(1)
@@ -183,7 +209,7 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
     const deps = makeDeps()
     const { runSendCommand } = await import('./send-handler.js')
 
-    await runSendCommand({ jobId: 'j1', message: 'hi', cdp: true }, deps)
+    await runSendCommand({ jobId: 'j1', lid: 'lid_test', securityId: 'sec_test', cdp: true }, deps)
 
     expect(deps.createSession).toHaveBeenCalledWith(true)
   })
@@ -192,8 +218,108 @@ describe('runSendCommand — P0 fix: CLI catch GuardError', () => {
     const deps = makeDeps()
     const { runSendCommand } = await import('./send-handler.js')
 
-    await runSendCommand({ jobId: 'j1', message: 'hi' }, deps)
+    await runSendCommand({ jobId: 'j1', lid: 'lid_test', securityId: 'sec_test' }, deps)
 
     expect(deps.createSession).toHaveBeenCalledWith(false)
+  })
+})
+
+// ============================================================
+// Sprint 2A.2: Feishu writeback 测试（3 个新测试）
+// ============================================================
+
+describe('runSendCommand — Sprint 2A.2: Feishu writeback', () => {
+  it('有 recordId + sendGreeting sent → writeGreetingStatus 被调，参数含 (recordId, "sent", any timestamp)', async () => {
+    const deps = makeDeps({
+      sendGreeting: vi.fn().mockResolvedValue({ action: 'sent', friendId: 'f_1' }),
+      writeGreetingStatus: vi.fn().mockResolvedValue(undefined),
+    })
+    const { runSendCommand } = await import('./send-handler.js')
+
+    const result = await runSendCommand(
+      { jobId: 'j1', lid: 'lid_test', securityId: 'sec_test', recordId: 'rec_001' },
+      deps,
+    )
+
+    expect(result.action).toBe('ok')
+    expect(result.reason).toMatch(/飞书已更新/)
+    expect(deps.writeGreetingStatus).toHaveBeenCalledTimes(1)
+    expect(deps.writeGreetingStatus).toHaveBeenCalledWith(
+      'rec_001',
+      'sent',
+      expect.any(Number),
+    )
+  })
+
+  it('有 recordId + sendGreeting failed → writeGreetingStatus 被调，参数含 (recordId, "failed", any timestamp)', async () => {
+    const deps = makeDeps({
+      sendGreeting: vi.fn().mockResolvedValue({ action: 'failed', error: 'BOSS 拒绝' }),
+      writeGreetingStatus: vi.fn().mockResolvedValue(undefined),
+    })
+    const { runSendCommand } = await import('./send-handler.js')
+
+    const result = await runSendCommand(
+      { jobId: 'j1', lid: 'lid_test', securityId: 'sec_test', recordId: 'rec_002' },
+      deps,
+    )
+
+    expect(result.action).toBe('failed')
+    expect(result.reason).toMatch(/飞书已更新/)
+    expect(deps.writeGreetingStatus).toHaveBeenCalledWith(
+      'rec_002',
+      'failed',
+      expect.any(Number),
+    )
+  })
+
+  it('无 recordId → writeGreetingStatus 不被调', async () => {
+    const deps = makeDeps({
+      sendGreeting: vi.fn().mockResolvedValue({ action: 'sent' }),
+      writeGreetingStatus: vi.fn().mockResolvedValue(undefined),
+    })
+    const { runSendCommand } = await import('./send-handler.js')
+
+    await runSendCommand(
+      { jobId: 'j1', lid: 'lid_test', securityId: 'sec_test' },
+      deps,
+    )
+
+    expect(deps.writeGreetingStatus).not.toHaveBeenCalled()
+  })
+
+  it('writeGreetingStatus 抛错 → send 主流程不阻塞，result.reason 标注失败', async () => {
+    const deps = makeDeps({
+      sendGreeting: vi.fn().mockResolvedValue({ action: 'sent', friendId: 'f_1' }),
+      writeGreetingStatus: vi.fn().mockRejectedValue(new Error('飞书 API 限流')),
+    })
+    const { runSendCommand } = await import('./send-handler.js')
+
+    const result = await runSendCommand(
+      { jobId: 'j1', lid: 'lid_test', securityId: 'sec_test', recordId: 'rec_003' },
+      deps,
+    )
+
+    // 主流程仍返回 ok（sendGreeting 成功），飞书写入失败仅在 reason 标注
+    expect(result.action).toBe('ok')
+    expect(result.reason).toMatch(/飞书写入失败/)
+    expect(result.reason).toMatch(/飞书 API 限流/)
+  })
+
+  it('GuardError(abort_today) 时 writeGreetingStatus 不被调（未真发打招呼）', async () => {
+    const decision = makeGuardDecision('abort_today', '今日上限')
+    const deps = makeDeps({
+      sendGreeting: vi.fn().mockRejectedValue(new GuardError(decision)),
+      writeGreetingStatus: vi.fn().mockResolvedValue(undefined),
+    })
+    const { runSendCommand } = await import('./send-handler.js')
+
+    const result = await runSendCommand(
+      { jobId: 'j1', lid: 'lid_test', securityId: 'sec_test', recordId: 'rec_004' },
+      deps,
+    )
+
+    expect(result.action).toBe('abort_today')
+    // 风控时未真发，不应写飞书
+    expect(deps.writeGreetingStatus).not.toHaveBeenCalled()
   })
 })
