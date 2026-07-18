@@ -6,6 +6,15 @@
 // 命令: init | login | search | greet | send
 // ============================================================
 
+// Sprint 2026-07-18 bug fix：dotenv 必须早于所有 import 求值
+//   原因：src/browser/lazy-load-error.ts:24 是叶子模块 + module-level 求值
+//         `Number(process.env.MIN_JD_LENGTH_THRESHOLD ?? 500)`
+//   若不提前：lazy-load-error 先求值 → process.env 还没注入 → DEFAULT_MIN_JD_LENGTH 锁死 500
+//           即使 .env 写 300 也不生效
+//   ESM 副作用 import 在 import 解析时立即执行 → 早于 cli/index.ts 其他 import 链路
+//   同模块导入顺序见 src/config/index.ts:1
+import 'dotenv/config'
+
 import { Command } from 'commander'
 import chalk from 'chalk'
 import readline from 'node:readline/promises'
@@ -100,7 +109,7 @@ program
       console.log()
       console.log(chalk.cyan('🔍 检查飞书 API 连通性...'))
 
-      await listRecords('test', 'test')
+      await listRecords(config.feishu.appToken ?? 'test', config.feishu.tableId ?? 'test')
       console.log(chalk.green('✅ 飞书 API 连通正常'))
     } catch (err: any) {
       status = 'fail'

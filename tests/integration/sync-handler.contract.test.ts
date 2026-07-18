@@ -220,14 +220,14 @@ describe('runSyncCommand auto-greet（端到端契约）', () => {
     expect(result.failed).toBe(0)
 
     // 7. 关键契约：runSendCommand 必须接收 BOSS_ID（不是 record_id） + lid/securityId + recordId
-    // Sprint 2026-07-14 / ADR-0007：sync 路径用 PLACEHOLDER_LID/SID_TODO 等 Sprint C（飞书 schema 升级后）
+    // Sprint C / ADR-0008：sync 路径从飞书读 LID/SECURITY_ID 真实值（PLACEHOLDER 已移除）
     expect(mockRunSendCommand).toHaveBeenCalledTimes(2)
     expect(mockRunSendCommand).toHaveBeenCalledWith(
       expect.objectContaining({
         jobId: 'boss_job_001',  // BOSS encryptJobId（不是 rec_test_001）
-        lid: 'PLACEHOLDER_LID_TODO',
-        securityId: 'PLACEHOLDER_SID_TODO',
-        recordId: 'rec_test_001',  // Feishu record_id（writeback 用）
+        lid: 'Lxaxb11B6S.search.1',        // Sprint C：从飞书 fields['LID'] 读
+        securityId: 'sid_test_001',         // Sprint C：从飞书 fields['SECURITY_ID'] 读
+        recordId: 'rec_test_001',           // Feishu record_id（writeback 用）
       }),
     )
 

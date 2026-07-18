@@ -193,17 +193,39 @@ export async function runSyncCommand(
           continue
         }
 
-        // Sprint 2B Commit 2（2026-07-09）：读 fields['HR_UID']
-        //   来源：search-and-write 写入（Sprint 2B Commit 1）
-        //   用途：friend/add API 第二参数（BOSS HR 加密 uid）
-        //   缺失防护：显式报错 + 不调 generateGreeting（节省 LLM 配额 + 防风控额度浪费）
-        const hrUid = String(job.fields['HR_UID'] ?? '').trim()
-        if (!hrUid) {
+        // Sprint C (ADR-0008)：校验 LID + SECURITY_ID（auto-greet mode 解锁前置）
+        //   - 来源：search-and-write 写入（Sprint C T2，commit 待）
+        //   - 用途：sendGreeting P3 协议 URL query 参数
+        //   - 缺失防护：errors.push + 不调 runSendCommand（防 PLACEHOLDER 误用真发）
+        //
+        // 历史：Sprint 2B 校验 HR_UID（Sprint C 已废止 — ADR-0008 §4 E4）
+        //   HR_UID 字段清理（飞书表里 + search-and-write 写入）写到 ADR-0008 §9 后续
+        const lid = String(job.fields['LID'] ?? '').trim()
+        const securityId = String(job.fields['SECURITY_ID'] ?? '').trim()
+        if (!lid && !securityId) {
           failed++
           errors.push({
             jobId,
             reason:
-              '缺少 HR_UID 字段。请重跑 `bapply search <关键词>`（会自动写 BOSS_ID + HR_UID），再标记为『待投递』',
+              '缺少 LID/SECURITY_ID 字段。请重跑 `bapply search <关键词>` 补全字段，再标记为『待投递』',
+          })
+          continue
+        }
+        if (!lid) {
+          failed++
+          errors.push({
+            jobId,
+            reason:
+              '缺少 LID 字段。请重跑 `bapply search <关键词>` 补全字段，再标记为『待投递』',
+          })
+          continue
+        }
+        if (!securityId) {
+          failed++
+          errors.push({
+            jobId,
+            reason:
+              '缺少 SECURITY_ID 字段。请重跑 `bapply search <关键词>` 补全字段，再标记为『待投递』',
           })
           continue
         }
@@ -230,12 +252,12 @@ export async function runSyncCommand(
         //   GAP-A: jobId 必须是 BOSS job_id（encryptJobId）才能调 friend/add
         //   GAP-B: hrUid 从 fields['HR_UID'] 读（不再是 '' 占位）
         //   GAP-C: recordId 必传，让 send-handler 写飞书"打招呼状态/时间"（Sprint 2A.2）
-        // Sprint 2026-07-14 / ADR-0007：sync 路径暂时用占位符 + TODO
-        //   飞书 schema 待升级（LID/SECURITY_ID 字段 + search-and-write 写入），下个 sprint 处理
+        // Sprint C / ADR-0008：sync 路径从 fields['LID'] / fields['SECURITY_ID'] 读真实值
+        //   （替换 Sprint B 暂用的 PLACEHOLDER_LID_TODO / PLACEHOLDER_SID_TODO）
         const sendResult = await runSendCommand({
           jobId: bossJobId, // ✅ BOSS job_id（encryptJobId），不是 Feishu record_id
-          lid: 'PLACEHOLDER_LID_TODO', // TODO(Sprint C): 从 fields['LID'] 读，飞书 schema 升级后启用
-          securityId: 'PLACEHOLDER_SID_TODO', // TODO(Sprint C): 从 fields['SECURITY_ID'] 读，飞书 schema 升级后启用
+          lid,              // ✅ Sprint C：从飞书读真实值（已校验非空）
+          securityId,       // ✅ Sprint C：从飞书读真实值（已校验非空）
           recordId: jobId,  // ✅ Feishu record_id（writeback 用）
           cdp: false,
         })

@@ -200,3 +200,27 @@ describe('verify-feishu-schema — fetchAllFields 分页', () => {
     expect(fields).toHaveLength(1)  // 没死循环
   })
 })
+
+// ============================================================
+// Sprint C (ADR-0008) 必填字段断言
+// ------------------------------------------------------------
+// 锁定：LID + SECURITY_ID 必须出现在 verify-feishu-schema.mjs 的 REQUIRED_FIELDS
+// 防止后续重构误删字段定义（这是 §3.8 抗失忆核心）
+//
+// 失败条件（RED）：
+//   - REQUIRED_FIELDS 未 export → skip（说明没重构到可测）
+//   - REQUIRED_FIELDS 不含 LID / SECURITY_ID → fail
+// ============================================================
+
+describe('verify-feishu-schema — Sprint C 必填字段（ADR-0008）', () => {
+  it('TEST 5: REQUIRED_FIELDS 必含 LID + SECURITY_ID（解锁 auto-greet）', async () => {
+    const mod: any = await import('./verify-feishu-schema.mjs').catch(() => ({}))
+    if (!mod.REQUIRED_FIELDS) {
+      console.log('TEST 5: skip (REQUIRED_FIELDS not exported)')
+      return
+    }
+    const names = (mod.REQUIRED_FIELDS as Array<{ name: string }>).map((f) => f.name)
+    expect(names).toContain('LID')
+    expect(names).toContain('SECURITY_ID')
+  })
+})

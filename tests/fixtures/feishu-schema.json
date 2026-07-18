@@ -20,6 +20,8 @@
             "公司": "字节跳动",
             "BOSS_ID": "boss_job_001",
             "HR_UID": "b52207e95bbaaa7e0nF93dW8E1BZ",
+            "LID": "Lxaxb11B6S.search.1",
+            "SECURITY_ID": "sid_test_001",
             "状态": "待投递"
           }
         },
@@ -30,6 +32,8 @@
             "公司": "美团",
             "BOSS_ID": "boss_job_002",
             "HR_UID": "a41106d84caaa96f0mE82cV7D0CX",
+            "LID": "Lxaxb11B6S.search.2",
+            "SECURITY_ID": "sid_test_002",
             "状态": "待投递"
           }
         },
@@ -40,6 +44,8 @@
             "公司": "腾讯",
             "BOSS_ID": "boss_job_003",
             "HR_UID": "c63318f76dbbb87e1pG74eY9F2EA",
+            "LID": "Lxaxb11B6S.search.3",
+            "SECURITY_ID": "sid_test_003",
             "状态": "已沟通"
           }
         }

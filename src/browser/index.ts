@@ -813,7 +813,7 @@ async function fetchJobDetailViaWapi(page: any, jobId: string, lid: string, secu
     const { lid, securityId } = args as { lid: string; securityId: string }
     try {
       const resp = await fetch(
-        `/wapi/zpgeek/job/card.json?lid=${encodeURIComponent(lid)}&securityId=${encodeURIComponent(securityId)}&sessionId=`,
+        `https://www.zhipin.com/wapi/zpgeek/job/card.json?lid=${encodeURIComponent(lid)}&securityId=${encodeURIComponent(securityId)}&sessionId=`,
         {
           credentials: 'include',  // 带 cookie
           headers: { Accept: 'application/json' },

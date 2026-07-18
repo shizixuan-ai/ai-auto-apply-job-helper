@@ -165,4 +165,59 @@ describe('runSearchAndWrite', () => {
     expect(jobBCall).toBeDefined()
     expect('HR_UID' in jobBCall[0]).toBe(false)
   })
+
+  // ----------------------------------------------------------
+  // TEST 8: Sprint C (ADR-0008) — LID + SECURITY_ID 字段透传（解锁 auto-greet）
+  // ----------------------------------------------------------
+  // 行为契约（ADR-0008 §6）：
+  //   - job.lid 有值时 → createRecord fields 含 LID（sync 阶段读取用）
+  //   - job.securityId 有值时 → createRecord fields 含 SECURITY_ID（friend/add 鉴权）
+  //   - job.lid/securityId 缺失时 → fields 不含这 2 个键（避免 undefined 写入飞书）
+  //
+  // 来源：SearchResultLite.lid + .securityId（来自 search-and-write.ts:39-41 类型定义）
+
+  it('TEST 8: job.lid + job.securityId 有值时 → createRecord fields 含 LID + SECURITY_ID', async () => {
+    // Arrange: jobA 带 lid + securityId, jobB 不带
+    const JOB_A_WITH_LID_SID = {
+      ...JOB_A,
+      lid: 'Lxaxb11B6S.search.1',
+      securityId: 'esknqGib9UMBo-O1E14211s0Gf2Ocd_Z...',
+    } as unknown as Job
+    const deps = {
+      searchJobs: vi.fn(async () => [JOB_A_WITH_LID_SID, JOB_B]),
+      fetchJobDetail: vi.fn(async (jobId: string) =>
+        jobId === 'jobA_encryptedId' ? 'JD for A' : 'JD for B',
+      ),
+      scoreJob: vi.fn(async (jd: string) => 0.92), // 都通过
+      createRecord: vi.fn(async () => ({ record_id: 'rec_new' })),
+      resolveResume: vi.fn(async () => ({ summary: SAMPLE_RESUME, source: 'md' as const, warnings: [] })),
+      llm: {} as unknown,
+      threshold: 0.85,
+    }
+
+    // Act
+    await runSearchAndWrite(
+      { keyword: '前端', city: '杭州', write: true, dryRun: false, noThreshold: false, limit: 10 },
+      deps,
+    )
+
+    // Assert: 2 个 createRecord call
+    expect(deps.createRecord).toHaveBeenCalledTimes(2)
+
+    // jobA 应该同时有 LID + SECURITY_ID
+    const jobACall = (deps.createRecord as any).mock.calls.find(
+      (c: any[]) => c[0].BOSS_ID === 'jobA_encryptedId',
+    )
+    expect(jobACall).toBeDefined()
+    expect(jobACall[0].LID).toBe('Lxaxb11B6S.search.1')
+    expect(jobACall[0].SECURITY_ID).toBe('esknqGib9UMBo-O1E14211s0Gf2Ocd_Z...')
+
+    // jobB 不带 lid/securityId → fields 中不应有 LID/SECURITY_ID 键
+    const jobBCall = (deps.createRecord as any).mock.calls.find(
+      (c: any[]) => c[0].BOSS_ID === 'jobB_encryptedId',
+    )
+    expect(jobBCall).toBeDefined()
+    expect('LID' in jobBCall[0]).toBe(false)
+    expect('SECURITY_ID' in jobBCall[0]).toBe(false)
+  })
 })

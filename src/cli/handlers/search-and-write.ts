@@ -72,6 +72,10 @@ export interface FeishuJobFields {
   匹配时间: number
   /** Sprint 2B：HR 加密 uid（friend/add 第二参数 uid） */
   HR_UID?: string
+  /** Sprint C (ADR-0008)：BOSS job lid（来自 joblist.json，friend/add URL query 参数） */
+  LID?: string
+  /** Sprint C (ADR-0008)：friend/add 鉴权密钥（明文存，飞书 Bitable 1.0 不支持字段加密） */
+  SECURITY_ID?: string
 }
 
 /** 依赖注入（生产 vs 单测可换） */
@@ -179,6 +183,16 @@ export async function runSearchAndWrite(
       // 仅在 truthy 时设置，避免飞书表出现 HR_UID: undefined
       if (job.hrUid) {
         fields.HR_UID = job.hrUid
+      }
+      // Sprint C (ADR-0008)：LID + SECURITY_ID 透传（解锁 auto-greet mode）
+      //   - 仅在 truthy 时设置，避免飞书表出现 undefined
+      //   - sync-handler 读取这 2 个字段后调 sendGreeting（friend/add URL query）
+      //   - SECURITY_ID 是明文（飞书 Bitable 1.0 不支持字段加密，见 ADR-0008 §9 后续）
+      if (job.lid) {
+        fields.LID = job.lid
+      }
+      if (job.securityId) {
+        fields.SECURITY_ID = job.securityId
       }
       await deps.createRecord(fields)
       written++

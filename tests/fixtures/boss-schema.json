@@ -1,95 +1,104 @@
 {
   "_meta": {
-    "capturedAt": "2026-07-15T03:49:10.964Z",
+    "capturedAt": "2026-07-18T03:29:57.459Z",
     "source": "BOSS /wapi/zpgeek/search/joblist.json",
+    "method": "context.cookies() + Node fetch (绕过 page navigation 干扰)",
+    "keyword": "Java后端",
+    "city": null,
     "jobListIndex": 0,
+    "jobListTotal": 15,
     "note": "契约测试的\"黄金基准\"。BOSS 改版时重新跑 npm run probe:boss 覆盖。"
   },
   "sampleJob": {
-    "securityId": "4wfRWjZyj8WaX-x1D3ew1XEHPylobLEVaubo-xO_SlFc4dPIX_-1i5PRRNird8cA2btgHaM9twHH0zFIS7lojRJAqFu4oV5VpF4ITPaUIpO83SMc4v4l8_Zm8TrHEEZ662Zd4edEhvvimt_UUqEtiEaTpZKkJo7vLwuCty8clbHVdStV_3KUgqDhE-y335Ulb995N_E7ClyzaKPJKHesLMT2X_HcjC7Ddv1zUeN8nCQwC5sAj2a7UuHg__UXlGoHeEETlHEnp1AzmatgOxVDA-hPQX2RDipBrA9FZjMqh6shwbw~",
-    "bossAvatar": "https://img.bosszhipin.com/beijin/upload/avatar/20211104/607f1f3d68754fd042259cb59e4ea5fbcaa1864d313620ff03b92e483a7ffae509a5a622011281f7_s.png",
+    "securityId": "GGiI3FFm_s8b0-L1yB5liFKbovSy7XVeN48NBJgWkYJryxd2MKtmZgW0UIEads5lIdu9XboGEcUQJJjCrp5a-AJ9UJq77t2_MrLDe9DiNpNczcmEu_COb_NGXGRcT8jmWF4ZAfV5K5vqrZ5hxGdzNIBq5uL9rc3S5jkF2hxZb6hxj3lmtRSUhbPbZOplMRcrLOmPmGOzlW51qJhydVpcGvZt1x6gVBhmvhafgfE~",
+    "bossAvatar": "https://...",
     "bossCert": 3,
-    "encryptBossId": "9d4a16eb7e4807b30n1y29i0FVQ~",
-    "bossName": "王女士",
-    "bossTitle": "猎头顾问",
-    "goldHunter": 1,
+    "encryptBossId": "f520e09f579cdcab0nF_3dS4FlE~",
+    "bossName": "韩女士",
+    "bossTitle": "hr",
+    "goldHunter": 0,
     "bossOnline": false,
-    "encryptJobId": "9dbcc772cd47a91f0nBy3N-9EVVY",
-    "expectId": 1555182142,
-    "jobName": "AIDC供配电架构师",
-    "lid": "P3dmZvaZdA.search.1",
-    "salaryDesc": "30-60K",
+    "encryptJobId": "f2c455e1153aff450nd909u7GFNS",
+    "expectId": 0,
+    "jobName": "AI游戏开发工程...",
+    "lid": "uOOLya9D02.search.1",
+    "salaryDesc": "",
     "jobLabels": [
-      "5-10年",
+      "3-5年",
       "本科"
     ],
     "jobValidStatus": 1,
     "iconWord": "",
-    "skills": [],
-    "jobExperience": "5-10年",
+    "skills": [
+      "3D游戏客户端开发经验",
+      "Unity3D开发经验",
+      "手游开发经验",
+      "VR/AR开发经验",
+      "Shader开发经验",
+      "图形渲染"
+    ],
+    "jobExperience": "3-5年",
     "daysPerWeekDesc": "",
     "leastMonthDesc": "",
     "jobDegree": "本科",
-    "cityName": "杭州",
-    "areaDistrict": "",
-    "businessDistrict": "",
+    "cityName": "北京",
+    "areaDistrict": "朝阳区",
+    "businessDistrict": "亚运村",
     "jobType": 0,
-    "proxyJob": 1,
-    "proxyType": 1,
-    "anonymous": 101,
+    "proxyJob": 0,
+    "proxyType": 0,
+    "anonymous": 0,
     "outland": 0,
     "optimal": 0,
-    "iconFlagList": [
-      8
-    ],
+    "iconFlagList": [],
     "itemId": 1,
-    "city": 101210100,
+    "city": 101010100,
     "isShield": 0,
     "atsDirectPost": false,
     "gps": {
-      "longitude": 119.90479157865919,
-      "latitude": 30.247955809529124
+      "longitude": "[REDACTED]",
+      "latitude": "[REDACTED]"
     },
     "afterNameIcons": [],
-    "beforeNameIcons": [
-      "https://img.bosszhipin.com/static/file/2022/cy4fi6cada1655206055291.png"
-    ],
-    "encryptBrandId": "",
-    "brandName": "杭州某小型储能公司",
+    "beforeNameIcons": [],
+    "encryptBrandId": "96eac17f...",
+    "brandName": "FunPlus",
     "brandLogo": "https://...",
-    "brandStageName": "A轮",
-    "brandIndustry": "储能",
-    "brandScaleName": "20-99人",
+    "brandStageName": "B轮",
+    "brandIndustry": "游戏",
+    "brandScaleName": "1000-9999人",
     "welfareList": [
-      "带薪年假",
-      "餐补",
-      "节假日加班费",
-      "工龄奖",
-      "节日福利",
-      "零食下午茶",
-      "加班补助",
-      "年终奖",
-      "交通补助",
       "股票期权",
-      "团建聚餐",
-      "住房补贴"
+      "定期体检",
+      "节日福利",
+      "员工旅游",
+      "带薪年假",
+      "五险一金",
+      "绩效奖金",
+      "餐补",
+      "年终奖",
+      "企业年金",
+      "保底工资",
+      "零食下午茶",
+      "补充医疗保险",
+      "加班补助"
     ],
-    "industry": 101209,
+    "industry": 100002,
     "contact": false,
     "showTopPosition": false
   },
   "userRelatedFields": [
     {
       "key": "encryptBossId",
-      "value": "9d4a16eb7e4807b30n1y29i0FVQ~"
+      "value": "f520e09f579cdcab0nF_3dS4FlE~"
     },
     {
       "key": "encryptJobId",
-      "value": "9dbcc772cd47a91f0nBy3N-9EVVY"
+      "value": "f2c455e1153aff450nd909u7GFNS"
     },
     {
       "key": "encryptBrandId",
-      "value": ""
+      "value": "96eac17fed77c8c61nJ43N66"
     }
   ]
 }

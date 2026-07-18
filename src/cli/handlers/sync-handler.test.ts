@@ -256,6 +256,189 @@ describe('runSyncCommand — 配置检查', () => {
 })
 
 // ============================================================
+// runSyncCommand — auto-greet 模式字段校验（Sprint C / ADR-0008）
+// ============================================================
+// 行为契约：
+//   - 飞书记录缺 LID 字段 → errors.push("缺少 LID...") + 不调 runSendCommand
+//   - 飞书记录缺 SECURITY_ID 字段 → errors.push("缺少 SECURITY_ID...") + 不调 runSendCommand
+//   - 两者都缺 → errors.push("缺少 LID/SECURITY_ID...") + 不调 runSendCommand
+//   - 都齐 → 调 runSendCommand（不解耦，本 TEST 只测空字段防御）
+//
+// 防 PLACEHOLDER 误用（ADR-0007 + Sprint B commit 4a0dac4）：
+//   - sync-handler.ts 不再用 PLACEHOLDER_LID_TODO / PLACEHOLDER_SID_TODO
+//   - 必须从 fields['LID'] / fields['SECURITY_ID'] 读真实值
+// ============================================================
+
+describe('runSyncCommand — auto-greet 模式字段校验（Sprint C / ADR-0008）', () => {
+  beforeEach(() => {
+    mockListRecords.mockReset()
+    mockUpdateRecord.mockReset()
+    mockLoadConfig.mockReset()
+    mockRunSendCommand.mockReset()
+    mockRunSendCommand.mockResolvedValue({ action: 'ok', reason: 'ok' } as any)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  // ----------------------------------------------------------
+  // TEST A: LID 缺 → errors.push + 不调 runSendCommand
+  // ----------------------------------------------------------
+
+  it('TEST A: record.fields 缺 LID → errors.push("缺少 LID...") + 不调 runSendCommand', async () => {
+    mockLoadConfig.mockReturnValue(makeLoadedConfig())
+    // 只缺 LID（SECURITY_ID 有）
+    mockListRecords.mockResolvedValue({
+      code: 0,
+      msg: 'ok',
+      data: {
+        items: [
+          {
+            record_id: 'rec_missing_lid',
+            fields: {
+              职位: '前端工程师',
+              公司: 'A',
+              状态: '待投递',
+              BOSS_ID: 'boss_job_lid',
+              // LID 缺
+              SECURITY_ID: 'esknqGib9UMBo-O1E14211s0Gf2Ocd_Z...',
+            },
+          },
+        ],
+      },
+    })
+
+    const { runSyncCommand } = await freshHandler()
+    const result = await runSyncCommand({ mode: 'auto-greet' })
+
+    expect(result.action).toBe('auto-greet')
+    if (result.action !== 'auto-greet') throw new Error('unreachable')
+    expect(result.failed).toBe(1)
+    expect(result.succeeded).toBe(0)
+    // 关键：LID 缺时 runSendCommand 不应被调用（避免 PLACEHOLDER 误用真发）
+    expect(mockRunSendCommand).not.toHaveBeenCalled()
+    expect(result.errors[0].reason).toMatch(/缺少 LID/)
+    expect(result.errors[0].reason).toMatch(/bapply search/)
+  })
+
+  // ----------------------------------------------------------
+  // TEST B: SECURITY_ID 缺 → errors.push + 不调 runSendCommand
+  // ----------------------------------------------------------
+
+  it('TEST B: record.fields 缺 SECURITY_ID → errors.push("缺少 SECURITY_ID...") + 不调 runSendCommand', async () => {
+    mockLoadConfig.mockReturnValue(makeLoadedConfig())
+    mockListRecords.mockResolvedValue({
+      code: 0,
+      msg: 'ok',
+      data: {
+        items: [
+          {
+            record_id: 'rec_missing_sid',
+            fields: {
+              职位: '后端工程师',
+              公司: 'B',
+              状态: '待投递',
+              BOSS_ID: 'boss_job_sid',
+              LID: 'Lxaxb11B6S.search.1',
+              // SECURITY_ID 缺
+            },
+          },
+        ],
+      },
+    })
+
+    const { runSyncCommand } = await freshHandler()
+    const result = await runSyncCommand({ mode: 'auto-greet' })
+
+    expect(result.action).toBe('auto-greet')
+    if (result.action !== 'auto-greet') throw new Error('unreachable')
+    expect(result.failed).toBe(1)
+    expect(mockRunSendCommand).not.toHaveBeenCalled()
+    expect(result.errors[0].reason).toMatch(/缺少 SECURITY_ID/)
+    expect(result.errors[0].reason).toMatch(/bapply search/)
+  })
+
+  // ----------------------------------------------------------
+  // TEST C: LID + SECURITY_ID 都缺 → 单条 error 信息含两者
+  // ----------------------------------------------------------
+
+  it('TEST C: record.fields LID + SECURITY_ID 都缺 → 单条 errors.push 含 "LID/SECURITY_ID"', async () => {
+    mockLoadConfig.mockReturnValue(makeLoadedConfig())
+    mockListRecords.mockResolvedValue({
+      code: 0,
+      msg: 'ok',
+      data: {
+        items: [
+          {
+            record_id: 'rec_missing_both',
+            fields: {
+              职位: '全栈工程师',
+              公司: 'C',
+              状态: '待投递',
+              BOSS_ID: 'boss_job_both',
+              // LID + SECURITY_ID 都缺（历史 search 数据未升级）
+            },
+          },
+        ],
+      },
+    })
+
+    const { runSyncCommand } = await freshHandler()
+    const result = await runSyncCommand({ mode: 'auto-greet' })
+
+    expect(result.action).toBe('auto-greet')
+    if (result.action !== 'auto-greet') throw new Error('unreachable')
+    expect(result.failed).toBe(1)
+    expect(mockRunSendCommand).not.toHaveBeenCalled()
+    expect(result.errors[0].reason).toMatch(/LID.*SECURITY_ID|SECURITY_ID.*LID/)
+  })
+
+  // ----------------------------------------------------------
+  // TEST D: 守卫：LID/SECURITY_ID 都不传 PLACEHOLDER（防回归 ADR-0007）
+  // ----------------------------------------------------------
+
+  it('TEST D: 反 PLACEHOLDER 回归 — 跑通的 job 也不应含 PLACEHOLDER_LID_TODO/PLACEHOLDER_SID_TODO', async () => {
+    mockLoadConfig.mockReturnValue(makeLoadedConfig())
+    mockListRecords.mockResolvedValue({
+      code: 0,
+      msg: 'ok',
+      data: {
+        items: [
+          {
+            record_id: 'rec_real',
+            fields: {
+              职位: 'DevOps',
+              公司: 'D',
+              状态: '待投递',
+              BOSS_ID: 'boss_job_real',
+              LID: 'Lxaxb11B6S.search.1',
+              SECURITY_ID: 'esknqGib9UMBo-O1E14211s0Gf2Ocd_Z...',
+            },
+          },
+        ],
+      },
+    })
+    mockRunSendCommand.mockResolvedValue({ action: 'ok', reason: 'ok' } as any)
+    mockUpdateRecord.mockResolvedValue({} as any)
+
+    const { runSyncCommand } = await freshHandler()
+    // 注入 generateGreeting mock（避免默认实现触发 fetchJobDetail/LLM 真调用）
+    await runSyncCommand({ mode: 'auto-greet' }, {
+      generateGreeting: vi.fn(async (jobId: string) => `Hi ${jobId}, mock greeting`),
+    })
+
+    // 关键：runSendCommand 必被调用 1 次，且参数 lid/securityId 是真实值（不是 PLACEHOLDER）
+    expect(mockRunSendCommand).toHaveBeenCalledTimes(1)
+    const callArgs = mockRunSendCommand.mock.calls[0][0]
+    expect(callArgs.lid).toBe('Lxaxb11B6S.search.1')
+    expect(callArgs.securityId).toBe('esknqGib9UMBo-O1E14211s0Gf2Ocd_Z...')
+    expect(callArgs.lid).not.toMatch(/PLACEHOLDER/)
+    expect(callArgs.securityId).not.toMatch(/PLACEHOLDER/)
+  })
+})
+
+// ============================================================
 // runSyncCommand — auto-greet 模式（Sprint B-2b-2）
 // ============================================================
 // 行为契约：
@@ -266,9 +449,10 @@ describe('runSyncCommand — 配置检查', () => {
 //   - 全程不抛异常
 // ============================================================
 
-// Sprint 2026-07-14 / ADR-0007：auto-greet 模式暂 skip（sync-handler.ts:235 用 PLACEHOLDER_LID/SID_TODO 等 Sprint C）
-//   飞书 schema 待升级（LID/SECURITY_ID 字段），schema 升级后再恢复
-describe.skip('runSyncCommand — auto-greet 模式（Sprint C 恢复）', () => {
+// Sprint 2026-07-14 / ADR-0007：auto-greet 模式暂 skip（Sprint C 解除）
+//   Sprint C / ADR-0008 已升级飞书 schema（LID/SECURITY_ID 字段）+ sync-handler 读 fields 真实值
+//   PLACEHOLDER_LID_TODO / PLACEHOLDER_SID_TODO 已移除（commit T3 GREEN）
+describe('runSyncCommand — auto-greet 模式（Sprint C / ADR-0008 解锁）', () => {
   // 每个测试共用的 generateGreeting mock
   // （默认每个 jobId → "Hi jobId"；个别测试用 mockRejectedValueOnce 模拟失败）
   let mockGenerateGreeting: ReturnType<typeof makeDefaultMockGenerateGreeting>
@@ -299,10 +483,10 @@ describe.skip('runSyncCommand — auto-greet 模式（Sprint C 恢复）', () =>
     msg: 'ok',
     data: {
       items: [
-        { record_id: 'rec_p1', fields: { 职位: '前端A', 公司: '字节', BOSS_ID: 'boss_a1', HR_UID: 'hr_a1', 状态: '待投递' } },
-        { record_id: 'rec_p2', fields: { 职位: '前端B', 公司: '美团', BOSS_ID: 'boss_b2', HR_UID: 'hr_b2', 状态: '待投递' } },
-        { record_id: 'rec_p3', fields: { 职位: '前端C', 公司: '腾讯', BOSS_ID: 'boss_c3', HR_UID: 'hr_c3', 状态: '待投递' } },
-        { record_id: 'rec_other', fields: { 职位: '运维', 公司: '阿里', BOSS_ID: 'boss_other', HR_UID: 'hr_other', 状态: '已沟通' } }, // 非待投递
+        { record_id: 'rec_p1', fields: { 职位: '前端A', 公司: '字节', BOSS_ID: 'boss_a1', HR_UID: 'hr_a1', LID: 'Lxaxb11B6S.search.1', SECURITY_ID: 'sid_a1', 状态: '待投递' } },
+        { record_id: 'rec_p2', fields: { 职位: '前端B', 公司: '美团', BOSS_ID: 'boss_b2', HR_UID: 'hr_b2', LID: 'Lxaxb11B6S.search.2', SECURITY_ID: 'sid_b2', 状态: '待投递' } },
+        { record_id: 'rec_p3', fields: { 职位: '前端C', 公司: '腾讯', BOSS_ID: 'boss_c3', HR_UID: 'hr_c3', LID: 'Lxaxb11B6S.search.3', SECURITY_ID: 'sid_c3', 状态: '待投递' } },
+        { record_id: 'rec_other', fields: { 职位: '运维', 公司: '阿里', BOSS_ID: 'boss_other', HR_UID: 'hr_other', LID: 'Lxaxb11B6S.search.4', SECURITY_ID: 'sid_other', 状态: '已沟通' } }, // 非待投递
       ],
     },
   }
@@ -459,7 +643,7 @@ describe.skip('runSyncCommand — auto-greet 模式（Sprint C 恢复）', () =>
       msg: 'ok',
       data: {
         items: [
-          { record_id: 'rec_semi', fields: { 状态: '待投递', BOSS_ID: 'boss_semi', HR_UID: 'hr_semi' } },
+          { record_id: 'rec_semi', fields: { 状态: '待投递', BOSS_ID: 'boss_semi', HR_UID: 'hr_semi', LID: 'lid_semi', SECURITY_ID: 'sid_semi' } },
         ],
       },
     })
@@ -493,7 +677,7 @@ describe.skip('runSyncCommand — auto-greet 模式（Sprint C 恢复）', () =>
       msg: 'ok',
       data: {
         items: [
-          { record_id: 'rec_str', fields: { 状态: '待投递', BOSS_ID: 'boss_str', HR_UID: 'hr_str' } },
+          { record_id: 'rec_str', fields: { 状态: '待投递', BOSS_ID: 'boss_str', HR_UID: 'hr_str', LID: 'lid_str', SECURITY_ID: 'sid_str' } },
         ],
       },
     })
@@ -562,11 +746,12 @@ describe.skip('runSyncCommand — auto-greet 模式（Sprint C 恢复）', () =>
     expect(mockGenerateGreeting).toHaveBeenCalledWith('boss_a1') // 2026-07-07: 用 BOSS_ID 不是 record_id
     expect(mockGenerateGreeting).toHaveBeenCalledWith('boss_b2')
     expect(mockGenerateGreeting).toHaveBeenCalledWith('boss_c3')
-    // runSendCommand 收到 mockGenerateGreeting 返回的 message
+    // runSendCommand 收到 mockGenerateGreeting 返回的 message（Sprint B P3 协议改造后 message 已隐式传给 send-handler 内部）
     expect(mockRunSendCommand).toHaveBeenCalledWith(
       expect.objectContaining({
         jobId: 'boss_a1',   // Sprint 2B GAP-A: BOSS job_id，不是 record_id
-        message: 'Hi boss_a1, 我对贵岗位很感兴趣',
+        lid: 'Lxaxb11B6S.search.1',  // Sprint C
+        securityId: 'sid_a1',          // Sprint C
         cdp: false,
       }),
     )
@@ -609,7 +794,7 @@ describe.skip('runSyncCommand — auto-greet 模式（Sprint C 恢复）', () =>
       code: 0,
       msg: 'ok',
       data: {
-        items: [{ record_id: 'rec_str', fields: { 状态: '待投递', BOSS_ID: 'boss_str', HR_UID: 'hr_str' } }],
+        items: [{ record_id: 'rec_str', fields: { 状态: '待投递', BOSS_ID: 'boss_str', HR_UID: 'hr_str', LID: 'lid_str', SECURITY_ID: 'sid_str' } }],
       },
     })
     mockGenerateGreeting.mockRejectedValue('plain string error')
@@ -641,8 +826,9 @@ describe.skip('runSyncCommand — auto-greet 模式（Sprint C 恢复）', () =>
 //   - 避免 BOSS 风控：1 小时发 3 条可能被标记
 // ============================================================
 
-// Sprint 2026-07-14 / ADR-0007：auto-greet --dry-run 模式暂 skip（同上 sync-handler.ts:235 PLACEHOLDER）
-describe.skip('runSyncCommand — auto-greet --dry-run 模式（Sprint C 恢复）', () => {
+// Sprint 2026-07-14 / ADR-0007：auto-greet --dry-run 模式暂 skip（Sprint C 解除）
+//   与上方主 describe 同步解除（Sprint C / ADR-0008 已升级 schema + sync-handler 读 fields）
+describe('runSyncCommand — auto-greet --dry-run 模式（Sprint C / ADR-0008 解锁）', () => {
   let mockGenerateGreeting: ReturnType<typeof makeDefaultMockGenerateGreeting>
 
   beforeEach(() => {
@@ -662,8 +848,8 @@ describe.skip('runSyncCommand — auto-greet --dry-run 模式（Sprint C 恢复�
     msg: 'ok',
     data: {
       items: [
-        { record_id: 'rec_d1', fields: { 职位: '前端', 公司: '字节', BOSS_ID: 'boss_d1', HR_UID: 'hr_d1', 状态: '待投递' } },
-        { record_id: 'rec_d2', fields: { 职位: '后端', 公司: '美团', BOSS_ID: 'boss_d2', HR_UID: 'hr_d2', 状态: '待投递' } },
+        { record_id: 'rec_d1', fields: { 职位: '前端', 公司: '字节', BOSS_ID: 'boss_d1', HR_UID: 'hr_d1', LID: 'lid_d1', SECURITY_ID: 'sid_d1', 状态: '待投递' } },
+        { record_id: 'rec_d2', fields: { 职位: '后端', 公司: '美团', BOSS_ID: 'boss_d2', HR_UID: 'hr_d2', LID: 'lid_d2', SECURITY_ID: 'sid_d2', 状态: '待投递' } },
       ],
     },
   }
@@ -863,7 +1049,7 @@ describe.skip('runSyncCommand — auto-greet --dry-run 模式（Sprint C 恢复�
       code: 0, msg: 'ok',
       data: {
         items: [
-          { record_id: 'rec_x1', fields: { 状态: '待投递', BOSS_ID: 'boss_job_real_id', HR_UID: 'hr_x1' } },
+          { record_id: 'rec_x1', fields: { 状态: '待投递', BOSS_ID: 'boss_job_real_id', LID: 'lid_x1', SECURITY_ID: 'sid_x1' } },
         ],
       },
     })
@@ -893,7 +1079,8 @@ describe.skip('runSyncCommand — auto-greet --dry-run 模式（Sprint C 恢复�
             fields: {
               状态: '待投递',
               BOSS_ID: 'boss_j1',
-              HR_UID: 'b52207e95bbaaa7e0nF93dW8E1BZ',  // search-and-write 写入的字段
+              LID: 'Lxaxb11B6S.search.1',
+              SECURITY_ID: 'esknqGib9UMBo-O1E14211s0Gf2Ocd_Z...',  // search-and-write 写入的字段（Sprint C）
             },
           },
         ],
@@ -905,15 +1092,17 @@ describe.skip('runSyncCommand — auto-greet --dry-run 模式（Sprint C 恢复�
     const { runSyncCommand } = await freshHandler()
     await runSyncCommand({ mode: 'auto-greet' }, { generateGreeting: mockGenerateGreeting })
 
-    // 🚨 关键：runSendCommand.hrUid 必须等于 fields['HR_UID']（boss 加密 uid）
+    // 🚨 关键：runSendCommand.lid + securityId 必须等于 fields 中的真实值（Sprint C / ADR-0008）
     expect(mockRunSendCommand).toHaveBeenCalledWith(
       expect.objectContaining({
-        hrUid: 'b52207e95bbaaa7e0nF93dW8E1BZ',
+        lid: 'Lxaxb11B6S.search.1',
+        securityId: 'esknqGib9UMBo-O1E14211s0Gf2Ocd_Z...',
       }),
     )
   })
 
-  it('Sprint 2B GAP-B 缺失防护: record 缺 HR_UID 时显式报错 + 不调 runSendCommand', async () => {
+  // ⚠️ Sprint 2B GAP-B "缺 HR_UID 报错" 已被 Sprint C TEST A/B/C 取代（HR_UID 已废止 — ADR-0008 §4 E4）
+  it.skip('Sprint 2B GAP-B 缺失防护: record 缺 HR_UID 时显式报错 + 不调 runSendCommand（已废止 — HR_UID 由 Sprint C LID/SECURITY_ID 取代）', async () => {
     mockLoadConfig.mockReturnValue(makeLoadedConfig())
     mockListRecords.mockResolvedValue({
       code: 0, msg: 'ok',
@@ -960,7 +1149,8 @@ describe.skip('runSyncCommand — auto-greet --dry-run 模式（Sprint C 恢复�
             fields: {
               状态: '待投递',
               BOSS_ID: 'boss_j4',
-              HR_UID: 'hr_real_uid',
+              LID: 'lid_z1',
+              SECURITY_ID: 'sid_z1',
             },
           },
         ],
@@ -991,7 +1181,8 @@ describe.skip('runSyncCommand — auto-greet --dry-run 模式（Sprint C 恢复�
             fields: {
               状态: '待投递',
               BOSS_ID: 'boss_job_full',
-              HR_UID: 'hr_uid_full',
+              LID: 'lid_full',
+              SECURITY_ID: 'sid_full',
             },
           },
         ],
@@ -1003,13 +1194,15 @@ describe.skip('runSyncCommand — auto-greet --dry-run 模式（Sprint C 恢复�
     const { runSyncCommand } = await freshHandler()
     await runSyncCommand({ mode: 'auto-greet' }, { generateGreeting: mockGenerateGreeting })
 
-    expect(mockRunSendCommand).toHaveBeenCalledWith({
-      jobId:    'boss_job_full',   // BOSS job_id
-      hrUid:    'hr_uid_full',     // BOSS HR 加密 uid
-      message:  expect.any(String), // generateGreeting 输出
-      recordId: 'rec_full',        // Feishu record_id
-      cdp:      false,
-    })
+    expect(mockRunSendCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId:      'boss_job_full',   // BOSS job_id
+        lid:        'lid_full',         // BOSS job lid（Sprint C / ADR-0008）
+        securityId: 'sid_full',         // BOSS friend/add 鉴权（Sprint C / ADR-0008）
+        recordId:   'rec_full',         // Feishu record_id
+        cdp:        false,
+      }),
+    )
   })
 
   it('部分 record 缺 BOSS_ID 时只跳那些，正常 record 继续处理', async () => {
@@ -1019,7 +1212,7 @@ describe.skip('runSyncCommand — auto-greet --dry-run 模式（Sprint C 恢复�
       msg: 'ok',
       data: {
         items: [
-          { record_id: 'rec_ok', fields: { 职位: '前端', 公司: '字节', BOSS_ID: 'boss_ok', HR_UID: 'hr_ok', 状态: '待投递' } },
+          { record_id: 'rec_ok', fields: { 职位: '前端', 公司: '字节', BOSS_ID: 'boss_ok', HR_UID: 'hr_ok', LID: 'lid_ok', SECURITY_ID: 'sid_ok', 状态: '待投递' } },
           { record_id: 'rec_bad', fields: { 职位: '后端', 公司: '美团', 状态: '待投递' } }, // 缺 BOSS_ID
         ],
       },

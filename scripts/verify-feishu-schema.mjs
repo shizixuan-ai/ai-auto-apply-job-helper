@@ -20,11 +20,14 @@ const TOKEN_URL = `${FEISHU_BASE}/auth/v3/tenant_access_token/internal`
 const FIELDS_URL = (appToken, tableId) =>
   `${FEISHU_BASE}/bitable/v1/apps/${appToken}/tables/${tableId}/fields?page_size=50`
 
-// 必填字段：与 Sprint 2A.2 commit A 严格对齐
-const REQUIRED_FIELDS = [
+// 必填字段：与 Sprint 2A.2 + Sprint C (ADR-0008) 严格对齐
+export const REQUIRED_FIELDS = [
   { name: 'HR_UID', type: 1, label: 'HR 加密 uid' },
   { name: '打招呼状态', type: 3, label: '5 状态单选' },
   { name: '打招呼时间', type: 5, label: '打招呼时间（毫秒时间戳）' },
+  // Sprint C (ADR-0008)：解锁 auto-greet mode
+  { name: 'LID', type: 1, label: 'BOSS job lid（search 标识）' },
+  { name: 'SECURITY_ID', type: 1, label: 'friend/add 鉴权密钥（明文）' },
 ]
 
 // ============================================================
@@ -128,7 +131,8 @@ async function main() {
       console.error(`  ⚠️  ${w.required.name}: expected type=${w.required.type}, actual=${w.actual.type}`)
     }
   }
-  console.error('\n修复方法：跑 `npx tsx scripts/add-sprint-2a-fields.mjs`')
+  console.error('\n修复方法：跑 `npx tsx scripts/add-sprint-3-fields.mjs`（Sprint C 字段）')
+  console.error('         或 `npx tsx scripts/add-sprint-2a-fields.mjs`（Sprint 2A 字段）')
   process.exit(1)
 }
 
