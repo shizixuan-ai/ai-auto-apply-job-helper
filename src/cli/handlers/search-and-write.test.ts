@@ -46,7 +46,7 @@ const JOB_B = {
 const SAMPLE_RESUME = {
   name: '张三',
   yearsOfExperience: 5,
-  education: '本科',
+  degree: '本科' as const,
   skills: ['TypeScript', 'React'],
   recentProjects: [],
 }
@@ -70,7 +70,7 @@ describe('runSearchAndWrite', () => {
         return 0.92 // jobB 通过
       }),
       createRecord: vi.fn(async () => ({ record_id: 'rec_new' })),
-      resolveResume: vi.fn(async () => ({ summary: SAMPLE_RESUME, source: 'md' as const, warnings: [] })),
+      resolveResume: vi.fn(async () => ({ summary: SAMPLE_RESUME, source: 'yaml' as const, warnings: [] })),
       llm: {} as unknown,                          // 占位（scoreJob deps 不真用）
       threshold: 0.85,
     }
@@ -137,7 +137,7 @@ describe('runSearchAndWrite', () => {
       ),
       scoreJob: vi.fn(async (jd: string) => 0.92), // 都通过
       createRecord: vi.fn(async () => ({ record_id: 'rec_new' })),
-      resolveResume: vi.fn(async () => ({ summary: SAMPLE_RESUME, source: 'md' as const, warnings: [] })),
+      resolveResume: vi.fn(async () => ({ summary: SAMPLE_RESUME, source: 'yaml' as const, warnings: [] })),
       llm: {} as unknown,
       threshold: 0.85,
     }
@@ -190,7 +190,7 @@ describe('runSearchAndWrite', () => {
       ),
       scoreJob: vi.fn(async (jd: string) => 0.92), // 都通过
       createRecord: vi.fn(async () => ({ record_id: 'rec_new' })),
-      resolveResume: vi.fn(async () => ({ summary: SAMPLE_RESUME, source: 'md' as const, warnings: [] })),
+      resolveResume: vi.fn(async () => ({ summary: SAMPLE_RESUME, source: 'yaml' as const, warnings: [] })),
       llm: {} as unknown,
       threshold: 0.85,
     }

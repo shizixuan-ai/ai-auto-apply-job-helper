@@ -425,7 +425,7 @@ program
       const resumeSummary = buildResumeSummary({
         skills: ['TypeScript', 'React', 'Node.js'],
         yearsOfExperience: 3,
-        education: '本科',
+        degree: '本科',
       })
 
       console.log(chalk.cyan('🤖 正在生成话术...'))

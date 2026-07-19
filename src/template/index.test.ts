@@ -84,7 +84,10 @@ describe('buildResumeSummary', () => {
       name: '李四',
       yearsOfExperience: 5,
       skills: ['Go', 'Kubernetes'],
-      education: '硕士',
+      degree: '硕士',
+      school: '示例大学',
+      isElite: false,
+      isBigTech: false,
       recentProjects: ['分布式存储网关'],
     })
 

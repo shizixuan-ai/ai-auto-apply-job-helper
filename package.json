@@ -34,6 +34,7 @@
     "protobufjs": "^8.7.0",
     "puppeteer-core": "^25.0.2",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "yaml": "^2.9.0",
     "zod": "^3.24.3"
   },
   "devDependencies": {
@@ -43,7 +44,6 @@
     "msw": "^2.15.0",
     "tsx": "^4.19.3",
     "typescript": "^5.8.3",
-    "vitest": "^4.1.9",
-    "yaml": "^2.9.0"
+    "vitest": "^4.1.9"
   }
 }

@@ -64,7 +64,7 @@ ${jdTruncated}
 【候选人简历】
 - 姓名：${summary.name ?? '未知'}
 - 工作年限：${summary.yearsOfExperience ?? '未知'}
-- 学历：${summary.education ?? '未知'}
+- 学历：${summary.degree ?? '未知'}
 - 技能：${skillsText}
 - 近期项目：${projectsText}
 

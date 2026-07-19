@@ -11,7 +11,7 @@
 
 import type { ResumeSummary } from '../../types/index.js'
 import { scoreJob } from '../../scoring/index.js'
-import { ResumeNotFoundError, IncompleteResumeError } from '../../resume/md-fallback.js'
+import { ResumeNotFoundError, IncompleteResumeError, ResumeParseError } from '../../resume/yaml-parser.js'
 
 // ============================================================
 // 类型定义
@@ -54,7 +54,7 @@ export interface SearchWriteOptions {
 /** 简历解析结果 */
 export interface ResumeResolution {
   summary: ResumeSummary
-  source: 'md'
+  source: 'yaml'
   warnings: string[]
 }
 
@@ -106,7 +106,7 @@ export type SearchWriteResult =
       written: number
       failed: number
       dryRun: boolean
-      resumeSource: 'md'
+      resumeSource: 'yaml'
       resumeWarnings: string[]
     }
   | {
@@ -136,7 +136,11 @@ export async function runSearchAndWrite(
   try {
     resume = await deps.resolveResume()
   } catch (err) {
-    if (err instanceof ResumeNotFoundError || err instanceof IncompleteResumeError) {
+    if (
+      err instanceof ResumeNotFoundError ||
+      err instanceof IncompleteResumeError ||
+      err instanceof ResumeParseError
+    ) {
       return { action: 'error', error: err.message }
     }
     throw err

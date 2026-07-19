@@ -105,13 +105,47 @@ export interface FeishuRecord {
   fields: Record<string, unknown>
 }
 
-/** 简历摘要（Sprint 1A 引入，供 scoring/greet 共用） */
+/**
+ * 简历摘要（Sprint 1B 扩展到 15 字段，原 5 字段 → 新 15 字段）
+ *
+ * - Sprint 1A：name, yearsOfExperience, education, skills, recentProjects
+ * - Sprint 1B 强切：移除 education（拆分为 school + degree）
+ *   + 新增 9 字段：gender, age, phone, email, targetRole, school, degree, major, isElite, isBigTech, workSummary
+ * - 所有字段 optional：parser 强校验，类型上 defensive
+ * - isElite / isBigTech 必填 boolean（候选人手填，不代码推）
+ *
+ * 字段来源：src/resume/yaml-parser.ts
+ */
 export interface ResumeSummary {
+  // 基础信息
   name?: string
+  gender?: '男' | '女' | '未知'
+  age?: number
+  phone?: string
+  email?: string
+
+  // 求职意向
+  targetRole?: string
+
+  // 教育背景（Sprint 1B 拆 education → school + degree）
+  school?: string
+  degree?: '本科' | '硕士' | '博士' | '其他'
+  major?: string
+
+  // 推断字段（Sprint 1B 手填，候选人最清楚自己）
+  isElite?: boolean
+
+  // 工作经历
   yearsOfExperience?: number
-  education?: string
-  skills?: string[]
+  isBigTech?: boolean
+  /** array of "{公司} - {时间段} - {职位} - {描述}"（yaml-parser 拍平后形态） */
   recentProjects?: string[]
+
+  // 技能
+  skills?: string[]
+
+  // 自我介绍（YAML `|` 块，parser 已 trim）
+  workSummary?: string
 }
 
 /** 应用配置 */

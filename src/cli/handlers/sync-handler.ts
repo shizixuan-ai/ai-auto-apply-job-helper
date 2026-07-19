@@ -413,7 +413,7 @@ async function defaultGenerateGreeting(jobId: string): Promise<string> {
     const resumeSummary = buildResumeSummary({
       skills: ['TypeScript', 'React', 'Node.js'],
       yearsOfExperience: 3,
-      education: '本科',
+      degree: '本科',
     })
     const llm = createLLM(config)
     return await llm.generate(

@@ -34,16 +34,34 @@ export function buildResumeSummary(resume: {
   name?: string
   yearsOfExperience?: number
   skills?: string[]
-  education?: string
+  /** Sprint 1B：education 拆分为 school + degree */
+  school?: string
+  degree?: '本科' | '硕士' | '博士' | '其他'
+  major?: string
+  /** Sprint 1B：新增字段 */
+  gender?: '男' | '女' | '未知'
+  age?: number
+  targetRole?: string
+  isElite?: boolean
+  isBigTech?: boolean
   recentProjects?: string[]
+  workSummary?: string
 }): string {
   const parts: string[] = []
   if (resume.name) parts.push(`姓名: ${resume.name}`)
+  if (resume.gender) parts.push(`性别: ${resume.gender}`)
+  if (resume.age) parts.push(`年龄: ${resume.age}`)
   if (resume.yearsOfExperience) parts.push(`工作经验: ${resume.yearsOfExperience}年`)
-  if (resume.education) parts.push(`学历: ${resume.education}`)
+  if (resume.degree) parts.push(`学历: ${resume.degree}`)
+  if (resume.school) parts.push(`毕业院校: ${resume.school}`)
+  if (resume.major) parts.push(`专业: ${resume.major}`)
+  if (resume.isElite !== undefined) parts.push(`是否985/211: ${resume.isElite ? '是' : '否'}`)
+  if (resume.isBigTech !== undefined) parts.push(`是否大厂背景: ${resume.isBigTech ? '是' : '否'}`)
+  if (resume.targetRole) parts.push(`求职意向: ${resume.targetRole}`)
   if (resume.skills?.length) parts.push(`技能: ${resume.skills.join(', ')}`)
   if (resume.recentProjects?.length) {
     parts.push(`近期项目:\n${resume.recentProjects.map(p => `- ${p}`).join('\n')}`)
   }
+  if (resume.workSummary) parts.push(`自我介绍: ${resume.workSummary}`)
   return parts.join('\n')
 }

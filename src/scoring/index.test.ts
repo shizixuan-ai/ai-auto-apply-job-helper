@@ -35,7 +35,10 @@ const SAMPLE_JD = `
 const SAMPLE_SUMMARY: ResumeSummary = {
   name: '张三',
   yearsOfExperience: 5,
-  education: '本科',
+  degree: '本科',
+  school: '示例大学',
+  isElite: false,
+  isBigTech: false,
   skills: ['TypeScript', 'React', 'Node.js'],
   recentProjects: ['AI 自动投递简历助手'],
 }
