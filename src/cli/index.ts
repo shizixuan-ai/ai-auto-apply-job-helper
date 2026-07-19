@@ -259,7 +259,7 @@ program
 
       try {
         // 1) 搜索
-        const jobs = await searchJobs(page, keyword, options.city, filters)
+        const jobs = await searchJobs(page, keyword, options.city, filters, { maxResults: options.limit })
         resultCount = jobs.length
 
         // 2) 构造 deps
@@ -340,7 +340,7 @@ program
     const page = session.page
 
     try {
-      const allJobs = await searchJobs(page, keyword, options.city, filters)
+      const allJobs = await searchJobs(page, keyword, options.city, filters, { maxResults: options.limit })
       resultCount = allJobs.length
       // Sprint 2026-07-18：纯展示路径也应用 --limit（此前静默失效——
       //   只 --write/--dry-run 路径 slice，纯 search 直接遍历全部）

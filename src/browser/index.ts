@@ -462,6 +462,7 @@ export async function searchJobs(
   keyword: string,
   city?: string,
   filters?: SearchFilters,
+  opts?: { maxResults?: number; pageThrottleMs?: number },
 ): Promise<SearchResult[]> {
   // ---- Phase 1: 安全入口 ----
   // Sprint 2D 修复：避免连续跑 search 时的 BOSS SPA navigation race
@@ -542,20 +543,74 @@ export async function searchJobs(
   // Sprint 2026-07-13 user-rolled-back：原本改为 robustEvaluate（ADR-0005），
   //   因 BOSS 服务端风控拦截才是真实问题（参见 feedback_boss_anti_bot_status memory）
   //   robustEvaluate 本身保留在 ./robust-evaluate.ts，后续 sprint 收编其他调用点
-  const apiResult = await page.evaluate(async (body: any) => {
-    try {
-      const res = await fetch('https://www.zhipin.com/wapi/zpgeek/search/joblist.json', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      })
-      const json = await res.json()
-      return json
-    } catch (e: any) {
-      return { error: e.message }
+  const fetchPageJson = async (body: any) =>
+    page.evaluate(async (b: any) => {
+      try {
+        const res = await fetch('https://www.zhipin.com/wapi/zpgeek/search/joblist.json', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(b),
+        })
+        return await res.json()
+      } catch (e: any) {
+        return { error: e.message }
+      }
+    }, body)
+
+  // Sprint 2026-07-19：分页 page 循环（DEEP probe 实测 page/pageSize 字段）
+  //   逐页拉取累加 + 跨页去重（encryptJobId）。停止条件（任一）：
+  //     1. 页返回 < pageSize（最后一页/空页）
+  //     2. 累计 >= maxResults（够了）
+  //     3. pageNum >= 安全上限 MAX_PAGES（防跑飞）
+  //   ⚠️ 停止靠"短页"启发式——BOSS hasMore/totalCount 字段名未实证（[AI 假设]）。
+  //   maxResults 缺省 = 单页(pageSize)，无 opts 调用即旧的单页行为（向后兼容）。
+  //   pageThrottleMs 页间节流（反爬，连续多页调用是风控高危模式）；测试传 0。
+  const PAGE_SIZE = apiBody.pageSize as number
+  const maxResults = opts?.maxResults ?? PAGE_SIZE
+  const pageThrottleMs = opts?.pageThrottleMs ?? 1500
+  const MAX_PAGES = 10
+
+  let firstApiResult: any = null
+  const rawJobList: any[] = []
+  const seenJobIds = new Set<string>()
+
+  for (let pageNum = 1; pageNum <= MAX_PAGES; pageNum++) {
+    const pageResult = await fetchPageJson({ ...apiBody, page: pageNum })
+    if (pageNum === 1) firstApiResult = pageResult
+
+    // 页级错误检查（P0 fix）：fetchPageJson catch 会返 {error}（无 code 字段），
+    //   此前被静默吞掉，line 720-721 的 fallback 日志不触发。中间页失败 → log + break。
+    if (pageResult?.error || pageResult?.code !== 0) {
+      if (isDebug || isProbe) {
+        console.warn(`[searchJobs] page ${pageNum} failed:`, pageResult?.error ?? `code=${pageResult?.code}`)
+      }
+      break
     }
-  }, apiBody)
+
+    const list =
+      pageResult?.code === 0 && Array.isArray(pageResult?.zpData?.jobList)
+        ? pageResult.zpData.jobList
+        : []
+
+    for (const job of list) {
+      const jid = job.encryptJobId
+      if (jid && seenJobIds.has(jid)) continue // 跨页去重
+      if (jid) seenJobIds.add(jid)
+      rawJobList.push(job)
+    }
+
+    if (list.length < PAGE_SIZE) break // TODO[Sprint D]: 实证 BOSS hasMore/totalCount，替换短页启发式（commit 已诚实标注）
+    if (rawJobList.length >= maxResults) break // 够了
+    if (pageNum >= MAX_PAGES) break // 安全上限
+
+    if (pageThrottleMs > 0) {
+      await new Promise((r) => setTimeout(r, pageThrottleMs))
+    }
+  }
+
+  // firstApiResult 保留供 probe/debug + code 检查 + fallback 沿用（都看第 1 页）
+  const apiResult = firstApiResult ?? {}
 
   // 调试/探针：page.evaluate 之外做（host 有完整 Node API）
   if ((isDebug || isProbe) && apiResult?.zpData?.jobList?.[0]) {
@@ -603,9 +658,9 @@ export async function searchJobs(
     }
   }
 
-  // API 成功 → 解析结构化数据
-  if (apiResult.code === 0 && apiResult.zpData?.jobList?.length > 0) {
-    const jobs: SearchResult[] = apiResult.zpData.jobList.map((job: any) => ({
+  // API 成功 → 解析结构化数据（rawJobList = 分页累加去重后的原始 job）
+  if (rawJobList.length > 0) {
+    const jobs: SearchResult[] = rawJobList.map((job: any) => ({
       id: job.encryptJobId || `api_${Math.random().toString(36).slice(2, 9)}`,
       title: job.jobName ?? '',
       company: job.brandName ?? '',
@@ -665,7 +720,8 @@ export async function searchJobs(
       // DOM 提取失败不影响 API 数据
     }
 
-    return jobs
+    // 分页累加可能略超 maxResults（最后一页整页压过阈值）→ 截到调用方要的上限
+    return jobs.slice(0, maxResults)
   }
 
   // ---- Fallback: API 失败，纯 DOM 提取 ----
