@@ -644,4 +644,20 @@ describe('searchJobs — 分页 page 循环', () => {
     expect(apiPages(page)).toEqual([1, 2]) // 第 2 页失败立即 break，不翻 3+
     expect(jobs.length).toBe(15) // 只保留第 1 页数据
   })
+
+  it('分页-7: page.evaluate 自身抛"Execution context destroyed" → 不逃出循环 + 走 DOM fallback', async () => {
+    // 模拟 BOSS 风控 SPA 重定向：page.evaluate 在中途被摧毁（thrown 而非返 {error}）
+    // 此前会让 throw 逃出循环 → 整个 searchJobs 崩，DOM fallback 触发不了（bug）
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      url: vi.fn().mockReturnValue('https://www.zhipin.com/web/geek/recommend'),
+      evaluate: vi.fn().mockImplementation(async () => {
+        const err = new Error('Execution context was destroyed, most likely because of a navigation.')
+        throw err // page.evaluate 自身 throw
+      }),
+    }
+    // 不应该抛 — 应返回 [] 然后 DOM fallback 接走
+    const jobs = await searchJobs(page as any, 'Java', undefined, undefined, { maxResults: 40, pageThrottleMs: 0 })
+    expect(jobs).toEqual([]) // 翻页全失败 + 无 DOM 元素 → 空数组（不崩）
+  })
 })

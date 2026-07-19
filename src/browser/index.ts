@@ -410,7 +410,10 @@ export function extractHrUid(job: any): string | undefined {
 
 /** DOM-First 滚动预加载 + 摘取（API 降级时的 fallback） */
 async function extractJobsFromDOM(page: any): Promise<any[]> {
-  return page.evaluate(async (cfg: any) => {
+  // Sprint 2026-07-19：BOSS 风控 SPA 重定向会让 page.evaluate 抛 "Execution context destroyed"，
+  //   此前 throw 直接逃出 → CLI 崩。改为返空，让 searchJobs 整体返回 [] 而不是 uncaught throw。
+  try {
+    return await page.evaluate(async (cfg: any) => {
     const { scrollStep, waitMs, stableThreshold, maxRounds } = cfg
     let lastCount = 0
     let stableRounds = 0
@@ -455,6 +458,12 @@ async function extractJobsFromDOM(page: any): Promise<any[]> {
     })
     return results
   }, { scrollStep: 180, waitMs: 400, stableThreshold: 5, maxRounds: 40 })
+  } catch (e: any) {
+    if (process.env.BOSS_SEARCH_DEBUG === '1') {
+      console.warn('[searchJobs] DOM fallback failed:', e?.message?.slice(0, 200))
+    }
+    return []
+  }
 }
 
 export async function searchJobs(
@@ -543,20 +552,29 @@ export async function searchJobs(
   // Sprint 2026-07-13 user-rolled-back：原本改为 robustEvaluate（ADR-0005），
   //   因 BOSS 服务端风控拦截才是真实问题（参见 feedback_boss_anti_bot_status memory）
   //   robustEvaluate 本身保留在 ./robust-evaluate.ts，后续 sprint 收编其他调用点
-  const fetchPageJson = async (body: any) =>
-    page.evaluate(async (b: any) => {
-      try {
-        const res = await fetch('https://www.zhipin.com/wapi/zpgeek/search/joblist.json', {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(b),
-        })
-        return await res.json()
-      } catch (e: any) {
-        return { error: e.message }
-      }
-    }, body)
+  // Sprint 2026-07-19：fetchPageJson 双重 try/catch
+  //   内层：fetch/json 异常 → {error}
+  //   外层：page.evaluate 自身异常（如风控 SPA navigation 摧毁 execution context）→ {error}
+  //   否则 throw 会逃出循环，触发不了原 DOM fallback
+  const fetchPageJson = async (body: any) => {
+    try {
+      return await page.evaluate(async (b: any) => {
+        try {
+          const res = await fetch('https://www.zhipin.com/wapi/zpgeek/search/joblist.json', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(b),
+          })
+          return await res.json()
+        } catch (e: any) {
+          return { error: e.message }
+        }
+      }, body)
+    } catch (e: any) {
+      return { error: `page.evaluate threw: ${e.message}` }
+    }
+  }
 
   // Sprint 2026-07-19：分页 page 循环（DEEP probe 实测 page/pageSize 字段）
   //   逐页拉取累加 + 跨页去重（encryptJobId）。停止条件（任一）：
