@@ -1,5 +1,6 @@
 import 'dotenv/config'
-import type { AppConfig, LLMProvider } from '../types/index.js'
+import type { AppConfig, LLMProvider, ScoreWeights } from '../types/index.js'
+import { DEFAULT_WEIGHTS } from '../scoring/dimensions.js'
 
 /** SCORE_THRESHOLD 默认值 */
 const DEFAULT_SCORE_THRESHOLD = 0.85
@@ -34,7 +35,58 @@ export function loadConfig(): AppConfig {
       chromiumPath: process.env.CHROMIUM_PATH,
     },
     scoreThreshold: parseScoreThreshold(),
+    scoreWeights: parseScoreWeights(),
   }
+}
+
+/**
+ * 解析 SCORE_WEIGHTS 环境变量
+ * - 未设 → DEFAULT_WEIGHTS
+ * - 格式: SCORE_WEIGHTS=education:0.1,experience:0.3,skill:0.1,project:0.3,stability:0.1,potential:0.1
+ * - 任意字段缺/非数字 → 抛错
+ * - 总和 ≠ 1 → 抛错
+ */
+function parseScoreWeights(): ScoreWeights {
+  const raw = process.env.SCORE_WEIGHTS
+  if (!raw) return DEFAULT_WEIGHTS
+
+  // 解析 key:value 对
+  const pairs = raw.split(',').map((p) => p.trim()).filter(Boolean)
+  const result: Partial<ScoreWeights> = {}
+
+  for (const pair of pairs) {
+    const [key, value] = pair.split(':').map((s) => s.trim())
+    if (!key || !value) {
+      throw new Error(`SCORE_WEIGHTS 格式错误：${pair}（应为 key:value）`)
+    }
+    const n = Number(value)
+    if (!Number.isFinite(n)) {
+      throw new Error(`SCORE_WEIGHTS.${key} 不是合法数字：${value}`)
+    }
+    if (n < 0 || n > 1) {
+      throw new Error(`SCORE_WEIGHTS.${key} 越界（${n}，应在 0~1 之间）`)
+    }
+    ;(result as Record<string, number>)[key] = n
+  }
+
+  // 必须包含全部 6 个维度
+  const requiredKeys = ['education', 'experience', 'skill', 'project', 'stability', 'potential'] as const
+  for (const k of requiredKeys) {
+    if (result[k] === undefined) {
+      throw new Error(`SCORE_WEIGHTS 缺字段：${k}`)
+    }
+  }
+
+  // 总和校验
+  const weights = result as ScoreWeights
+  const sum =
+    weights.education + weights.experience + weights.skill +
+    weights.project + weights.stability + weights.potential
+  if (Math.abs(sum - 1) > 1e-9) {
+    throw new Error(`SCORE_WEIGHTS 总和不归一化（=${sum}，应 = 1）`)
+  }
+
+  return weights
 }
 
 /**

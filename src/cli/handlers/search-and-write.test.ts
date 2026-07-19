@@ -14,7 +14,7 @@
 import { describe, it, expect, vi } from 'vitest'
 
 import { runSearchAndWrite } from './search-and-write.js'
-import type { Job } from '../../types/index.js'
+import type { Job, ScoreResult } from '../../types/index.js'
 
 // ============================================================
 // Fixture: 2 个 job（强制类型为 Job，省略必填字段以聚焦测试）
@@ -51,6 +51,26 @@ const SAMPLE_RESUME = {
   recentProjects: [],
 }
 
+/**
+ * Sprint 1C：构造 mock ScoreResult（替换老的 mock number 0.92）
+ * - totalScore: 0.92（与 Sprint 1A 行为兼容，过 0.85 阈值）
+ * - dimensions: 6 维全填（方便断言 六维详情 JSON 内容）
+ */
+function makeMockScoreResult(score = 0.92): ScoreResult {
+  return {
+    totalScore: score,
+    totalReason: `mock score ${score}`,
+    dimensions: {
+      education: { score: 0.8, reason: 'mock edu' },
+      experience: { score: 0.9, reason: 'mock exp' },
+      skill: { score: 0.7, reason: 'mock skill' },
+      project: { score: 0.85, reason: 'mock proj' },
+      stability: { score: 0.6, reason: 'mock stab' },
+      potential: { score: 0.75, reason: 'mock pot' },
+    },
+  }
+}
+
 // ============================================================
 // TEST 6: scoreJob 抛错时 → 该 job failed，整体继续
 // ============================================================
@@ -67,7 +87,7 @@ describe('runSearchAndWrite', () => {
         if (jd === 'JD for A') {
           throw new Error('LLM 返回无效 JSON')
         }
-        return 0.92 // jobB 通过
+        return makeMockScoreResult(0.92) // jobB 通过
       }),
       createRecord: vi.fn(async () => ({ record_id: 'rec_new' })),
       resolveResume: vi.fn(async () => ({ summary: SAMPLE_RESUME, source: 'yaml' as const, warnings: [] })),
@@ -118,6 +138,18 @@ describe('runSearchAndWrite', () => {
     // JD摘要 是 jd 字符串前 200 字（test fixture 中 jobB 的 jd='JD for B'）
     const actualCall = (deps.createRecord as any).mock.calls[0][0]
     expect(actualCall.JD摘要).toBe('JD for B')
+
+    // Sprint 1C：六维详情 = formatDimensionsForFeishu(ScoreResult) 的 JSON 输出
+    // 必须包含 6 维字段名 + totalReason，且 parse 回去能拿到完整数据
+    expect(actualCall['六维详情']).toEqual(expect.any(String))
+    const parsed6D = JSON.parse(actualCall['六维详情'])
+    expect(parsed6D.dimensions.education.score).toBe(0.8)
+    expect(parsed6D.dimensions.experience.score).toBe(0.9)
+    expect(parsed6D.dimensions.skill.score).toBe(0.7)
+    expect(parsed6D.dimensions.project.score).toBe(0.85)
+    expect(parsed6D.dimensions.stability.score).toBe(0.6)
+    expect(parsed6D.dimensions.potential.score).toBe(0.75)
+    expect(parsed6D.totalReason).toContain('mock score 0.92')
   })
 
   // ----------------------------------------------------------
@@ -135,7 +167,7 @@ describe('runSearchAndWrite', () => {
       fetchJobDetail: vi.fn(async (jobId: string) =>
         jobId === 'jobA_encryptedId' ? 'JD for A' : 'JD for B',
       ),
-      scoreJob: vi.fn(async (jd: string) => 0.92), // 都通过
+      scoreJob: vi.fn(async () => makeMockScoreResult(0.92)), // 都通过
       createRecord: vi.fn(async () => ({ record_id: 'rec_new' })),
       resolveResume: vi.fn(async () => ({ summary: SAMPLE_RESUME, source: 'yaml' as const, warnings: [] })),
       llm: {} as unknown,
@@ -188,7 +220,7 @@ describe('runSearchAndWrite', () => {
       fetchJobDetail: vi.fn(async (jobId: string) =>
         jobId === 'jobA_encryptedId' ? 'JD for A' : 'JD for B',
       ),
-      scoreJob: vi.fn(async (jd: string) => 0.92), // 都通过
+      scoreJob: vi.fn(async () => makeMockScoreResult(0.92)), // 都通过
       createRecord: vi.fn(async () => ({ record_id: 'rec_new' })),
       resolveResume: vi.fn(async () => ({ summary: SAMPLE_RESUME, source: 'yaml' as const, warnings: [] })),
       llm: {} as unknown,

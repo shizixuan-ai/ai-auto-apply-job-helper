@@ -148,6 +148,64 @@ export interface ResumeSummary {
   workSummary?: string
 }
 
+// ============================================================
+// Sprint 1C：6 维评分相关类型
+// ============================================================
+
+/**
+ * 单维度评分（Sprint 1C 6 维加权评分）
+ * - score: 0-1 之间的小数
+ * - reason: 评分理由（LLM 生成，可能为空字符串）
+ */
+export interface ScoreDimension {
+  score: number
+  reason: string
+}
+
+/**
+ * 6 维评分（Sprint 1C）
+ * 维度顺序按权重从高到低排列（仅美学，逻辑无关）
+ */
+export interface ScoreDimensions {
+  /** 学历匹配：学校层次 + 专业相关性 + 是否 985/211 */
+  education: ScoreDimension
+  /** 经验相关：工作年限 + 行业相关性 + 职位层级 */
+  experience: ScoreDimension
+  /** 技能契合：JD 要求技能 vs 候选人技能的覆盖度 */
+  skill: ScoreDimension
+  /** 项目深度：近期项目的复杂度、规模、影响力 */
+  project: ScoreDimension
+  /** 稳定性：跳槽频率 + 在职时长 */
+  stability: ScoreDimension
+  /** 综合潜力：成长性 + 学习能力 + 管理潜力 */
+  potential: ScoreDimension
+}
+
+/**
+ * 6 维权重（Sprint 1C）
+ * 权重总和必须 = 1（computeWeightedTotal 会校验）
+ */
+export interface ScoreWeights {
+  education: number
+  experience: number
+  skill: number
+  project: number
+  stability: number
+  potential: number
+}
+
+/**
+ * 评分结果（Sprint 1C 扩 6 维）
+ * - totalScore: 加权总分 0-1（本地重算，不信 LLM 算术）
+ * - totalReason: 总体匹配原因
+ * - dimensions: 6 维详情
+ */
+export interface ScoreResult {
+  totalScore: number
+  totalReason: string
+  dimensions: ScoreDimensions
+}
+
 /** 应用配置 */
 export interface AppConfig {
   feishu: {
@@ -174,4 +232,6 @@ export interface AppConfig {
   }
   /** 评分阈值（search --write 命令使用，0~1） */
   scoreThreshold: number
+  /** 6 维权重（Sprint 1C，从 SCORE_WEIGHTS env 解析或用默认）*/
+  scoreWeights: ScoreWeights
 }
