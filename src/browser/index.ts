@@ -556,11 +556,12 @@ export async function searchJobs(
   //   内层：fetch/json 异常 → {error}
   //   外层：page.evaluate 自身异常（如风控 SPA navigation 摧毁 execution context）→ {error}
   //   否则 throw 会逃出循环，触发不了原 DOM fallback
+  // Sprint 2026-07-19b：URL 加 ?_=<Date.now()> cache buster（与 BOSS web 一致：trace 抓 18 次全用此格式）
   const fetchPageJson = async (body: any) => {
     try {
       return await page.evaluate(async (b: any) => {
         try {
-          const res = await fetch('https://www.zhipin.com/wapi/zpgeek/search/joblist.json', {
+          const res = await fetch(`https://www.zhipin.com/wapi/zpgeek/search/joblist.json?_=${Date.now()}`, {
             method: 'POST',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
@@ -586,7 +587,13 @@ export async function searchJobs(
   //   pageThrottleMs 页间节流（反爬，连续多页调用是风控高危模式）；测试传 0。
   const PAGE_SIZE = apiBody.pageSize as number
   const maxResults = opts?.maxResults ?? PAGE_SIZE
-  const pageThrottleMs = opts?.pageThrottleMs ?? 1500
+  // Sprint 2026-07-19b：throttle 调速 + jitter
+  //   base 1500→3000ms（对齐 BOSS web 实测间隔 2.89s+）
+  //   + random(0, 13000) jitter（模拟用户自然滚动节奏，避免固定间隔被识别为 bot）
+  //   总间隔 3-16s（与 BOSS web 实测 2.89-15.54s 一致）
+  //   pageThrottleMs=0 → 跳过 throttle 和 jitter（测试用）
+  const pageThrottleMs = opts?.pageThrottleMs ?? 3000
+  const pageThrottleJitterMs = 13_000
   const MAX_PAGES = 10
 
   let firstApiResult: any = null
@@ -623,7 +630,8 @@ export async function searchJobs(
     if (pageNum >= MAX_PAGES) break // 安全上限
 
     if (pageThrottleMs > 0) {
-      await new Promise((r) => setTimeout(r, pageThrottleMs))
+      const jitter = Math.floor(Math.random() * pageThrottleJitterMs)
+      await new Promise((r) => setTimeout(r, pageThrottleMs + jitter))
     }
   }
 
