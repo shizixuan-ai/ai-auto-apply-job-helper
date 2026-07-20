@@ -52,11 +52,9 @@ function makeConfig(llmOverrides: Partial<AppConfig['llm']>): AppConfig {
     feishu: { appId: 'cli_test', appSecret: 'secret_test' },
     llm: {
       provider: 'deepseek',
-      deepseekApiKey: 'sk-ds-test',
-      openaiApiKey: 'sk-oai-test',
-      anthropicApiKey: 'sk-ant-test',
-      ollamaBaseUrl: 'http://localhost:11434',
-      ollamaModel: 'llama3',
+      // Sprint 1D Phase 2（ADR-0011）：apiKey 默认 'sk-test' 占位
+      // baseURL/model 默认 undefined — provider case 各自 fallback 到默认
+      apiKey: 'sk-test',
       ...llmOverrides,
     },
     boss: {},
@@ -80,7 +78,7 @@ describe('createLLM — 供应商 switch', () => {
   })
 
   it('deepseek → OpenAIAdapter，baseURL=https://api.deepseek.com/v1', () => {
-    createLLM(makeConfig({ provider: 'deepseek' }))
+    createLLM(makeConfig({ provider: 'deepseek', apiKey: 'sk-ds-test' }))
 
     expect(MockOpenAISpy).toHaveBeenCalledTimes(1)
     expect(MockOpenAISpy).toHaveBeenCalledWith(
@@ -92,7 +90,7 @@ describe('createLLM — 供应商 switch', () => {
   })
 
   it('openai → OpenAIAdapter，baseURL=https://api.openai.com/v1', () => {
-    createLLM(makeConfig({ provider: 'openai' }))
+    createLLM(makeConfig({ provider: 'openai', apiKey: 'sk-oai-test' }))
 
     expect(MockOpenAISpy).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -103,7 +101,7 @@ describe('createLLM — 供应商 switch', () => {
   })
 
   it('ollama → OpenAIAdapter，baseURL=http://localhost:11434/v1（不需要真实 key）', () => {
-    createLLM(makeConfig({ provider: 'ollama' }))
+    createLLM(makeConfig({ provider: 'ollama', apiKey: 'ollama' }))
 
     expect(MockOpenAISpy).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -117,6 +115,26 @@ describe('createLLM — 供应商 switch', () => {
     expect(() =>
       createLLM(makeConfig({ provider: 'unknown' as any })),
     ).toThrow(/不支持的 LLM 供应商/)
+  })
+
+  // ----------------------------------------------------------
+  // R2 (B2 / ADR-0011 §6): provider='huoshan' → throw "尚未配置"
+  // ----------------------------------------------------------
+
+  it('R2: provider="huoshan" → throw 含"尚未配置"提示', () => {
+    expect(() =>
+      createLLM(makeConfig({ provider: 'huoshan' })),
+    ).toThrow(/huoshan 尚未配置.*ADR-0011/)
+  })
+
+  // ----------------------------------------------------------
+  // minimax (ADR-0011 §6 B1 / Phase 3 实施): Phase 2 暂时 throw "待 Phase 3"
+  // ----------------------------------------------------------
+
+  it('Phase 2 暂存: provider="minimax" → throw "待 Sprint 1D Phase 3 实施"', () => {
+    expect(() =>
+      createLLM(makeConfig({ provider: 'minimax' })),
+    ).toThrow(/minimax.*AnthropicCompatAdapter.*Phase 3/)
   })
 })
 
@@ -207,7 +225,7 @@ describe('AnthropicAdapter.generate', () => {
       }),
     )
 
-    const adapter = createLLM(makeConfig({ provider: 'anthropic' }))
+    const adapter = createLLM(makeConfig({ provider: 'anthropic', apiKey: 'sk-ant-test' }))
 
     const result = await adapter.generate('JD 内容', '系统提示')
 

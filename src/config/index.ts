@@ -77,12 +77,6 @@ function parseLLMConfig(): AppConfig['llm'] {
     apiKey: process.env.LLM_API_KEY,
     baseURL: process.env.LLM_BASE_URL,
     model: process.env.LLM_MODEL,
-    // 老字段保留（Phase 2 删，详见 ADR-0011 §9.5）
-    deepseekApiKey: process.env.DEEPSEEK_API_KEY,
-    openaiApiKey: process.env.OPENAI_API_KEY,
-    anthropicApiKey: process.env.ANTHROPIC_API_KEY,
-    ollamaBaseUrl: process.env.OLLAMA_BASE_URL,
-    ollamaModel: process.env.OLLAMA_MODEL,
   }
 }
 

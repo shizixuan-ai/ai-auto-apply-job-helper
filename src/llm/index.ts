@@ -15,28 +15,40 @@ export interface LLMAdapter {
 
 /** 创建适配合适的 LLM 适配器 */
 export function createLLM(config: AppConfig): LLMAdapter {
-  const provider = config.llm.provider
+  const { provider, apiKey, baseURL, model } = config.llm
   switch (provider) {
     case 'deepseek':
       return new OpenAIAdapter({
-        apiKey: config.llm.deepseekApiKey ?? '',
-        baseURL: 'https://api.deepseek.com/v1',
-        model: 'deepseek-chat',
+        apiKey: apiKey ?? '',
+        baseURL: baseURL ?? 'https://api.deepseek.com/v1',
+        model: model ?? 'deepseek-chat',
       })
     case 'openai':
       return new OpenAIAdapter({
-        apiKey: config.llm.openaiApiKey ?? '',
-        baseURL: 'https://api.openai.com/v1',
-        model: 'gpt-4o',
+        apiKey: apiKey ?? '',
+        baseURL: baseURL ?? 'https://api.openai.com/v1',
+        model: model ?? 'gpt-4o',
       })
     case 'anthropic':
-      return new AnthropicAdapter(config.llm.anthropicApiKey ?? '')
+      // Phase 2：AnthropicAdapter 仍单参数（接 Phase 3 AnthropicCompatAdapter 重构统一化）
+      return new AnthropicAdapter(apiKey ?? '')
     case 'ollama':
       return new OpenAIAdapter({
-        apiKey: 'ollama', // Ollama 不需要真实 key
-        baseURL: `${config.llm.ollamaBaseUrl ?? 'http://localhost:11434'}/v1`,
-        model: config.llm.ollamaModel ?? 'llama3',
+        apiKey: apiKey ?? 'ollama', // Ollama 不需要真实 key
+        baseURL: baseURL ?? 'http://localhost:11434/v1',
+        model: model ?? 'llama3',
       })
+    case 'minimax':
+      // Sprint 1D Phase 3 实施：AnthropicCompatAdapter 接 baseURL=https://api.minimaxi.com/anthropic
+      // Phase 2 暂时抛"待 Phase 3"，R1 测试也等 Phase 3 加
+      throw new Error(
+        'LLM 供应商 minimax 走 Anthropic 协议，AnthropicCompatAdapter 待 Sprint 1D Phase 3 实施（详见 ADR-0011 §9.5）',
+      )
+    case 'huoshan':
+      // 火山方舟 coding plan 协议未确认（等 user 提供 URL + protocol + model）
+      throw new Error(
+        'LLM 供应商 huoshan 尚未配置（等火山方舟 coding plan 协议确认后再启用，详见 ADR-0011 §10）',
+      )
     default:
       throw new Error(`不支持的 LLM 供应商: ${provider}`)
   }

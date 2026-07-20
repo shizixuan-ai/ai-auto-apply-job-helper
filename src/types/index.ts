@@ -4,17 +4,32 @@
 
 /** LLM 供应商标识 */
 /**
- * Sprint 1D Phase 1（ADR-0011）：新增 'minimax' | 'huoshan'
- * - minimax: 走 Anthropic 协议（端点 https://api.minimaxi.com/anthropic），由 AnthropicCompatAdapter 适配（Phase 3 实施）
- * - huoshan: 火山方舟 coding plan，协议未定 → createLLM 抛 "尚未配置"（Phase 4 实施）
+ * Sprint 1D Phase 2（ADR-0011 §2.1）：string 化（替原 union），未来加供应商 0 改 types。
+ * 已知值见下方 LLM_PROVIDER_VALUES 常量（提供 IDE 提示 + 编译期拼写检查）。
+ * 运行时校验：createLLM switch default 抛 "不支持的 LLM 供应商"。
  */
-export type LLMProvider =
-  | 'deepseek'
-  | 'openai'
-  | 'anthropic'
-  | 'ollama'
-  | 'minimax'
-  | 'huoshan'
+export type LLMProvider = string
+
+/**
+ * Sprint 1D Phase 2（ADR-0011 §2.1）：已知 LLM 供应商常量
+ * - deepseek:  OpenAI 协议，默认 https://api.deepseek.com/v1，模型 deepseek-chat
+ * - openai:    OpenAI 协议，默认 https://api.openai.com/v1，模型 gpt-4o
+ * - anthropic: Anthropic 协议，默认 https://api.anthropic.com，模型 claude-sonnet-4-20250514
+ * - ollama:    OpenAI 协议（本地），默认 http://localhost:11434/v1，模型 llama3
+ * - minimax:   Anthropic 协议，端点 https://api.minimaxi.com/anthropic（ADR §1 H1），模型 MiniMax-M2.7-highspeed
+ * - huoshan:   火山方舟 coding plan，协议未定 → createLLM 抛 "尚未配置"（Phase 4 实施）
+ *
+ * 用法：
+ *   const provider: LLMProvider = LLM_PROVIDER_VALUES.MINIMAX  // IDE 拼写检查
+ */
+export const LLM_PROVIDER_VALUES = {
+  DEEPSEEK: 'deepseek',
+  OPENAI: 'openai',
+  ANTHROPIC: 'anthropic',
+  OLLAMA: 'ollama',
+  MINIMAX: 'minimax',
+  HUOSHAN: 'huoshan',
+} as const
 
 /** 投递状态 */
 export type ApplyStatus = 'pending' | 'greeted' | 'replied' | 'interviewing' | 'rejected' | 'closed'
@@ -230,43 +245,14 @@ export interface AppConfig {
   llm: {
     provider: LLMProvider
     /**
-     * Sprint 1D Phase 1（ADR-0011）：新 3 字段，替代老 5 字段
+     * Sprint 1D Phase 2（ADR-0011 §2.3）：通用 3 字段
      * - apiKey:   通用 API key（来源 env LLM_API_KEY）
      * - baseURL:  通用 base URL（来源 env LLM_BASE_URL，可选 — provider 自带默认）
      * - model:    通用模型名（来源 env LLM_MODEL，可选 — provider 自带默认）
-     *
-     * Phase 1 暂不删老 5 字段（marked @deprecated），Phase 2 改 src/llm/index.ts 时一起 cleanup
-     * 详见 ADR-0011 §9.5 Phase 边界
      */
     apiKey?: string
     baseURL?: string
     model?: string
-
-    /**
-     * @deprecated Sprint 1D Phase 1（ADR-0011）：老字段，Phase 2 删除。
-     *             改用 LLM_API_KEY env（写入 config.llm.apiKey）
-     */
-    deepseekApiKey?: string
-    /**
-     * @deprecated Sprint 1D Phase 1（ADR-0011）：老字段，Phase 2 删除。
-     *             改用 LLM_API_KEY env（写入 config.llm.apiKey）
-     */
-    openaiApiKey?: string
-    /**
-     * @deprecated Sprint 1D Phase 1（ADR-0011）：老字段，Phase 2 删除。
-     *             改用 LLM_API_KEY env（写入 config.llm.apiKey）
-     */
-    anthropicApiKey?: string
-    /**
-     * @deprecated Sprint 1D Phase 1（ADR-0011）：老字段，Phase 2 删除。
-     *             改用 LLM_BASE_URL env（写入 config.llm.baseURL）
-     */
-    ollamaBaseUrl?: string
-    /**
-     * @deprecated Sprint 1D Phase 1（ADR-0011）：老字段，Phase 2 删除。
-     *             改用 LLM_MODEL env（写入 config.llm.model）
-     */
-    ollamaModel?: string
   }
   boss: {
     resumeUid?: string
