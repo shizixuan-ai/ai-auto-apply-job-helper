@@ -128,13 +128,38 @@ describe('createLLM — 供应商 switch', () => {
   })
 
   // ----------------------------------------------------------
-  // minimax (ADR-0011 §6 B1 / Phase 3 实施): Phase 2 暂时 throw "待 Phase 3"
+  // R1 (B1 / ADR-0011 §6): provider='minimax' → AnthropicCompatAdapter + minimax baseURL
   // ----------------------------------------------------------
 
-  it('Phase 2 暂存: provider="minimax" → throw "待 Sprint 1D Phase 3 实施"', () => {
-    expect(() =>
-      createLLM(makeConfig({ provider: 'minimax' })),
-    ).toThrow(/minimax.*AnthropicCompatAdapter.*Phase 3/)
+  it('R1: provider="minimax" → AnthropicCompatAdapter (baseURL=https://api.minimaxi.com/anthropic)', async () => {
+    // fetch mock 验 URL 走 minimax 端点（行为契约验证，不用 instanceof）
+    const fetchSpy = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: () => Promise.resolve({ content: [{ type: 'text', text: 'minimax 招呼' }] }),
+      text: () => Promise.resolve('{"content":[{"type":"text","text":"minimax 招呼"}]}'),
+    } as unknown as Response)
+    vi.stubGlobal('fetch', fetchSpy)
+
+    try {
+      const adapter = createLLM(makeConfig({ provider: 'minimax', apiKey: 'sk-minimax-test' }))
+      const result = await adapter.generate('JD 内容')
+
+      expect(result).toBe('minimax 招呼')
+      expect(fetchSpy).toHaveBeenCalledWith(
+        'https://api.minimaxi.com/anthropic/v1/messages',
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            'x-api-key': 'sk-minimax-test',
+            'anthropic-version': '2023-06-01',
+          }),
+          body: expect.stringContaining('MiniMax-M2.7-highspeed'),
+        }),
+      )
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })
 
@@ -195,7 +220,7 @@ describe('OpenAIAdapter.generate', () => {
   })
 })
 
-describe('AnthropicAdapter.generate', () => {
+describe('AnthropicCompatAdapter.generate', () => {
   let fetchSpy: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
@@ -218,7 +243,8 @@ describe('AnthropicAdapter.generate', () => {
     } as unknown as Response
   }
 
-  it('调用 fetch 并返回 content[0].text', async () => {
+  // R5 (B5 / ADR-0011 §6): anthropic 默认 baseURL=https://api.anthropic.com 调 /v1/messages
+  it('R5: anthropic 默认 baseURL → fetch https://api.anthropic.com/v1/messages (x-api-key + anthropic-version header)', async () => {
     fetchSpy.mockResolvedValueOnce(
       mockOkResponse({
         content: [{ type: 'text', text: 'Anthropic 生成的招呼' }],
@@ -239,6 +265,32 @@ describe('AnthropicAdapter.generate', () => {
           'x-api-key': 'sk-ant-test',
           'anthropic-version': '2023-06-01',
         }),
+      }),
+    )
+  })
+
+  // R5 补充: AnthropicCompatAdapter 接受显式 baseURL（minimax 等非默认场景）
+  it('R5-supplement: 显式 baseURL=https://api.minimaxi.com/anthropic → fetch 走 minimax 端点', async () => {
+    fetchSpy.mockResolvedValueOnce(
+      mockOkResponse({ content: [{ type: 'text', text: 'minimax 招呼' }] }),
+    )
+
+    const adapter = createLLM(
+      makeConfig({
+        provider: 'minimax',
+        apiKey: 'sk-minimax-test',
+        baseURL: 'https://api.minimaxi.com/anthropic',
+        model: 'MiniMax-M2.7-highspeed',
+      }),
+    )
+
+    await adapter.generate('JD 内容')
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'https://api.minimaxi.com/anthropic/v1/messages',
+      expect.objectContaining({
+        headers: expect.objectContaining({ 'x-api-key': 'sk-minimax-test' }),
+        body: expect.stringContaining('MiniMax-M2.7-highspeed'),
       }),
     )
   })

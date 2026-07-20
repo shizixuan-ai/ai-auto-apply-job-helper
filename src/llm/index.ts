@@ -30,8 +30,11 @@ export function createLLM(config: AppConfig): LLMAdapter {
         model: model ?? 'gpt-4o',
       })
     case 'anthropic':
-      // Phase 2：AnthropicAdapter 仍单参数（接 Phase 3 AnthropicCompatAdapter 重构统一化）
-      return new AnthropicAdapter(apiKey ?? '')
+      return new AnthropicCompatAdapter({
+        apiKey: apiKey ?? '',
+        baseURL: baseURL ?? 'https://api.anthropic.com',
+        model: model ?? 'claude-sonnet-4-20250514',
+      })
     case 'ollama':
       return new OpenAIAdapter({
         apiKey: apiKey ?? 'ollama', // Ollama 不需要真实 key
@@ -39,11 +42,13 @@ export function createLLM(config: AppConfig): LLMAdapter {
         model: model ?? 'llama3',
       })
     case 'minimax':
-      // Sprint 1D Phase 3 实施：AnthropicCompatAdapter 接 baseURL=https://api.minimaxi.com/anthropic
-      // Phase 2 暂时抛"待 Phase 3"，R1 测试也等 Phase 3 加
-      throw new Error(
-        'LLM 供应商 minimax 走 Anthropic 协议，AnthropicCompatAdapter 待 Sprint 1D Phase 3 实施（详见 ADR-0011 §9.5）',
-      )
+      // Sprint 1D Phase 3（ADR-0011 §9.5）：Anthropic 协议端点
+      // baseURL 走 Anthropic 协议路径（不是 /v1），URL 字面证据 H1
+      return new AnthropicCompatAdapter({
+        apiKey: apiKey ?? '',
+        baseURL: baseURL ?? 'https://api.minimaxi.com/anthropic',
+        model: model ?? 'MiniMax-M2.7-highspeed',
+      })
     case 'huoshan':
       // 火山方舟 coding plan 协议未确认（等 user 提供 URL + protocol + model）
       throw new Error(
@@ -95,18 +100,29 @@ class OpenAIAdapter implements LLMAdapter {
 }
 
 // ============================================================
-// Anthropic Claude 适配器
+// Anthropic 协议兼容适配器（Sprint 1D Phase 3 / ADR-0011 §2.2）
+// ============================================================
+// 通用化 baseURL：覆盖 Anthropic 官方 + 任何走 /v1/messages + x-api-key 的兼容端点
+//   - Anthropic 官方:    https://api.anthropic.com
+//   - MiniMax:           https://api.minimaxi.com/anthropic（URL 字面证据 H1）
+//   - 未来其他兼容供应商: 由 createLLM switch case 传入
+//
+// 错误处理：沿用 ADR-0010 空内容 throw 纪律（fake green 防御）
 // ============================================================
 
-class AnthropicAdapter implements LLMAdapter {
+export class AnthropicCompatAdapter implements LLMAdapter {
   private apiKey: string
+  private baseURL: string
+  private model: string
 
-  constructor(apiKey: string) {
-    this.apiKey = apiKey
+  constructor(opts: { apiKey: string; baseURL: string; model: string }) {
+    this.apiKey = opts.apiKey
+    this.baseURL = opts.baseURL
+    this.model = opts.model
   }
 
   async generate(prompt: string, system?: string): Promise<string> {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const res = await fetch(`${this.baseURL}/v1/messages`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -114,7 +130,7 @@ class AnthropicAdapter implements LLMAdapter {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: this.model,
         max_tokens: 1024,
         system,
         messages: [{ role: 'user', content: prompt }],
