@@ -1,10 +1,15 @@
 # ADR-0011: LLM 多供应商扩展 + Anthropic 协议通用化
 
-> **状态**：草稿（待 RED 测试通过 + user 确认 huoshan 信息后升级为「已实施」）
+> **状态**：已实施（Phase 1/2/3 完成 / Phase 4 huoshan 待 user 提供 URL + protocol + model）
 > **作者**：AI + user（2026-07-20）
 > **日期**：2026-07-20
 > **关联**：Sprint 1D；前置 ADR-0010（六维评分，本 ADR 不动评分逻辑）
 > **纪律**：按 `~/.claude/CLAUDE.md` §3.5 4 类图前置 + §3.8 调试纪律 + §3.9 错误传播图 + §3.10 refactor checklist + §3.11 不能只信 hook + §4 TDD 6 步
+>
+> **实施 commits**：
+> - Phase 1 (env 统一)：`dcbecc8` — 4 文件 / 3 RED 测试 (R3/R4/R6)
+> - Phase 2 (provider string 化)：`84adc9c` — 4 文件 / 2 RED 测试 (R2 + minimax throw 暂存)
+> - Phase 3 (AnthropicCompatAdapter)：`07f0989` — 2 文件 / R1 + R5 + R7 + R5-supplement
 
 ---
 
