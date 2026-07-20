@@ -3,7 +3,18 @@
 // ============================================================
 
 /** LLM 供应商标识 */
-export type LLMProvider = 'deepseek' | 'openai' | 'anthropic' | 'ollama'
+/**
+ * Sprint 1D Phase 1（ADR-0011）：新增 'minimax' | 'huoshan'
+ * - minimax: 走 Anthropic 协议（端点 https://api.minimaxi.com/anthropic），由 AnthropicCompatAdapter 适配（Phase 3 实施）
+ * - huoshan: 火山方舟 coding plan，协议未定 → createLLM 抛 "尚未配置"（Phase 4 实施）
+ */
+export type LLMProvider =
+  | 'deepseek'
+  | 'openai'
+  | 'anthropic'
+  | 'ollama'
+  | 'minimax'
+  | 'huoshan'
 
 /** 投递状态 */
 export type ApplyStatus = 'pending' | 'greeted' | 'replied' | 'interviewing' | 'rejected' | 'closed'
@@ -218,10 +229,43 @@ export interface AppConfig {
   }
   llm: {
     provider: LLMProvider
+    /**
+     * Sprint 1D Phase 1（ADR-0011）：新 3 字段，替代老 5 字段
+     * - apiKey:   通用 API key（来源 env LLM_API_KEY）
+     * - baseURL:  通用 base URL（来源 env LLM_BASE_URL，可选 — provider 自带默认）
+     * - model:    通用模型名（来源 env LLM_MODEL，可选 — provider 自带默认）
+     *
+     * Phase 1 暂不删老 5 字段（marked @deprecated），Phase 2 改 src/llm/index.ts 时一起 cleanup
+     * 详见 ADR-0011 §9.5 Phase 边界
+     */
+    apiKey?: string
+    baseURL?: string
+    model?: string
+
+    /**
+     * @deprecated Sprint 1D Phase 1（ADR-0011）：老字段，Phase 2 删除。
+     *             改用 LLM_API_KEY env（写入 config.llm.apiKey）
+     */
     deepseekApiKey?: string
+    /**
+     * @deprecated Sprint 1D Phase 1（ADR-0011）：老字段，Phase 2 删除。
+     *             改用 LLM_API_KEY env（写入 config.llm.apiKey）
+     */
     openaiApiKey?: string
+    /**
+     * @deprecated Sprint 1D Phase 1（ADR-0011）：老字段，Phase 2 删除。
+     *             改用 LLM_API_KEY env（写入 config.llm.apiKey）
+     */
     anthropicApiKey?: string
+    /**
+     * @deprecated Sprint 1D Phase 1（ADR-0011）：老字段，Phase 2 删除。
+     *             改用 LLM_BASE_URL env（写入 config.llm.baseURL）
+     */
     ollamaBaseUrl?: string
+    /**
+     * @deprecated Sprint 1D Phase 1（ADR-0011）：老字段，Phase 2 删除。
+     *             改用 LLM_MODEL env（写入 config.llm.model）
+     */
     ollamaModel?: string
   }
   boss: {

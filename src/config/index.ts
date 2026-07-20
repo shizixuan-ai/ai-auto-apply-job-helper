@@ -10,8 +10,6 @@ const DEFAULT_SCORE_THRESHOLD = 0.85
  * 验证失败时抛出明确错误信息。
  */
 export function loadConfig(): AppConfig {
-  const provider = (process.env.LLM_PROVIDER ?? 'deepseek') as LLMProvider
-
   return {
     feishu: {
       appId: requireEnv('FEISHU_APP_ID'),
@@ -20,14 +18,7 @@ export function loadConfig(): AppConfig {
       appToken: process.env.FEISHU_APP_TOKEN ?? '',
       tableId: process.env.FEISHU_TABLE_ID ?? '',
     },
-    llm: {
-      provider,
-      deepseekApiKey: process.env.DEEPSEEK_API_KEY,
-      openaiApiKey: process.env.OPENAI_API_KEY,
-      anthropicApiKey: process.env.ANTHROPIC_API_KEY,
-      ollamaBaseUrl: process.env.OLLAMA_BASE_URL,
-      ollamaModel: process.env.OLLAMA_MODEL,
-    },
+    llm: parseLLMConfig(),
     boss: {
       resumeUid: process.env.BOSS_RESUME_UID,
     },
@@ -36,6 +27,62 @@ export function loadConfig(): AppConfig {
     },
     scoreThreshold: parseScoreThreshold(),
     scoreWeights: parseScoreWeights(),
+  }
+}
+
+/**
+ * Sprint 1D Phase 1（ADR-0011 §2.4）：解析 LLM_* 4 env + 老 env hard fail 检测
+ *
+ * 行为：
+ *   - LLM_PROVIDER unset → 'deepseek'（default）
+ *   - 4 个 LLM_* env 透传给 config.llm（apiKey / baseURL / model）
+ *   - 老 env 5 个 → 对应新 env 未设 → throw（一次性列全，不逐个报错）
+ *
+ * 老 env → 新 env 映射（ADR-0011 §2.3）：
+ *   - DEEPSEEK_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY → LLM_API_KEY
+ *   - OLLAMA_BASE_URL → LLM_BASE_URL
+ *   - OLLAMA_MODEL → LLM_MODEL
+ *
+ * Phase 1 保留老 5 字段赋值（兼容老配置直到 Phase 2 cleanup，详见 ADR-0011 §9.5）
+ */
+function parseLLMConfig(): AppConfig['llm'] {
+  // 老 env → 新 env 映射
+  const OLD_TO_NEW: Record<string, string> = {
+    DEEPSEEK_API_KEY: 'LLM_API_KEY',
+    OPENAI_API_KEY: 'LLM_API_KEY',
+    ANTHROPIC_API_KEY: 'LLM_API_KEY',
+    OLLAMA_BASE_URL: 'LLM_BASE_URL',
+    OLLAMA_MODEL: 'LLM_MODEL',
+  }
+
+  // 扫老 env：任一存在 + 对应新 env 未设 → 收集到 triggered
+  const triggered: { old: string; new: string }[] = []
+  for (const [oldKey, newKey] of Object.entries(OLD_TO_NEW)) {
+    if (process.env[oldKey] && !process.env[newKey]) {
+      triggered.push({ old: oldKey, new: newKey })
+    }
+  }
+
+  if (triggered.length > 0) {
+    const lines = triggered.map((t) => `  - ${t.old} → ${t.new}`)
+    throw new Error(
+      `[LLM config error] 检测到老 env 存在但对应新 env 未设，请迁移：\n` +
+      lines.join('\n') +
+      `\n迁移指南：docs/adr/0011-llm-multi-provider.md §2.4`,
+    )
+  }
+
+  return {
+    provider: (process.env.LLM_PROVIDER ?? 'deepseek') as LLMProvider,
+    apiKey: process.env.LLM_API_KEY,
+    baseURL: process.env.LLM_BASE_URL,
+    model: process.env.LLM_MODEL,
+    // 老字段保留（Phase 2 删，详见 ADR-0011 §9.5）
+    deepseekApiKey: process.env.DEEPSEEK_API_KEY,
+    openaiApiKey: process.env.OPENAI_API_KEY,
+    anthropicApiKey: process.env.ANTHROPIC_API_KEY,
+    ollamaBaseUrl: process.env.OLLAMA_BASE_URL,
+    ollamaModel: process.env.OLLAMA_MODEL,
   }
 }
 
