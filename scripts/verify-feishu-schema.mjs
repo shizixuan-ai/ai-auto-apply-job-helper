@@ -15,6 +15,8 @@
 // 输出：人可读报告 + .claude/smoke-reports/feishu-schema-{timestamp}.json
 // ============================================================
 
+import 'dotenv/config'
+
 const FEISHU_BASE = 'https://open.feishu.cn/open-apis'
 const TOKEN_URL = `${FEISHU_BASE}/auth/v3/tenant_access_token/internal`
 const FIELDS_URL = (appToken, tableId) =>
