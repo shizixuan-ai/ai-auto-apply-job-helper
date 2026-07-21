@@ -1,6 +1,6 @@
 # ADR-0012: 火山方舟 huoshan 接入 + minimax/huoshan 鉴权 header 修正（x-api-key → Bearer）
 
-> **状态**：已实施
+> **状态**：已实施 + huoshan live 已验（glm-5.2 端到端跑通，见 §10）
 > **作者**：AI + user（2026-07-21）
 > **日期**：2026-07-21
 > **关联**：ADR-0011（LLM 多供应商）§10 后续 + §11 重写协议（huoshan 协议确认 → 立本 ADR，不打 0011 补丁）
@@ -148,9 +148,12 @@ AnthropicCompatAdapter.generate()
 
 ## 10. 后续（不在本 ADR）
 
-- [ ] **live smoke**：ADR-0011 §9.4 承诺的 `scripts/smoke-llm-*.mjs` 仍缺失。minimax(Bearer) + huoshan(Bearer) 的真实 API 调用**从未 live 验**（user 本轮未提供 ARK/MINIMAX key）→ 标 `[未证明: live 待验]`。
+- [x] **huoshan live 已验**（2026-07-21）：`scripts/smoke-llm.mjs` 真实打 `ark.cn-beijing.volces.com/api/coding/v1/messages` → HTTP 200 + Bearer 鉴权通过 + 返回「在线，我是智谱GLM大模型。」。**Bearer 鉴权决策 live 证实正确**（无 401）。
+- [x] **live 暴露 bug 并修复**：glm-5.2 是推理模型，`content[0]` 是 `{type:'thinking'}` 块，原 adapter 写死 `content[0].text` → 误判空内容抛错。已改为 filter `type==='text'` 拼接（见下方 Debug Gate #2 + TEST R10）。
+- [ ] **minimax(Bearer) live 待验**：本轮只验了 huoshan；minimax 的 Bearer 修复仍 `[未证明: live 待验]`（需 minimaxi key）。
 - [ ] **minimax model 默认值**：minimaxi 文档最新示例是 `MiniMax-M3`，现默认 `MiniMax-M2.7-highspeed`。本 ADR **不动**（避免混入无关变更），待 user 确认是否升级。
 - [ ] **真实 KEY revoke**（ADR-0011 §10 遗留）：起草期 user 曾贴过 minimax KEY，建议 revoke 重发。
+- [ ] **glm-5.2 延迟**：live 单轮 ~26s（推理模型思考耗时）。auto-greet 批量场景需评估超时/并发。
 
 ---
 
@@ -161,6 +164,16 @@ AnthropicCompatAdapter.generate()
 - **修复**：AnthropicCompatAdapter 加 authStyle，minimax 传 'bearer'（commit 见 git log）。
 - **自验证**：vitest R1/R5-supplement 改断言后全绿 + tsc 无新增错误。
 - **未证明**：真实 minimaxi/ark 端点 live 返回（无 key，`[未证明: live 待验]`）；假设 (b) "只认 Bearer" 基于文档而非实测 401。
+
+---
+
+## Debug Gate 5 项 #2（glm-5.2 推理模型 content 提取 bug — live 发现）
+
+- **症状**：huoshan live smoke 打通（HTTP 200 + Bearer 通过），但 adapter 抛「Anthropic 返回空内容」。实际返回 `content=[{type:'thinking',...},{type:'text',text:'...'}]`，原代码读 `content[0].text` = undefined（首块是 thinking）。
+- **多假设**：(a) 鉴权错 401 → 否，实测 200；(b) 端点返回格式非 Anthropic → 否，是标准 content 块数组；(c) 推理模型首块是 thinking、text 块在后 → ✅ 实测 body 证实 `content[0].type==='thinking'`。
+- **修复**：`content[0].text` → `content.filter(type==='text').map(text).join('')`（`src/llm/index.ts`），惠及所有 AnthropicCompat provider（含 anthropic 扩展思考 / minimax）。
+- **自验证**：TEST R10（thinking 前置 / 多 text 拼接 / 仅 thinking 抛错）3 例全绿 + live 复跑返回「在线，我是智谱GLM大模型。」。
+- **未证明**：无 —— 本 bug 已 live 闭环。
 
 ---
 
@@ -175,4 +188,5 @@ AnthropicCompatAdapter.generate()
 | 5 | minimax 鉴权 = Bearer（原 x-api-key 是 bug） | **[已确认]** | H4 WebFetch 官方文档 |
 | 6 | anthropic 官方保持 x-api-key | **[已确认]** | Anthropic 原生 API 标准 |
 | 7 | minimax model 默认值升级到 MiniMax-M3 | **[待确认]** | §10 待 user 定 |
-| 8 | minimax/huoshan live 可跑 | **[未证明]** | 无 key，§10 live 待验 |
+| 8 | huoshan live 可跑（glm-5.2 端到端） | **[已确认]** | smoke-llm.mjs 实测 HTTP 200 + Bearer + 返回文本（§10） |
+| 9 | minimax live 可跑 | **[未证明]** | 无 minimaxi key，§10 live 待验 |

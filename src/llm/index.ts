@@ -177,7 +177,14 @@ export class AnthropicCompatAdapter implements LLMAdapter {
       throw new Error(`Anthropic API 错误 [${body.error?.type}]: ${body.error?.message}`)
     }
 
-    const text = body?.content?.[0]?.text
+    // 提取所有 type==='text' 块并拼接（ADR-0012 §10 live 发现）：
+    // 推理模型（glm-5.2 等）content 首块常是 { type:'thinking' }，不能写死 content[0].text
+    const text = Array.isArray(body?.content)
+      ? body.content
+          .filter((b: { type?: string }) => b?.type === 'text')
+          .map((b: { text?: string }) => b.text ?? '')
+          .join('')
+      : undefined
     if (typeof text !== 'string' || text.length === 0) {
       throw new Error(`Anthropic 返回空内容: ${JSON.stringify(body).slice(0, 200)}`)
     }

@@ -348,6 +348,51 @@ describe('AnthropicCompatAdapter.generate', () => {
     await expect(adapter.generate('JD')).rejects.toThrow(/Anthropic 返回空内容/)
   })
 
+  // R10 (ADR-0012 §10 live 发现): 推理模型（glm-5.2 等）content[0] 是 thinking 块，
+  // 必须跳过 thinking 提取 type==='text' 块（否则误判空内容）
+  it('R10: content[0]=thinking + content[1]=text（推理模型）→ 提取 text 块', async () => {
+    fetchSpy.mockResolvedValueOnce(
+      mockOkResponse({
+        content: [
+          { type: 'thinking', thinking: '让我想想...' },
+          { type: 'text', text: '我在线，我是 glm-5.2' },
+        ],
+      }),
+    )
+
+    const adapter = createLLM(makeConfig({ provider: 'huoshan', apiKey: 'ark-test-key' }))
+
+    const result = await adapter.generate('确认在线')
+    expect(result).toBe('我在线，我是 glm-5.2')
+  })
+
+  it('R10: 多个 text 块 → 拼接', async () => {
+    fetchSpy.mockResolvedValueOnce(
+      mockOkResponse({
+        content: [
+          { type: 'thinking', thinking: '思考' },
+          { type: 'text', text: '第一段' },
+          { type: 'text', text: '第二段' },
+        ],
+      }),
+    )
+
+    const adapter = createLLM(makeConfig({ provider: 'huoshan', apiKey: 'ark-test-key' }))
+
+    const result = await adapter.generate('生成')
+    expect(result).toBe('第一段第二段')
+  })
+
+  it('R10: 只有 thinking 块无 text 块 → 抛空内容错', async () => {
+    fetchSpy.mockResolvedValueOnce(
+      mockOkResponse({ content: [{ type: 'thinking', thinking: '只想不说' }] }),
+    )
+
+    const adapter = createLLM(makeConfig({ provider: 'huoshan', apiKey: 'ark-test-key' }))
+
+    await expect(adapter.generate('JD')).rejects.toThrow(/Anthropic 返回空内容/)
+  })
+
   it('Anthropic 错误响应（type=error）抛错', async () => {
     fetchSpy.mockResolvedValueOnce(
       mockOkResponse({
