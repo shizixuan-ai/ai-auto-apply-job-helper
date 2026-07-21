@@ -125,6 +125,8 @@ describe('searchJobs（端到端契约）', () => {
     const mockPage = {
       goto: vi.fn().mockResolvedValue(undefined),
       url: vi.fn().mockReturnValue('https://www.zhipin.com/web/geek/recommend'),
+      // Sprint C+ (2026-07-21 ADR-0014): hasAuthToken 调用 page.context().cookies()
+      context: () => ({ cookies: vi.fn().mockResolvedValue([{ name: '__zp_stoken__', value: 'valid', domain: '.zhipin.com' }]) }),
       evaluate: vi.fn().mockImplementation(async (body: unknown) => {
         // searchJobs 用 page.evaluate 在浏览器上下文发 fetch
         // 我们直接调 Node fetch（同源策略：URL 形如 'https://www.zhipin.com/wapi/...'）

@@ -260,10 +260,15 @@ describe('extractHrUid (Sprint 2B — probe 验证后修正)', () => {
 // ============================================================
 
 describe('searchJobs — Phase 1 跳过逻辑（Sprint 2D）', () => {
-  function makeSearchPage(currentUrl = 'about:blank') {
+  function makeSearchPage(currentUrl = 'about:blank', cookies: Array<{ name: string; value: string; domain: string }> = [
+    { name: '__zp_stoken__', value: 'valid_token', domain: '.zhipin.com' },
+  ]) {
     return {
       goto: vi.fn().mockResolvedValue(undefined),
       url: vi.fn().mockReturnValue(currentUrl),
+      // Sprint C+ (2026-07-21 ADR-0014): hasAuthToken 调用 page.context().cookies()
+      //   必须有默认 mock，否则 Sprint 2D-1/2/3/4/5/6/7/8 全挂
+      context: () => ({ cookies: vi.fn().mockResolvedValue(cookies) }),
       // Sprint 2D: 让 evaluate 返 BOSS API 成功（非空 jobList）→ 避免走 DOM 降级
       // DOM 降级会再调 page.goto，干扰 Sprint 2D 测的"Phase 1 goto 次数"
       evaluate: vi.fn().mockResolvedValue({
@@ -370,6 +375,97 @@ describe('searchJobs — Phase 1 跳过逻辑（Sprint 2D）', () => {
       // 同上
     }
     expect(page.goto).toHaveBeenCalled()
+  })
+})
+
+// ============================================================
+// Sprint C+ (2026-07-21 ADR-0014): searchJobs 假红防御
+// ------------------------------------------------------------
+// 79fd0f5 修复 loginByQR 假绿后，loginByQR return 时 page 落在 /hangzhou/ 等
+// landing 路径（不再是 /web/geek/job 假绿 URL）。searchJobs Phase 1 后续
+// hard navigate 到 /web/geek/recommend 时，BOSS 服务端 strict 校验会 redirect
+// 到 /user/ —— 此时 cookies 仍有效（__zp_stoken__ 在），但 URL 在 /user/。
+// 老代码 URL 单判 → 假红 throw "登录已失效"，user 必须重新扫码。
+//
+// 修复：/user/ 检查改用 hasAuthToken（cookie-only），URL 单判只判 about:blank
+// ============================================================
+
+describe('searchJobs — 假红防御（Sprint C+, ADR-0014）', () => {
+  function makeSearchPageWithAuth(
+    currentUrl: string,
+    cookies: Array<{ name: string; value: string; domain: string }> = [
+      { name: '__zp_stoken__', value: 'valid_token', domain: '.zhipin.com' },
+    ],
+  ) {
+    return {
+      goto: vi.fn().mockResolvedValue(undefined),
+      url: vi.fn().mockReturnValue(currentUrl),
+      context: () => ({ cookies: vi.fn().mockResolvedValue(cookies) }),
+      // 让 evaluate 返 BOSS API 成功（避免走 DOM 降级干扰）
+      evaluate: vi.fn().mockResolvedValue({
+        code: 0,
+        zpData: { jobList: [{ encryptJobId: 'fake', jobName: 'fake', brandName: 'fake' }] },
+      }),
+    }
+  }
+
+  // ----------------------------------------------------------
+  // 核心 BUG 路径：URL /user/ 但 cookies 有效 → **不应** throw "登录已失效"
+  // 旧实现：throw "登录已失效"（假红，user 重新扫码）❌
+  // 新实现：不 throw（cookies 是 source of truth，URL 是 BOSS 服务端 strict 校验的副作用）
+  // ----------------------------------------------------------
+  it('Sprint C+ 1/3 (回归测试): URL 在 /user/ 但 cookies 含 __zp_stoken__ → **不应** throw "登录已失效"', async () => {
+    const page = makeSearchPageWithAuth('https://www.zhipin.com/web/user/?ka=header-login')
+    // 模拟 BOSS 实际行为：即便 session 有效，hard navigate 会被 redirect 到 /user/
+    // 但 cookies（__zp_stoken__）仍然在 context 里
+
+    // 关键断言：不抛"登录已失效"
+    await expect(
+      searchJobs(page as any, 'Java'),
+    ).resolves.not.toThrow()
+    // 显式断言错误信息也不应包含"登录已失效"
+    try {
+      await searchJobs(page as any, 'Java')
+    } catch (e: any) {
+      expect(e.message).not.toMatch(/登录已失效/)
+    }
+  })
+
+  // ----------------------------------------------------------
+  // 真红路径：URL /user/ + cookies 无 __zp_stoken__ → 必须 throw "登录已失效"
+  // 新实现的回归保护：hasAuthToken 真的检测到无 auth token 时仍要 throw
+  // ----------------------------------------------------------
+  it('Sprint C+ 2/3 (回归保护): URL /user/ + cookies 无 __zp_stoken__ → 必须 throw "登录已失效"', async () => {
+    const page = makeSearchPageWithAuth(
+      'https://www.zhipin.com/web/user/?ka=header-login',
+      // 只有临时追踪 cookie，无真 auth token
+      [
+        { name: '__c', value: '178461****', domain: '.zhipin.com' },
+        { name: 'lastCity', value: '101210100', domain: '.zhipin.com' },
+      ],
+    )
+
+    await expect(
+      searchJobs(page as any, 'Java'),
+    ).rejects.toThrow(/登录已失效/)
+  })
+
+  // ----------------------------------------------------------
+  // about:blank 独立抛错（不是"登录已失效"）
+  // 旧实现：about:blank 也归到"登录已失效"，语义错误
+  // 新实现：about:blank = goto 完全失败，抛"页面未加载成功"
+  // ----------------------------------------------------------
+  it('Sprint C+ 3/3: page.url() === "about:blank" → 抛 "页面未加载成功"（不是"登录已失效"）', async () => {
+    const page = makeSearchPageWithAuth('about:blank')
+    // cookies 有效，但 page 在 about:blank → goto 失败
+
+    try {
+      await searchJobs(page as any, 'Java')
+      expect.fail('应抛异常')
+    } catch (e: any) {
+      expect(e.message).toMatch(/页面未加载成功/)
+      expect(e.message).not.toMatch(/登录已失效/) // 关键：不是 login 问题
+    }
   })
 })
 
@@ -492,6 +588,8 @@ describe('searchJobs — 过滤参数（DEEP probe）', () => {
     return {
       goto: vi.fn().mockResolvedValue(undefined),
       url: vi.fn().mockReturnValue(currentUrl),
+      // Sprint C+ (2026-07-21 ADR-0014): hasAuthToken 调用 page.context().cookies()
+      context: () => ({ cookies: vi.fn().mockResolvedValue([{ name: '__zp_stoken__', value: 'valid', domain: '.zhipin.com' }]) }),
       evaluate: vi.fn().mockResolvedValue({
         code: 0,
         zpData: { jobList: [{ encryptJobId: 'fake', jobName: 'fake', brandName: 'fake' }] },
@@ -566,6 +664,8 @@ describe('searchJobs — 分页 page 循环', () => {
     return {
       goto: vi.fn().mockResolvedValue(undefined),
       url: vi.fn().mockReturnValue('https://www.zhipin.com/web/geek/recommend'),
+      // Sprint C+ (2026-07-21 ADR-0014): hasAuthToken 调用 page.context().cookies()
+      context: () => ({ cookies: vi.fn().mockResolvedValue([{ name: '__zp_stoken__', value: 'valid', domain: '.zhipin.com' }]) }),
       evaluate: vi.fn().mockImplementation(async (_fn: any, body: any) => {
         // 只有 apiBody 带 .query；Phase 3 DOM 提取传的是 config（无 query）→ 返空跳过
         if (!body || !body.query) return { code: 0, zpData: { jobList: [] } }
@@ -633,6 +733,8 @@ describe('searchJobs — 分页 page 循环', () => {
     const page = {
       goto: vi.fn().mockResolvedValue(undefined),
       url: vi.fn().mockReturnValue('https://www.zhipin.com/web/geek/recommend'),
+      // Sprint C+ (2026-07-21 ADR-0014): hasAuthToken 调用 page.context().cookies()
+      context: () => ({ cookies: vi.fn().mockResolvedValue([{ name: '__zp_stoken__', value: 'valid', domain: '.zhipin.com' }]) }),
       evaluate: vi.fn().mockImplementation(async (_fn: any, body: any) => {
         if (!body || !body.query) return { code: 0, zpData: { jobList: [] } }
         if (body.page === 1) return { code: 0, zpData: { jobList: fakeJobs(15, 'p1') } }
@@ -651,6 +753,8 @@ describe('searchJobs — 分页 page 循环', () => {
     const page = {
       goto: vi.fn().mockResolvedValue(undefined),
       url: vi.fn().mockReturnValue('https://www.zhipin.com/web/geek/recommend'),
+      // Sprint C+ (2026-07-21 ADR-0014): hasAuthToken 调用 page.context().cookies()
+      context: () => ({ cookies: vi.fn().mockResolvedValue([{ name: '__zp_stoken__', value: 'valid', domain: '.zhipin.com' }]) }),
       evaluate: vi.fn().mockImplementation(async () => {
         const err = new Error('Execution context was destroyed, most likely because of a navigation.')
         throw err // page.evaluate 自身 throw

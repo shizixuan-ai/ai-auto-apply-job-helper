@@ -308,10 +308,36 @@ export async function closeBrowserSession(session: {
  * - 2026-07-21 live 发现：BOSS 服务端短期 session 缓存 + 临时追踪 cookie（无 __zp_stoken__）
  *   就能让首屏 URL 跳到非 /user/ 路径，原 URL 检查误判"已登录" → 立即关浏览器，user 永远扫不了 QR
  * - 真 auth token（__zp_stoken__ / zp_at）只有扫码后服务端才会签发
+ *
+ * 注意：searchJobs 等下游**不应**用本函数做"登录态判定"——
+ *   79fd0f5 落地后 loginByQR 会在扫码后落到 /hangzhou/ 等 landing 路径，
+ *   searchJobs 后续 hard navigate 到 /web/geek/recommend 时 BOSS 服务端会 strict 校验并
+ *   redirect 到 /user/，此时 cookies 仍有效但 URL 在 /user/ → URL 单判会假红。
+ *   下游请用 hasAuthToken（仅查 cookies，不看 URL）。
  */
 async function isLoggedIn(page: any): Promise<boolean> {
   const url = page.url()
   if (!url.includes('zhipin.com') || url.includes('/user/')) return false
+  const cookies = await page.context().cookies()
+  return cookies.some(
+    (c: { name: string; domain?: string }) =>
+      c.domain?.includes('zhipin.com') &&
+      (c.name === '__zp_stoken__' || c.name === 'zp_at'),
+  )
+}
+
+/**
+ * 真登录态判定（cookie-only，2026-07-21 Sprint C+ 引入）
+ * - source of truth: cookies 含 __zp_stoken__ 或 zp_at
+ * - 不查 URL：BOSS 服务端对 hard navigate 可能 strict 校验拒绝并 redirect 到 /user/，
+ *   此时 cookies 仍有效但 URL 在 /user/ —— 用 URL 判会假红
+ * - 真实登录失效会在 Phase 2 API 调用时由 zhipin 401 自然捕获，无需这里兜底
+ * - 与 isLoggedIn 的区别：isLoggedIn 用于 loginByQR（需确保 page 在 BOSS 域），
+ *   hasAuthToken 用于 searchJobs 等下游（只关心 cookies 有效性）
+ *
+ * @internal 导出供 unit test
+ */
+export async function hasAuthToken(page: any): Promise<boolean> {
   const cookies = await page.context().cookies()
   return cookies.some(
     (c: { name: string; domain?: string }) =>
@@ -537,7 +563,14 @@ export async function searchJobs(
   }
 
   // 如果 recommend 也被重定向（仍 about:blank 或 /user/），抛错
-  if (page.url() === 'about:blank' || page.url().includes('/user/')) {
+  // Sprint C+ 修复（2026-07-21，ADR-0014）：79fd0f5 后 loginByQR 落点从 /web/geek/job 变到
+  //   /hangzhou/ 等 landing 路径，searchJobs 后续 hard navigate 时 BOSS 服务端 strict 校验
+  //   经常 redirect 到 /user/ —— 此时 cookies 仍有效，URL 单判会假红
+  // 新策略：about:blank = goto 完全失败（独立抛错），/user/ 改成 cookies 双判
+  if (page.url() === 'about:blank') {
+    throw new Error('页面未加载成功，请检查网络后重试')
+  }
+  if (!(await hasAuthToken(page))) {
     throw new Error('登录已失效，请先运行 bapply login 重新扫码登录')
   }
 
