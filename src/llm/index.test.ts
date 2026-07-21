@@ -118,21 +118,43 @@ describe('createLLM — 供应商 switch', () => {
   })
 
   // ----------------------------------------------------------
-  // R2 (B2 / ADR-0011 §6): provider='huoshan' → throw "尚未配置"
+  // R8 (B1 / ADR-0012 §6): provider='huoshan' → AnthropicCompatAdapter + Bearer + ark coding
   // ----------------------------------------------------------
 
-  it('R2: provider="huoshan" → throw 含"尚未配置"提示', () => {
-    expect(() =>
-      createLLM(makeConfig({ provider: 'huoshan' })),
-    ).toThrow(/huoshan 尚未配置.*ADR-0011/)
+  it('R8: provider="huoshan" → AnthropicCompatAdapter (ark coding baseURL + Bearer + glm-5.2)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: () => Promise.resolve({ content: [{ type: 'text', text: 'huoshan 招呼' }] }),
+      text: () => Promise.resolve('{"content":[{"type":"text","text":"huoshan 招呼"}]}'),
+    } as unknown as Response)
+    vi.stubGlobal('fetch', fetchSpy)
+
+    try {
+      const adapter = createLLM(makeConfig({ provider: 'huoshan', apiKey: 'ark-test-key' }))
+      const result = await adapter.generate('JD 内容')
+
+      expect(result).toBe('huoshan 招呼')
+
+      const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit]
+      expect(url).toBe('https://ark.cn-beijing.volces.com/api/coding/v1/messages')
+      const headers = init.headers as Record<string, string>
+      // ADR-0012 §2.2：huoshan 走 Authorization: Bearer（ANTHROPIC_AUTH_TOKEN），不发 x-api-key
+      expect(headers['Authorization']).toBe('Bearer ark-test-key')
+      expect(headers['x-api-key']).toBeUndefined()
+      expect(headers['anthropic-version']).toBe('2023-06-01')
+      expect(init.body).toContain('glm-5.2')
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   // ----------------------------------------------------------
-  // R1 (B1 / ADR-0011 §6): provider='minimax' → AnthropicCompatAdapter + minimax baseURL
+  // R1' (B2 / ADR-0012 §6): provider='minimax' → Bearer（原 x-api-key 是 bug）
   // ----------------------------------------------------------
 
-  it('R1: provider="minimax" → AnthropicCompatAdapter (baseURL=https://api.minimaxi.com/anthropic)', async () => {
-    // fetch mock 验 URL 走 minimax 端点（行为契约验证，不用 instanceof）
+  it('R1: provider="minimax" → AnthropicCompatAdapter (baseURL=https://api.minimaxi.com/anthropic + Bearer)', async () => {
     const fetchSpy = vi.fn().mockResolvedValueOnce({
       ok: true,
       status: 200,
@@ -147,16 +169,15 @@ describe('createLLM — 供应商 switch', () => {
       const result = await adapter.generate('JD 内容')
 
       expect(result).toBe('minimax 招呼')
-      expect(fetchSpy).toHaveBeenCalledWith(
-        'https://api.minimaxi.com/anthropic/v1/messages',
-        expect.objectContaining({
-          headers: expect.objectContaining({
-            'x-api-key': 'sk-minimax-test',
-            'anthropic-version': '2023-06-01',
-          }),
-          body: expect.stringContaining('MiniMax-M2.7-highspeed'),
-        }),
-      )
+
+      const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit]
+      expect(url).toBe('https://api.minimaxi.com/anthropic/v1/messages')
+      const headers = init.headers as Record<string, string>
+      // ADR-0012 §5 E3：minimaxi 官方文档用 ANTHROPIC_AUTH_TOKEN（Bearer），非 x-api-key
+      expect(headers['Authorization']).toBe('Bearer sk-minimax-test')
+      expect(headers['x-api-key']).toBeUndefined()
+      expect(headers['anthropic-version']).toBe('2023-06-01')
+      expect(init.body).toContain('MiniMax-M2.7-highspeed')
     } finally {
       vi.unstubAllGlobals()
     }
@@ -257,20 +278,18 @@ describe('AnthropicCompatAdapter.generate', () => {
 
     expect(result).toBe('Anthropic 生成的招呼')
     expect(fetchSpy).toHaveBeenCalledTimes(1)
-    expect(fetchSpy).toHaveBeenCalledWith(
-      'https://api.anthropic.com/v1/messages',
-      expect.objectContaining({
-        method: 'POST',
-        headers: expect.objectContaining({
-          'x-api-key': 'sk-ant-test',
-          'anthropic-version': '2023-06-01',
-        }),
-      }),
-    )
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('https://api.anthropic.com/v1/messages')
+    expect(init.method).toBe('POST')
+    const headers = init.headers as Record<string, string>
+    // ADR-0012 §2.2：anthropic 官方保持 x-api-key（原生 API 标准），不发 Authorization
+    expect(headers['x-api-key']).toBe('sk-ant-test')
+    expect(headers['Authorization']).toBeUndefined()
+    expect(headers['anthropic-version']).toBe('2023-06-01')
   })
 
-  // R5 补充: AnthropicCompatAdapter 接受显式 baseURL（minimax 等非默认场景）
-  it('R5-supplement: 显式 baseURL=https://api.minimaxi.com/anthropic → fetch 走 minimax 端点', async () => {
+  // R5-supplement: AnthropicCompatAdapter 接受显式 baseURL（minimax → Bearer / ADR-0012 §2.2）
+  it('R5-supplement: 显式 baseURL=https://api.minimaxi.com/anthropic → fetch 走 minimax 端点 (Bearer)', async () => {
     fetchSpy.mockResolvedValueOnce(
       mockOkResponse({ content: [{ type: 'text', text: 'minimax 招呼' }] }),
     )
@@ -286,13 +305,35 @@ describe('AnthropicCompatAdapter.generate', () => {
 
     await adapter.generate('JD 内容')
 
-    expect(fetchSpy).toHaveBeenCalledWith(
-      'https://api.minimaxi.com/anthropic/v1/messages',
-      expect.objectContaining({
-        headers: expect.objectContaining({ 'x-api-key': 'sk-minimax-test' }),
-        body: expect.stringContaining('MiniMax-M2.7-highspeed'),
-      }),
-    )
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('https://api.minimaxi.com/anthropic/v1/messages')
+    const headers = init.headers as Record<string, string>
+    expect(headers['Authorization']).toBe('Bearer sk-minimax-test')
+    expect(headers['x-api-key']).toBeUndefined()
+    expect(init.body).toContain('MiniMax-M2.7-highspeed')
+  })
+
+  // R9 (B4 / ADR-0012 §6): huoshan 错误路径 → throw（Bearer 路径不新增错误边界）
+  it('R9: huoshan 空内容 → throw（复用空内容 throw 纪律，Bearer 不改错误边界）', async () => {
+    fetchSpy.mockResolvedValueOnce(mockOkResponse({ content: [] }))
+
+    const adapter = createLLM(makeConfig({ provider: 'huoshan', apiKey: 'ark-test-key' }))
+
+    await expect(adapter.generate('JD')).rejects.toThrow(/Anthropic 返回空内容/)
+  })
+
+  it('R9: huoshan HTTP 401 → throw', async () => {
+    fetchSpy.mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+      json: () => Promise.reject(new Error('not json')),
+      text: () => Promise.resolve('{"error":"invalid token"}'),
+    } as unknown as Response)
+
+    const adapter = createLLM(makeConfig({ provider: 'huoshan', apiKey: 'ark-test-key' }))
+
+    await expect(adapter.generate('JD')).rejects.toThrow(/HTTP 401/)
   })
 
   // ----------------------------------------------------------------

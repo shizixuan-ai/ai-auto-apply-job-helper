@@ -16,8 +16,8 @@ export type LLMProvider = string
  * - openai:    OpenAI 协议，默认 https://api.openai.com/v1，模型 gpt-4o
  * - anthropic: Anthropic 协议，默认 https://api.anthropic.com，模型 claude-sonnet-4-20250514
  * - ollama:    OpenAI 协议（本地），默认 http://localhost:11434/v1，模型 llama3
- * - minimax:   Anthropic 协议，端点 https://api.minimaxi.com/anthropic（ADR §1 H1），模型 MiniMax-M2.7-highspeed
- * - huoshan:   火山方舟 coding plan，协议未定 → createLLM 抛 "尚未配置"（Phase 4 实施）
+ * - minimax:   Anthropic 协议，端点 https://api.minimaxi.com/anthropic（ADR §1 H1），模型 MiniMax-M2.7-highspeed，鉴权 Bearer（ADR-0012）
+ * - huoshan:   Anthropic 协议（火山方舟 coding plan），端点 https://ark.cn-beijing.volces.com/api/coding，模型 glm-5.2，鉴权 Bearer（ADR-0012）
  *
  * 用法：
  *   const provider: LLMProvider = LLM_PROVIDER_VALUES.MINIMAX  // IDE 拼写检查

@@ -34,6 +34,7 @@ export function createLLM(config: AppConfig): LLMAdapter {
         apiKey: apiKey ?? '',
         baseURL: baseURL ?? 'https://api.anthropic.com',
         model: model ?? 'claude-sonnet-4-20250514',
+        authStyle: 'x-api-key', // Anthropic 原生 API 标准（ADR-0012 §2.2）
       })
     case 'ollama':
       return new OpenAIAdapter({
@@ -43,17 +44,21 @@ export function createLLM(config: AppConfig): LLMAdapter {
       })
     case 'minimax':
       // Sprint 1D Phase 3（ADR-0011 §9.5）：Anthropic 协议端点
-      // baseURL 走 Anthropic 协议路径（不是 /v1），URL 字面证据 H1
+      // ADR-0012 §5 E3：minimaxi 官方文档用 ANTHROPIC_AUTH_TOKEN（Bearer），非 x-api-key（原实现是 bug）
       return new AnthropicCompatAdapter({
         apiKey: apiKey ?? '',
         baseURL: baseURL ?? 'https://api.minimaxi.com/anthropic',
         model: model ?? 'MiniMax-M2.7-highspeed',
+        authStyle: 'bearer',
       })
     case 'huoshan':
-      // 火山方舟 coding plan 协议未确认（等 user 提供 URL + protocol + model）
-      throw new Error(
-        'LLM 供应商 huoshan 尚未配置（等火山方舟 coding plan 协议确认后再启用，详见 ADR-0011 §10）',
-      )
+      // ADR-0012：火山方舟 coding plan = Anthropic 协议 + Bearer 鉴权（ANTHROPIC_AUTH_TOKEN）
+      return new AnthropicCompatAdapter({
+        apiKey: apiKey ?? '',
+        baseURL: baseURL ?? 'https://ark.cn-beijing.volces.com/api/coding',
+        model: model ?? 'glm-5.2',
+        authStyle: 'bearer',
+      })
     default:
       throw new Error(`不支持的 LLM 供应商: ${provider}`)
   }
@@ -100,35 +105,55 @@ class OpenAIAdapter implements LLMAdapter {
 }
 
 // ============================================================
-// Anthropic 协议兼容适配器（Sprint 1D Phase 3 / ADR-0011 §2.2）
+// Anthropic 协议兼容适配器（Sprint 1D Phase 3 / ADR-0011 §2.2 + ADR-0012）
 // ============================================================
-// 通用化 baseURL：覆盖 Anthropic 官方 + 任何走 /v1/messages + x-api-key 的兼容端点
-//   - Anthropic 官方:    https://api.anthropic.com
-//   - MiniMax:           https://api.minimaxi.com/anthropic（URL 字面证据 H1）
+// 通用化 baseURL + authStyle：覆盖 Anthropic 官方 + 任何走 /v1/messages 的兼容端点
+//   - Anthropic 官方:    https://api.anthropic.com          authStyle='x-api-key'
+//   - minimax:           https://api.minimaxi.com/anthropic  authStyle='bearer'（ADR-0012 §5 E3）
+//   - huoshan(火山方舟):  https://ark.cn-beijing.volces.com/api/coding  authStyle='bearer'（ADR-0012）
 //   - 未来其他兼容供应商: 由 createLLM switch case 传入
 //
-// 错误处理：沿用 ADR-0010 空内容 throw 纪律（fake green 防御）
+// 鉴权 header 分叉（ADR-0012 §7）：
+//   - 'x-api-key' → { 'x-api-key': apiKey }               （Anthropic 原生 API 标准）
+//   - 'bearer'    → { 'Authorization': `Bearer ${apiKey}` }（ANTHROPIC_AUTH_TOKEN 方式）
+//   两分支均恒发 'anthropic-version'（Claude Code 行为一致）
+//
+// 错误处理：沿用 ADR-0010 空内容 throw 纪律（fake green 防御）；authStyle 不新增错误边界
 // ============================================================
+
+type AnthropicAuthStyle = 'x-api-key' | 'bearer'
 
 export class AnthropicCompatAdapter implements LLMAdapter {
   private apiKey: string
   private baseURL: string
   private model: string
+  private authStyle: AnthropicAuthStyle
 
-  constructor(opts: { apiKey: string; baseURL: string; model: string }) {
+  constructor(opts: { apiKey: string; baseURL: string; model: string; authStyle?: AnthropicAuthStyle }) {
     this.apiKey = opts.apiKey
     this.baseURL = opts.baseURL
     this.model = opts.model
+    this.authStyle = opts.authStyle ?? 'x-api-key'
+  }
+
+  /** 按 authStyle 构造鉴权 + 版本 header（ADR-0012 §7） */
+  private buildHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'anthropic-version': '2023-06-01',
+    }
+    if (this.authStyle === 'bearer') {
+      headers['Authorization'] = `Bearer ${this.apiKey}`
+    } else {
+      headers['x-api-key'] = this.apiKey
+    }
+    return headers
   }
 
   async generate(prompt: string, system?: string): Promise<string> {
     const res = await fetch(`${this.baseURL}/v1/messages`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': this.apiKey,
-        'anthropic-version': '2023-06-01',
-      },
+      headers: this.buildHeaders(),
       body: JSON.stringify({
         model: this.model,
         max_tokens: 1024,
