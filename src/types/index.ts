@@ -266,6 +266,13 @@ export interface AppConfig {
     authStyle?: 'x-api-key' | 'bearer'
   }
   boss: {
+    /**
+     * BOSS 直聘在线简历 UID（来源 env BOSS_RESUME_UID）
+     * @deprecated 2026-07-21：当前 src/ 无任何消费点（grep 0 hit），是死配置。
+     *                      保留解析仅为不破坏现存 .env；
+     *                      下次 sprint 确认无新使用场景后可直接删 types 字段 + config 解析 + docs 表格。
+     *                      用户侧建议：.env 删 `BOSS_RESUME_UID=...` 行。
+     */
     resumeUid?: string
   }
   browser: {
