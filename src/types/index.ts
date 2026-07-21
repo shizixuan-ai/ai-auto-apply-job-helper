@@ -18,6 +18,9 @@ export type LLMProvider = string
  * - ollama:    OpenAI 协议（本地），默认 http://localhost:11434/v1，模型 llama3
  * - minimax:   Anthropic 协议，端点 https://api.minimaxi.com/anthropic（ADR §1 H1），模型 MiniMax-M2.7-highspeed，鉴权 Bearer（ADR-0012）
  * - huoshan:   Anthropic 协议（火山方舟 coding plan），端点 https://ark.cn-beijing.volces.com/api/coding，模型 glm-5.2，鉴权 Bearer（ADR-0012）
+ * - anthropic-compat: 通用 Anthropic 协议供应商（ADR-0013），所有字段从 env 读，无默认
+ *                    必须设 LLM_BASE_URL / LLM_MODEL / LLM_API_KEY;LLM_AUTH_STYLE 可选(默认 bearer)
+ *                    适配场景: deepseek v4 / 智谱 GLM API / 通义千问 Anthropic 兼容 / 任何 /v1/messages 端点
  *
  * 用法：
  *   const provider: LLMProvider = LLM_PROVIDER_VALUES.MINIMAX  // IDE 拼写检查
@@ -29,6 +32,7 @@ export const LLM_PROVIDER_VALUES = {
   OLLAMA: 'ollama',
   MINIMAX: 'minimax',
   HUOSHAN: 'huoshan',
+  ANTHROPIC_COMPAT: 'anthropic-compat',
 } as const
 
 /** 投递状态 */
@@ -253,6 +257,13 @@ export interface AppConfig {
     apiKey?: string
     baseURL?: string
     model?: string
+    /**
+     * Anthropic 协议鉴权 header 风格（ADR-0013）
+     * - 适用 provider: 'anthropic-compat'（其他 provider 自带硬编码 authStyle）
+     * - 合法值: 'x-api-key' | 'bearer'
+     * - unset → 'bearer'（默认，适配多数国产 Anthropic 兼容）
+     */
+    authStyle?: 'x-api-key' | 'bearer'
   }
   boss: {
     resumeUid?: string

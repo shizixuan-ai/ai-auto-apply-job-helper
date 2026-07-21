@@ -96,3 +96,49 @@ describe('loadConfig — LLM env 统一（Sprint 1D Phase 1, ADR-0011）', () =>
     )
   })
 })
+
+// ============================================================
+// loadConfig — LLM_AUTH_STYLE（ADR-0013）
+// ============================================================
+// R14: LLM_AUTH_STYLE=bearer → config.llm.authStyle === 'bearer'
+// R15: LLM_AUTH_STYLE=非法值 → throw "仅支持 'x-api-key' | 'bearer'"
+// R16: LLM_AUTH_STYLE unset → config.llm.authStyle === 'bearer'（默认）
+// ============================================================
+
+describe('loadConfig — LLM_AUTH_STYLE（ADR-0013）', () => {
+  beforeEach(() => {
+    // 最小 feishu env（loadConfig requireEnv 必需）
+    process.env.FEISHU_APP_ID = 'cli_test'
+    process.env.FEISHU_APP_SECRET = 'secret_test'
+    // 清掉本组关心的 env,避免其他测试残留
+    delete process.env.LLM_AUTH_STYLE
+    delete process.env.LLM_API_KEY
+  })
+
+  afterEach(() => {
+    delete process.env.LLM_AUTH_STYLE
+  })
+
+  it('R14: LLM_AUTH_STYLE=bearer → config.llm.authStyle === "bearer"', () => {
+    process.env.LLM_AUTH_STYLE = 'bearer'
+    const config = loadConfig()
+    expect(config.llm.authStyle).toBe('bearer')
+  })
+
+  it('R14: LLM_AUTH_STYLE=x-api-key → config.llm.authStyle === "x-api-key"', () => {
+    process.env.LLM_AUTH_STYLE = 'x-api-key'
+    const config = loadConfig()
+    expect(config.llm.authStyle).toBe('x-api-key')
+  })
+
+  it('R15: LLM_AUTH_STYLE=garbage → throw 含"仅支持" + 列表', () => {
+    process.env.LLM_AUTH_STYLE = 'bearer-x'
+    expect(() => loadConfig()).toThrow(/LLM_AUTH_STYLE.*仅支持.*x-api-key.*bearer/)
+  })
+
+  it('R16: LLM_AUTH_STYLE unset → config.llm.authStyle === "bearer"（默认）', () => {
+    // 不设 LLM_AUTH_STYLE
+    const config = loadConfig()
+    expect(config.llm.authStyle).toBe('bearer')
+  })
+})

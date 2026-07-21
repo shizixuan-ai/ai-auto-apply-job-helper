@@ -77,7 +77,24 @@ function parseLLMConfig(): AppConfig['llm'] {
     apiKey: process.env.LLM_API_KEY,
     baseURL: process.env.LLM_BASE_URL,
     model: process.env.LLM_MODEL,
+    // ADR-0013: LLM_AUTH_STYLE 仅 anthropic-compat 用,其他 provider 自带硬编码 authStyle(不改)
+    authStyle: parseAuthStyle(),
   }
+}
+
+/**
+ * 解析 LLM_AUTH_STYLE（ADR-0013 §2.2）
+ * - 未设 → 'bearer'（默认，多数国产 Anthropic 兼容是 Bearer）
+ * - 合法值 'x-api-key' | 'bearer' → 透传
+ * - 非法值 → throw（fail-fast，避免拼错静默用错 header）
+ */
+function parseAuthStyle(): 'x-api-key' | 'bearer' {
+  const raw = process.env.LLM_AUTH_STYLE
+  if (raw === undefined || raw === '') return 'bearer'
+  if (raw === 'x-api-key' || raw === 'bearer') return raw
+  throw new Error(
+    `LLM_AUTH_STYLE 仅支持 'x-api-key' | 'bearer'，got: ${raw}（详见 ADR-0013 §2.2）`,
+  )
 }
 
 /**

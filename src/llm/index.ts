@@ -59,6 +59,25 @@ export function createLLM(config: AppConfig): LLMAdapter {
         model: model ?? 'glm-5.2',
         authStyle: 'bearer',
       })
+    case 'anthropic-compat':
+      // ADR-0013: 通用 Anthropic 协议供应商，全 env 驱动，无硬编码默认
+      // baseURL / model 必填（fail-fast，避免假装"自动选 endpoint"的暗箱 §3.11）
+      // authStyle 从 config.llm.authStyle 读（env LLM_AUTH_STYLE,默认 bearer）
+      if (!apiKey) {
+        throw new Error('LLM 供应商 anthropic-compat 必填 LLM_API_KEY（详见 ADR-0013 §2.3）')
+      }
+      if (!baseURL) {
+        throw new Error('LLM 供应商 anthropic-compat 必填 LLM_BASE_URL（通用 provider 无默认 endpoint，详见 ADR-0013 §2.3）')
+      }
+      if (!model) {
+        throw new Error('LLM 供应商 anthropic-compat 必填 LLM_MODEL（通用 provider 无默认 model，详见 ADR-0013 §2.3）')
+      }
+      return new AnthropicCompatAdapter({
+        apiKey,
+        baseURL,
+        model,
+        authStyle: config.llm.authStyle ?? 'bearer',
+      })
     default:
       throw new Error(`不支持的 LLM 供应商: ${provider}`)
   }

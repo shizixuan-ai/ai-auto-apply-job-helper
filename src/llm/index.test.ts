@@ -420,3 +420,143 @@ describe('AnthropicCompatAdapter.generate', () => {
     await expect(adapter.generate('JD')).rejects.toThrow(/HTTP 401/)
   })
 })
+
+// ============================================================
+// createLLM — anthropic-compat 通用 provider（ADR-0013）
+// ============================================================
+// R11: apiKey/baseURL/model 全传 → 透传给 adapter,无默认填充
+// R12: 任一必填缺失 → throw fail-fast
+// R13: authStyle='bearer' | 'x-api-key' → 对应 header,互斥
+// ============================================================
+
+describe('createLLM — anthropic-compat（ADR-0013）', () => {
+  let fetchSpy: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    MockOpenAISpy.mockClear()
+    mockCreate.mockReset()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function mockOk(body: unknown): Response {
+    return {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: () => Promise.resolve(body),
+      text: () => Promise.resolve(JSON.stringify(body)),
+    } as unknown as Response
+  }
+
+  it('R11: 全字段传 → AnthropicCompatAdapter,baseURL/model 透传无默认', async () => {
+    fetchSpy.mockResolvedValueOnce(
+      mockOk({ content: [{ type: 'text', text: 'ok' }] }),
+    )
+
+    const adapter = createLLM(
+      makeConfig({
+        provider: 'anthropic-compat',
+        apiKey: 'sk-ac-test',
+        baseURL: 'https://api.deepseek.com/anthropic',
+        model: 'deepseek-v4-flash',
+
+        authStyle: 'x-api-key',
+      }),
+    )
+
+    await adapter.generate('JD')
+
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit]
+    // 关键:baseURL/model 透传,无任何"smart default" 注入
+    expect(url).toBe('https://api.deepseek.com/anthropic/v1/messages')
+    expect((init.body as string)).toContain('deepseek-v4-flash')
+  })
+
+  it('R12: 缺 apiKey → throw "必填 LLM_API_KEY"', () => {
+    expect(() =>
+      createLLM(
+        makeConfig({
+          provider: 'anthropic-compat',
+          apiKey: undefined,
+          baseURL: 'https://x.com/anthropic',
+          model: 'm',
+        }),
+      ),
+    ).toThrow(/anthropic-compat.*必填.*LLM_API_KEY/)
+  })
+
+  it('R12: 缺 baseURL → throw "必填 LLM_BASE_URL"', () => {
+    expect(() =>
+      createLLM(
+        makeConfig({
+          provider: 'anthropic-compat',
+          apiKey: 'sk-x',
+          baseURL: undefined,
+          model: 'm',
+        }),
+      ),
+    ).toThrow(/anthropic-compat.*必填.*LLM_BASE_URL/)
+  })
+
+  it('R12: 缺 model → throw "必填 LLM_MODEL"', () => {
+    expect(() =>
+      createLLM(
+        makeConfig({
+          provider: 'anthropic-compat',
+          apiKey: 'sk-x',
+          baseURL: 'https://x.com/anthropic',
+          model: undefined,
+        }),
+      ),
+    ).toThrow(/anthropic-compat.*必填.*LLM_MODEL/)
+  })
+
+  it('R13: authStyle=bearer → Authorization: Bearer,无 x-api-key', async () => {
+    fetchSpy.mockResolvedValueOnce(mockOk({ content: [{ type: 'text', text: 'ok' }] }))
+
+    const adapter = createLLM(
+      makeConfig({
+        provider: 'anthropic-compat',
+        apiKey: 'sk-bearer',
+        baseURL: 'https://x.com/anthropic',
+        model: 'm',
+
+        authStyle: 'bearer',
+      }),
+    )
+
+    await adapter.generate('JD')
+
+    const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit]
+    const headers = init.headers as Record<string, string>
+    expect(headers['Authorization']).toBe('Bearer sk-bearer')
+    expect(headers['x-api-key']).toBeUndefined()
+  })
+
+  it('R13: authStyle=x-api-key → x-api-key,无 Authorization', async () => {
+    fetchSpy.mockResolvedValueOnce(mockOk({ content: [{ type: 'text', text: 'ok' }] }))
+
+    const adapter = createLLM(
+      makeConfig({
+        provider: 'anthropic-compat',
+        apiKey: 'sk-xapi',
+        baseURL: 'https://x.com/anthropic',
+        model: 'm',
+
+        authStyle: 'x-api-key',
+      }),
+    )
+
+    await adapter.generate('JD')
+
+    const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit]
+    const headers = init.headers as Record<string, string>
+    expect(headers['x-api-key']).toBe('sk-xapi')
+    expect(headers['Authorization']).toBeUndefined()
+  })
+})
