@@ -303,9 +303,29 @@ export async function closeBrowserSession(session: {
 // 登录（扫码）
 // ============================================================
 
+/**
+ * 假绿防御：URL 不在 /user/ + cookies 含真 auth token（__zp_stoken__ 或 zp_at）
+ * - 2026-07-21 live 发现：BOSS 服务端短期 session 缓存 + 临时追踪 cookie（无 __zp_stoken__）
+ *   就能让首屏 URL 跳到非 /user/ 路径，原 URL 检查误判"已登录" → 立即关浏览器，user 永远扫不了 QR
+ * - 真 auth token（__zp_stoken__ / zp_at）只有扫码后服务端才会签发
+ */
+async function isLoggedIn(page: any): Promise<boolean> {
+  const url = page.url()
+  if (!url.includes('zhipin.com') || url.includes('/user/')) return false
+  const cookies = await page.context().cookies()
+  return cookies.some(
+    (c: { name: string; domain?: string }) =>
+      c.domain?.includes('zhipin.com') &&
+      (c.name === '__zp_stoken__' || c.name === 'zp_at'),
+  )
+}
+
 export async function loginByQR(page: any): Promise<void> {
   await page.goto(BOSS_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 })
-  if (page.url().includes('zhipin.com') && !page.url().includes('/user/')) {
+  // 假绿防御（2026-07-21 live 发现）：URL 检查 + cookies 必含 __zp_stoken__ 或 zp_at
+  // 仅 URL 不在 /user/ 不足以证明已登录 —— BOSS 服务端短期 session 缓存 + 临时追踪 cookie
+  // 也能让首屏跳到非 /user/ 路径，导致"已登录"误判，关闭浏览器，user 永远看不到 QR
+  if (await isLoggedIn(page)) {
     console.log('✅ Cookie 有效，已登录')
     return
   }
@@ -320,7 +340,8 @@ export async function loginByQR(page: any): Promise<void> {
   while (true) {
     await new Promise(r => setTimeout(r, 1000))
 
-    if (page.url().includes('zhipin.com') && !page.url().includes('/user/')) {
+    // 假绿防御：QR 等待循环里也用 isLoggedIn（不再只看 URL）
+    if (await isLoggedIn(page)) {
       console.log('\n✅ 登录成功')
       await new Promise(r => setTimeout(r, 2000))
       return
