@@ -149,8 +149,9 @@ AnthropicCompatAdapter.generate()
 ## 10. 后续（不在本 ADR）
 
 - [x] **huoshan live 已验**（2026-07-21）：`scripts/smoke-llm.mjs` 真实打 `ark.cn-beijing.volces.com/api/coding/v1/messages` → HTTP 200 + Bearer 鉴权通过 + 返回「在线，我是智谱GLM大模型。」。**Bearer 鉴权决策 live 证实正确**（无 401）。
+- [x] **minimax live 已验**（2026-07-21）：inline `LLM_PROVIDER=minimax` 真实打 `https://api.minimaxi.com/anthropic/v1/messages` → HTTP 200 + Bearer 鉴权通过 + 返回「在线，我是 MiniMax-M2.7。」**minimax x-api-key→Bearer bug fix live 闭环**(无 401,确认 minimaxi 只认 Bearer)。
 - [x] **live 暴露 bug 并修复**：glm-5.2 是推理模型，`content[0]` 是 `{type:'thinking'}` 块，原 adapter 写死 `content[0].text` → 误判空内容抛错。已改为 filter `type==='text'` 拼接（见下方 Debug Gate #2 + TEST R10）。
-- [ ] **minimax(Bearer) live 待验**：本轮只验了 huoshan；minimax 的 Bearer 修复仍 `[未证明: live 待验]`（需 minimaxi key）。
+- [x] ~~**minimax(Bearer) live 待验**~~ → 已验,见上
 - [ ] **minimax model 默认值**：minimaxi 文档最新示例是 `MiniMax-M3`，现默认 `MiniMax-M2.7-highspeed`。本 ADR **不动**（避免混入无关变更），待 user 确认是否升级。
 - [ ] **真实 KEY revoke**（ADR-0011 §10 遗留）：起草期 user 曾贴过 minimax KEY，建议 revoke 重发。
 - [ ] **glm-5.2 延迟**：live 单轮 ~26s（推理模型思考耗时）。auto-greet 批量场景需评估超时/并发。
@@ -189,4 +190,4 @@ AnthropicCompatAdapter.generate()
 | 6 | anthropic 官方保持 x-api-key | **[已确认]** | Anthropic 原生 API 标准 |
 | 7 | minimax model 默认值升级到 MiniMax-M3 | **[待确认]** | §10 待 user 定 |
 | 8 | huoshan live 可跑（glm-5.2 端到端） | **[已确认]** | smoke-llm.mjs 实测 HTTP 200 + Bearer + 返回文本（§10） |
-| 9 | minimax live 可跑 | **[未证明]** | 无 minimaxi key，§10 live 待验 |
+| 9 | minimax live 可跑 | **[已确认]** | inline LLM_PROVIDER=minimax smoke 实测 HTTP 200 + Bearer + 返回「在线，我是 MiniMax-M2.7。」 |
