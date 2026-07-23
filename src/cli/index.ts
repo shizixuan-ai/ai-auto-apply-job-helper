@@ -871,4 +871,12 @@ program
     console.log(chalk.cyan(out))
   })
 
-program.parse()
+// §3.9 顶层错误兜底（2026-07-23 Debug Gate）：
+//   commander 的 async .action() 抛错默认不接 → unhandled promise rejection → Node 崩溃
+//   （原 `program.parse()` 从建文件起 806a7d9 就无兜底）。搜索被反爬打穿等领域错误
+//   经 handler catch 后 re-throw，此前一路逃到这里变成难看的 stack-trace 崩溃。
+//   改用 parseAsync().catch()：任何 throw → 干净的红字提示 + 退出码 1。
+program.parseAsync().catch((err: any) => {
+  console.error(chalk.red(`\n❌ ${err?.message ?? err}`))
+  process.exit(1)
+})

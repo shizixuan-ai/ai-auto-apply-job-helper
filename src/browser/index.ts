@@ -809,14 +809,29 @@ export async function searchJobs(
   if (apiResult.message) console.warn(`   原因: ${apiResult.message}`)
   if (apiResult.error) console.warn(`   异常: ${apiResult.error}`)  // Sprint 2B P0: page.evaluate fetch 抛错信息
 
-  await page.goto(`https://www.zhipin.com/web/geek/job?query=${encodeURIComponent(keyword)}`, {
-    waitUntil: 'domcontentloaded',
-    timeout: 30_000,
-  })
+  // §3.9 错误传播：fallback 的 page.goto 是「降级路径的降级路径」，此前(806a7d9,
+  //   2026-06-30 建文件起)裸奔无 try/catch。API 主路径一旦被反爬打穿走到这里，
+  //   BOSS 常直接掐连接(ERR_CONNECTION_CLOSED) / 导航失败 → 原始 Playwright 错误
+  //   逃出 searchJobs → CLI 顶层无兜底 → Node uncaught 崩溃。
+  //   这里把它转成「可操作的领域错误」：告诉用户是反爬 + 给下一步建议。
+  //   ⚠️ 保留原始 err.message 作为括号内证据（§3.8 不截断调试信息），方便归因。
+  try {
+    await page.goto(`https://www.zhipin.com/web/geek/job?query=${encodeURIComponent(keyword)}`, {
+      waitUntil: 'domcontentloaded',
+      timeout: 30_000,
+    })
+  } catch (err: any) {
+    throw new Error(
+      `搜索失败：BOSS 反爬拦截了 API 直调与降级页面加载（${err?.message ?? '未知错误'}）。` +
+        `当前 session/IP 很可能已被风控标记。建议：稍后重试、更换网络 IP、降低搜索频率。`,
+    )
+  }
 
   // 如果被重定向，已无计可施
   if (page.url() === 'about:blank') {
-    throw new Error('页面被反爬拦截，请使用 --cdp 模式连接真实 Chrome')
+    throw new Error(
+      '页面被反爬拦截（降级页面重定向到空白页）。建议：用 --cdp 连接已登录的真实 Chrome，或稍后重试 / 更换网络 IP。',
+    )
   }
 
   const domJobs = await extractJobsFromDOM(page)
