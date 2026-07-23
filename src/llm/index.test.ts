@@ -77,14 +77,14 @@ describe('createLLM — 供应商 switch', () => {
     mockCreate.mockReset()
   })
 
-  it('deepseek → OpenAIAdapter，baseURL=https://api.deepseek.com/v1', () => {
+  it('deepseek → OpenAIAdapter，baseURL=https://api.deepseek.com（2026-07-23 跟官方文档对齐，无 /v1）', () => {
     createLLM(makeConfig({ provider: 'deepseek', apiKey: 'sk-ds-test' }))
 
     expect(MockOpenAISpy).toHaveBeenCalledTimes(1)
     expect(MockOpenAISpy).toHaveBeenCalledWith(
       expect.objectContaining({
         apiKey: 'sk-ds-test',
-        baseURL: 'https://api.deepseek.com/v1',
+        baseURL: 'https://api.deepseek.com',
       }),
     )
   })
@@ -181,6 +181,142 @@ describe('createLLM — 供应商 switch', () => {
     } finally {
       vi.unstubAllGlobals()
     }
+  })
+
+  // ----------------------------------------------------------
+  // Sprint 2026-07-23: LLM_ADAPTER 显式选择协议（协议/供应商解耦）
+  // ----------------------------------------------------------
+  // 背景：用户 LLM_PROVIDER=deepseek + LLM_BASE_URL=/anthropic → OpenAIAdapter 写死
+  //   绑 deepseek，发 OpenAI 格式到 Anthropic 端点 → 404。新加 LLM_ADAPTER 字段
+  //   让用户显式选协议，LLM_PROVIDER 退化为纯标签。
+  // 决策（user 2026-07-23）：LLM_ADAPTER 缺失默认 'anthropic'。
+  // 兼容：LLM_ADAPTER 未设时，老 provider → adapter 映射保持原行为（无破坏）。
+
+  it('Sprint 2026-07-23: adapter="anthropic" + provider="deepseek" → AnthropicCompatAdapter（解耦关键 case）', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: () => Promise.resolve({ content: [{ type: 'text', text: 'v4 招呼' }] }),
+      text: () => Promise.resolve('{"content":[{"type":"text","text":"v4 招呼"}]}'),
+    } as unknown as Response)
+    vi.stubGlobal('fetch', fetchSpy)
+
+    try {
+      // 关键：provider=deepseek + adapter=anthropic + baseURL=/anthropic 端点
+      //   → 必须走 AnthropicCompatAdapter，不能走 OpenAIAdapter
+      const adapter = createLLM(makeConfig({
+        provider: 'deepseek',
+        adapter: 'anthropic',
+        apiKey: 'sk-ds-test',
+        baseURL: 'https://api.deepseek.com/anthropic',
+        model: 'deepseek-v4-flash',
+      }))
+      const result = await adapter.generate('JD 内容')
+
+      expect(result).toBe('v4 招呼')
+
+      const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit]
+      expect(url).toBe('https://api.deepseek.com/anthropic/v1/messages')
+      const headers = init.headers as Record<string, string>
+      expect(headers['Authorization']).toBe('Bearer sk-ds-test')
+      expect(headers['anthropic-version']).toBe('2023-06-01')
+      expect(init.body).toContain('deepseek-v4-flash')
+      // 关键断言：OpenAI SDK 绝不能被调用
+      expect(MockOpenAISpy).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('Sprint 2026-07-23: adapter="openai" + provider="deepseek" → 显式 OpenAIAdapter（覆盖 provider 推断）', () => {
+    const adapter = createLLM(makeConfig({
+      provider: 'deepseek',
+      adapter: 'openai',
+      apiKey: 'sk-ds-test',
+    }))
+
+    // 即便 AnthropicCompatAdapter 存在,显式 adapter=openai 也要走 OpenAI
+    expect(MockOpenAISpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiKey: 'sk-ds-test',
+        baseURL: 'https://api.deepseek.com', // 2026-07-23: 跟官方文档对齐(无 /v1)
+      }),
+    )
+  })
+
+  it('Sprint 2026-07-23: adapter 缺失 + provider=deepseek → 走老推断 OpenAIAdapter（向后兼容）', () => {
+    createLLM(makeConfig({ provider: 'deepseek', apiKey: 'sk-ds-test' }))
+
+    expect(MockOpenAISpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiKey: 'sk-ds-test',
+        baseURL: 'https://api.deepseek.com', // 2026-07-23: 跟官方文档对齐(无 /v1)
+      }),
+    )
+  })
+
+  it('Sprint 2026-07-23: adapter="anthropic" + authStyle="x-api-key" → 显式 x-api-key header', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: () => Promise.resolve({ content: [{ type: 'text', text: 'ok' }] }),
+      text: () => Promise.resolve('{"content":[{"type":"text","text":"ok"}]}'),
+    } as unknown as Response)
+    vi.stubGlobal('fetch', fetchSpy)
+
+    try {
+      const adapter = createLLM(makeConfig({
+        provider: 'deepseek',
+        adapter: 'anthropic',
+        authStyle: 'x-api-key',
+        apiKey: 'sk-x-api-key-test',
+        baseURL: 'https://api.deepseek.com/anthropic',
+      }))
+      await adapter.generate('JD')
+
+      const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit]
+      const headers = init.headers as Record<string, string>
+      expect(headers['x-api-key']).toBe('sk-x-api-key-test')
+      expect(headers['Authorization']).toBeUndefined()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  // ----------------------------------------------------------
+  // Sprint 2026-07-23 (cont): DeepSeek V4-flash 适配
+  // ----------------------------------------------------------
+  // 背景：Anthropic 协议下 V4-flash 强制 thinking,占满 1024 token 不出 text
+  // 修法：OpenAI 协议 + thinking:disabled + response_format:json_object
+  // probe-deepseek-thinking-off.mjs 实测三个 Q 全过
+
+  it('Sprint 2026-07-23: adapter="openai" + provider="deepseek" → 默认开 thinking:disabled + response_format:json_object', async () => {
+    const adapter = createLLM(makeConfig({
+      provider: 'deepseek',
+      adapter: 'openai',
+      apiKey: 'sk-ds-test',
+      baseURL: 'https://api.deepseek.com', // 2026-07-23: 跟官方文档对齐
+      model: 'deepseek-v4-flash',
+    }))
+
+    // 关键断言：构造时传 thinking + responseFormat
+    expect(MockOpenAISpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiKey: 'sk-ds-test',
+        baseURL: 'https://api.deepseek.com',
+      }),
+    )
+    // 验证 generate 行为：调 chat.completions.create 时 body 包含 thinking + response_format
+    mockCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: '{"totalScore": 0.8}' }, finish_reason: 'stop' }],
+    })
+    await adapter.generate('JD 文本')
+
+    const callArgs = mockCreate.mock.calls[0][0] as any
+    expect(callArgs.thinking).toEqual({ type: 'disabled' })
+    expect(callArgs.response_format).toEqual({ type: 'json_object' })
   })
 })
 

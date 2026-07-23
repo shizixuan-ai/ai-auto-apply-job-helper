@@ -74,12 +74,29 @@ function parseLLMConfig(): AppConfig['llm'] {
 
   return {
     provider: (process.env.LLM_PROVIDER ?? 'deepseek') as LLMProvider,
+    // Sprint 2026-07-23: 协议/供应商解耦。LLM_ADAPTER 缺失默认 'anthropic'(user 决策)
+    adapter: parseLLMAdapter(),
     apiKey: process.env.LLM_API_KEY,
     baseURL: process.env.LLM_BASE_URL,
     model: process.env.LLM_MODEL,
-    // ADR-0013: LLM_AUTH_STYLE 仅 anthropic-compat 用,其他 provider 自带硬编码 authStyle(不改)
+    // ADR-0013: LLM_AUTH_STYLE 仅 anthropic 协议用 (不论 provider)
     authStyle: parseAuthStyle(),
   }
+}
+
+/**
+ * 解析 LLM_ADAPTER（Sprint 2026-07-23）
+ * - 未设 → 'anthropic'（默认，user 决策）
+ * - 合法值 'anthropic' | 'openai' → 透传
+ * - 非法值 → throw（fail-fast，避免拼错静默走错协议 §3.11）
+ */
+function parseLLMAdapter(): 'anthropic' | 'openai' {
+  const raw = process.env.LLM_ADAPTER
+  if (raw === undefined || raw === '') return 'anthropic'
+  if (raw === 'anthropic' || raw === 'openai') return raw
+  throw new Error(
+    `LLM_ADAPTER 仅支持 'anthropic' | 'openai'，got: ${raw}（详见 2026-07-23 LLM 协议/供应商解耦决策）`,
+  )
 }
 
 /**

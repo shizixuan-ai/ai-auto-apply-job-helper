@@ -147,7 +147,15 @@ Error: 登录已失效，请先运行 bapply login 重新扫码登录
   - 起 `scripts/probe-search-after-login.mjs`：login --cdp → 立即 print `page.url()` + `context.cookies()`，再 `page.goto('/web/geek/recommend')` → print 跳转后的 URL + response headers
   - 但 live 跑通 = 即使 BOSS strict-reject 也被新 `hasAuthToken` 兜住 → **不必立即起 probe**
 - **live 跑同时暴露 2 个独立新 bug**（与本次修复无关，另起 issue）：
-  - `fetchJobDetailViaWapi 404 status code (no body)`：securityId 失效 / URL 模板错 → 影响写飞书
+  - **【已修正 / 2026-07-23 Sprint 4】** ~~`fetchJobDetailViaWapi 404 status code (no body)`：securityId 失效 / URL 模板错 → 影响写飞书~~
+    - **真实根因(2026-07-23 5 轮 debug 锁定)**：错误字串 "404 status code (no body)" 来自 `node_modules/openai/error.js:32` 的 OpenAI SDK wrap 格式,**不是 BOSS card.json**。BOSS search + card.json 都 200 OK(由 `scripts/probe-card-404-retry.mjs` / `probe-card-404-vs-browser.mjs` 隔离验证)。
+    - **真实失败点**:`runSearchAndWrite` for 循环里的 `scoreJob(jd, summary, llm)` 调 LLM provider,DeepSeek V4-flash 端点配置错误 → 404 → 经 OpenAI SDK wrap 成 "404 status code (no body)" → 顶层 catch 误以为是 BOSS 失败。
+    - **修法**:
+      1. `src/llm/index.ts` 加 `LLM_ADAPTER` 字段(协议/供应商解耦,user 决策 2026-07-23)
+      2. `OpenAIAdapter` 默认开 `thinking: { type: 'disabled' }` + `response_format: { type: 'json_object' }`(关 V4-flash reasoning 阶段占 token + 强制纯 JSON)
+      3. `LLM_BASE_URL` 默认从 `https://api.deepseek.com/v1` 改为 `https://api.deepseek.com`(跟 DeepSeek 官方文档对齐)
+      4. `.env`: `LLM_ADAPTER=openai` / `LLM_BASE_URL=https://api.deepseek.com` / `LLM_MODEL=deepseek-v4-flash`
+    - **验证**:probe 4 个全过(开/关 thinking、JSON mode、真实 6 维评分);live `bapply search` 3/3 评分成功,0 失败。
   - `searchJobs DOM fallback: Execution context was destroyed`：BOSS SPA navigation → page.evaluate 上下文销毁 → 已知（fetchPageJson 双重 try/catch 已部分防御），warning 噪音
 - **未来 BOSS 改扫码后落点**（如改到 `/beijing/`）：`hasAuthIn` cookie-only 与 URL 无关，零影响
 - **未来 BOSS 改 cookie 名**（如加 `__zp_stoken__v2`）：`hasAuthToken` 失效 → 修一行即可（参见 79fd0f5 同款缓解）

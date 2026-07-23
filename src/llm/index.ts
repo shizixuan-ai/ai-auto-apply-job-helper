@@ -13,14 +13,77 @@ export interface LLMAdapter {
   generate(prompt: string, system?: string): Promise<string>
 }
 
-/** 创建适配合适的 LLM 适配器 */
+/**
+ * Sprint 2026-07-23 决策：协议（adapter）与供应商（provider）解耦。
+ *
+ * 设计动机：
+ *   同一供应商可能同时提供 OpenAI 协议端点和 Anthropic 协议端点
+ *   （如 DeepSeek /v1 vs /anthropic）。让用户显式选，不再由 provider 写死绑。
+ *
+ * 优先级（缺一不可）：
+ *   1. config.llm.adapter 显式设了 → 完全用 adapter，provider 退化为日志/记账
+ *   2. adapter 未设 → 按 provider 推断（保持老 .env 行为，向后兼容）
+ *
+ * 默认值（user 决策 2026-07-23）：
+ *   - adapter 缺失 → 'anthropic'（Anthropic 协议优先，覆盖原 deepseek→OpenAI 隐式行为）
+ *   - authStyle 缺失 → 'bearer'（ADR-0013）
+ */
 export function createLLM(config: AppConfig): LLMAdapter {
-  const { provider, apiKey, baseURL, model } = config.llm
+  const { provider, adapter, apiKey, baseURL, model, authStyle } = config.llm
+
+  // ===== 路径 1：adapter 显式（user 2026-07-23 决策） =====
+  if (adapter === 'openai') {
+    // adapter='openai' 仍按 provider 选默认 OpenAI 兼容端点
+    // （不绑死 api.openai.com,因为 deepseek/ollama 也提供 OpenAI 协议）
+    const fallbackBaseURL =
+      baseURL ?? (
+        provider === 'openai'   ? 'https://api.openai.com/v1' :
+        provider === 'ollama'   ? 'http://localhost:11434/v1' :
+        'https://api.deepseek.com'  // Sprint 2026-07-23: 跟 DeepSeek 官方文档对齐(无 /v1)
+      )
+    const fallbackModel = model ?? (provider === 'ollama' ? 'llama3' : 'gpt-4o')
+    return new OpenAIAdapter({
+      apiKey: apiKey ?? '',
+      baseURL: fallbackBaseURL,
+      model: fallbackModel,
+    })
+  }
+  if (adapter === 'anthropic') {
+    // Sprint 2026-07-23：adapter='anthropic' 不再绑死 provider
+    // - baseURL 缺失时按 provider 给一个合理默认,但用户几乎都会显式设
+    // - authStyle 从 config.llm.authStyle 读（缺失默认 'bearer'）
+    // - 此路径**不**强制 baseURL/model 必填（与 anthropic-compat 不同，向后兼容老推断）
+    const fallbackBaseURL =
+      baseURL ?? (
+        provider === 'anthropic' ? 'https://api.anthropic.com' :
+        provider === 'minimax'   ? 'https://api.minimaxi.com/anthropic' :
+        provider === 'huoshan'   ? 'https://ark.cn-beijing.volces.com/api/coding' :
+        'https://api.deepseek.com/anthropic'  // 最常见的默认（user 2026-07-23 用例）
+      )
+    const fallbackModel =
+      model ?? (
+        provider === 'anthropic' ? 'claude-sonnet-4-20250514' :
+        provider === 'minimax'   ? 'MiniMax-M2.7-highspeed' :
+        provider === 'huoshan'   ? 'glm-5.2' :
+        'deepseek-chat'
+      )
+    return new AnthropicCompatAdapter({
+      apiKey: apiKey ?? '',
+      baseURL: fallbackBaseURL,
+      model: fallbackModel,
+      authStyle: authStyle ?? 'bearer',
+    })
+  }
+
+  // ===== 路径 2：adapter 未设,按 provider 推断(向后兼容老 .env) =====
   switch (provider) {
     case 'deepseek':
       return new OpenAIAdapter({
         apiKey: apiKey ?? '',
-        baseURL: baseURL ?? 'https://api.deepseek.com/v1',
+        // Sprint 2026-07-23: 跟 DeepSeek 官方文档对齐(无 /v1)
+        // OpenAI SDK 自动归一化(加 /v1),实际请求仍是 /v1/chat/completions
+        // 旧值 'https://api.deepseek.com/v1' 仍能跑,但与文档不一致
+        baseURL: baseURL ?? 'https://api.deepseek.com',
         model: model ?? 'deepseek-chat',
       })
     case 'openai':
@@ -86,6 +149,17 @@ export function createLLM(config: AppConfig): LLMAdapter {
 // ============================================================
 // OpenAI 兼容适配器（DeepSeek / OpenAI / Ollama）
 // ============================================================
+// Sprint 2026-07-23: 默认开 thinking:disabled + response_format:json_object
+//   原因：DeepSeek V4-flash 在 OpenAI 模式默认开 thinking,占满 token 不出 text
+//   probe-deepseek-thinking-off.mjs 实测:
+//     - thinking:disabled 后 reasoning_content 消失
+//     - response_format:json_object 后 100% 纯 JSON
+//   开关默认开:DeepSeek 用户受益,OpenAI/Ollama 用户这两个参数被忽略(无害)
+//
+//   ⚠️ user 决策 (2026-07-23): 默认开,不是 opts 暴露
+//   理由:LLM 输出 99% 场景是 JSON,默认开更安全;
+//        非 JSON 场景可在 prompt 里 override
+// ============================================================
 
 class OpenAIAdapter implements LLMAdapter {
   private client: OpenAI
@@ -107,6 +181,13 @@ class OpenAIAdapter implements LLMAdapter {
       model: this.model,
       messages,
       temperature: 0.7,
+      // Sprint 2026-07-23: 关 V4-flash thinking,避免 reasoning 阶段占满 token
+      // DeepSeek OpenAI 协议专属参数(参考 docs/guides/thinking_mode)
+      // OpenAI / Ollama 后端忽略(无害)
+      thinking: { type: 'disabled' },
+      // Sprint 2026-07-23: 强制 JSON 输出(避免 LLM 包 markdown fence)
+      // DeepSeek V4-flash / OpenAI 支持;Ollama 部分支持
+      response_format: { type: 'json_object' },
     })
 
     // 审计修复（穷尽审计发现）：与 Anthropic 同样的 fake green 漏洞

@@ -249,6 +249,17 @@ export interface AppConfig {
   llm: {
     provider: LLMProvider
     /**
+     * Sprint 2026-07-23 / 404-retry-5 轮教训：
+     * 协议（adapter）与供应商（provider）解耦 —— 同一供应商可能同时提供 OpenAI 协议端点
+     * 和 Anthropic 协议端点（如 DeepSeek /v1 vs /anthropic）。让用户显式选，不再写死绑。
+     * - 适用场景：用户在 .env 设 LLM_BASE_URL 指 /anthropic 端点但 LLM_PROVIDER=deepseek 时
+     *   旧实现会发 OpenAI 格式到 Anthropic 端点 → 404
+     * - 合法值: 'anthropic' | 'openai'
+     * - unset → 'anthropic'（默认，2026-07-23 决策）
+     * - 显式设了 → 完全覆盖 provider 推断的旧行为
+     */
+    adapter?: 'anthropic' | 'openai'
+    /**
      * Sprint 1D Phase 2（ADR-0011 §2.3）：通用 3 字段
      * - apiKey:   通用 API key（来源 env LLM_API_KEY）
      * - baseURL:  通用 base URL（来源 env LLM_BASE_URL，可选 — provider 自带默认）
@@ -259,7 +270,7 @@ export interface AppConfig {
     model?: string
     /**
      * Anthropic 协议鉴权 header 风格（ADR-0013）
-     * - 适用 provider: 'anthropic-compat'（其他 provider 自带硬编码 authStyle）
+     * - 适用场景：adapter='anthropic' 时（不论 provider 是什么）
      * - 合法值: 'x-api-key' | 'bearer'
      * - unset → 'bearer'（默认，适配多数国产 Anthropic 兼容）
      */
