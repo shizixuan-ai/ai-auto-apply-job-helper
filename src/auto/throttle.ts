@@ -1,12 +1,15 @@
 // ============================================================
-// src/auto/throttle.ts — Sprint B-1 §7.4 决策树 + §12 修复
+// src/auto/throttle.ts — Sprint B-1 §7.4 决策树 + §12 修复 + Sprint C-3 CounterStore 集成
 // ------------------------------------------------------------
-// 状态: 骨架 (RED 阶段 per §4.1)
+// 状态: GREEN (per §4.1)
 // ADR-0016 §7.4: 流程图 8 节点决策树
-// ADR-0016 §12:  3 个可靠性补丁 (Sprint B-1 仅 §12 涉及 throttle 主逻辑的
-//                部分 = weekend + 17:30; Issue 1-3 完整链路在 Sprint B-2)
+// ADR-0016 §12:  3 个可靠性补丁 (Sprint B 完整)
+// Sprint C-3:    §14.5 ThrottleDeps.counterStore → CounterStore type (替换 inline type)
 // 纪律:   §3.13 错误分层 (this.layer='THROTTLE'); §3.5 4 类图已画在 ADR §7
+//         §3.10 refactor: 接口形状不变 (load + writeAtomic), 11 旧测试 0 修改
 // ============================================================
+
+import type { CounterStore } from './counter-store'
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -106,10 +109,7 @@ export interface Job {
 export interface ThrottleDeps {
   now: () => number
   rand: () => number                     // [0, 1)
-  counterStore: {
-    load: (date: string) => Promise<DailyCounter | null>
-    writeAtomic: (counter: DailyCounter) => Promise<void>
-  }
+  counterStore: CounterStore             // Sprint C-3: 替换原 inline { load, writeAtomic }
   sendGreeting?: (job: Job) => Promise<void>           // §12 Issue 1+3
   loginByQR?: () => Promise<void>                      // §12 Issue 3
   accountMeta: AccountMeta

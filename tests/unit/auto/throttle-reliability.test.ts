@@ -243,3 +243,53 @@ it('T10: sendGreeting 抛 SessionExpiredError + loginByQR 也失败 → throw (�
   // 关键: counter.sent 已 +1 (T7 顺序倒置语义)
   expect(counter.sent).toBe(1)
 })
+
+// ─── T20: 加固 SIGTERM handler 不调 process.exit (per §14.8 F5 + R5) ─
+
+it('T20: SIGTERM handler 完成后不调 process.exit (per §14.8 F5 + R5)', async () => {
+  // §3.10 refactor + R5 加固: 显式断言 handler 内禁止调 process.exit
+  // 否则 cron 误以为 "完成" 而下次 run 误读 counter 状态
+  setClock(new Date('2026-07-28T09:10:00').getTime())
+  seedRandom(0)
+
+  const counter: DailyCounter = { ...baseCounter, sent: 0, cap: 40 }
+  const writes: number[] = []
+  const deps = makeDeps({
+    counterStore: {
+      load: async () => ({ ...counter }),
+      writeAtomic: async (c: DailyCounter) => {
+        writes.push(c.sent)
+        Object.assign(counter, c)
+      },
+    },
+  })
+
+  // 1) 触发 throttleSend 装 SIGTERM handler
+  await throttleSend(
+    { id: 'j1' },
+    deps,
+    { ...baseConfig, installSignal: true } as AutoConfig & { installSignal?: boolean },
+  )
+
+  // 2) mock process.exit: 若被调, 抛错让测试 fail (per §14.8 F5)
+  const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+    throw new Error('process.exit called inside SIGTERM handler (per §14.8 F5 + R5 must NOT call exit)')
+  }) as never)
+
+  try {
+    // 3) 取出并触发 SIGTERM handler
+    const sig = (process.listeners('SIGTERM') as Array<() => void>).at(-1)
+    expect(sig, '应该已注册 SIGTERM handler').toBeDefined()
+    if (sig) sig()
+
+    // 关键断言 1: handler 内部未触发 process.exit (没抛 → 没被调)
+    expect(exitSpy).not.toHaveBeenCalled()
+
+    // 关键断言 2: writeAtomic 至少 2 次 (1 正常 + 1 SIGTERM flush)
+    expect(writes.length).toBeGreaterThanOrEqual(2)
+    expect(writes.at(-1)).toBe(1)  // 最后一次 write sent=1 (flush 时 counter 状态)
+    expect(counter.sent).toBe(1)
+  } finally {
+    exitSpy.mockRestore()
+  }
+})

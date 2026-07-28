@@ -687,7 +687,7 @@ TDD 5 测试 (per §4.3 上限 5) 用于 throttle;config schema 走 **2 个新 R
 | "11:30:00 throw DailyDone" → "11:30:00 sleep lunch_break" | §8 T1 | 早期草稿与 §7.4 矛盾; Sprint B-1 实施按 §7.4 验证 |
 | 4 个 Step ⏳ 草稿 → ✅ Sprint B 完成 | §8 状态表 | Sprint B-1 + B-2 全部 GREEN |
 
-### 13.5 §9 后续清单进度 (本会话已完成 4/12)
+### 13.5 §9 后续清单进度 (本会话已完成 5/12)
 
 - [x] `scripts/probe-throttle-logic.mjs` (Sprint B Phase B) - 14/14 PASS
 - [x] `src/auto/throttle.ts` 实施 - 11/11 GREEN
@@ -701,7 +701,7 @@ TDD 5 测试 (per §4.3 上限 5) 用于 throttle;config schema 走 **2 个新 R
 - [x] `tests/unit/cli/handlers/auto-handler.test.ts` - T14-T16 3 describes / 6 it() (Sprint C-2a 完成)
 - [x] `src/auto/guard.ts` - Sprint C-2b 完成 (R2 GuardError + isGuardError + layer='GUARD', 5/5 GREEN)
 - [x] `tests/unit/auto/guard.test.ts` - T17-T18 2 describes / 5 it() (Sprint C-2b 完成, 5/5 GREEN)
-- [ ] `src/auto/throttle.ts` Sprint C-3 - 接入真实 counterStore (refactor + R5 + R7)
+- [x] `src/auto/throttle.ts` Sprint C-3 - 接入真实 CounterStore (R4 type alias 重构 + R5 加固 T8 + R7 接口兼容, 8 旧测试 + T19 真 fs 往返 7 it() + T20 加固 1 it() 全 GREEN, §3.10 refactor 盘点 0 caller 改动)
 - [ ] `scripts/install-cron.sh` / notifier / node-cron / run rotate / 油猴 / §12 5 项 = Sprint C/D 后续
 
 ---
