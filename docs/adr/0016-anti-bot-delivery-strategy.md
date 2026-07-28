@@ -1053,6 +1053,144 @@ src/cli/handlers/auto-handler.ts (~280 行, Sprint C-2a)
 
 ---
 
+## 15. Sprint C 完整验证记录 (2026-07-28)
+
+### 15.1 子任务总览
+
+| Sprint | Commit | src files | tests | 范围 | 预计工时 |
+|--------|--------|-----------|-------|------|---------|
+| **C-1** | `26f156b` | 1 new (counter-store.ts) | 3 new (T11-T13) | H1-H5 probe + atomic write | ~30min |
+| **C-2a** | `0fb1d21` | 1 new (auto-handler.ts) | 3 new (T14-T16) | R1 + R3 + R6 | ~45min |
+| **C-2b** | `b1bd6b2` | 1 new (guard.ts) | 2 new (T17-T18) | R2 | ~30min |
+| **C-3** | `84bf69c` | 1 modified (throttle.ts) | 2 new (T19-T20) | R4 + R5 + R7 | ~30min |
+| **合计** | 4 commit | 3 new + 1 modified | 10 new + 1 modified | R1-R7 全部落地 | ~2h15min |
+
+### 15.2 R1-R7 修订 → 实施映射
+
+| # | 修订 | 落地位置 | 验证测试 |
+|---|------|---------|----------|
+| R1 | 初始 loginByQR (`idle → login → running`) | `auto-handler.ts:82-89` | T14a (success) + T14b (fail → exit 2) |
+| R2 | GuardError class + blocked + notify | `guard.ts:20-31` + `auto-handler.ts:117-125` | T17a-d (class) + T18a (integration) |
+| R3 | 失败率 > 30% → blocked + exit 2 | `auto-handler.ts:132-144` | T16a (40% blocked) + T16b (30% 临界不触发) |
+| R4 | POSIX atomic write (`tmp + writeFile + sync + rename`) | `counter-store.ts:73-92` | probe S1-S4 (12/12 PASS) + T19a/d |
+| R5 | T8 SIGTERM handler 禁止 `process.exit` | `throttle.ts:240-249` | T20 (vi.spyOn throw) |
+| R6 | 退出码精化 (0=ok / 1=all-fail / 2=fatal) | `auto-handler.ts:148-155` | T14a/b + T15a/b + T16a/b + T18a |
+| R7 | `createInMemoryCounterStore().reset()` 隔离测试 | `counter-store.ts:102-117` | T11 (reset) + guard/auto-handler tests |
+
+### 15.3 测试矩阵 (按 sub-sprint)
+
+| 阶段 | 测试文件 | it() 块数 | 状态 | 关键覆盖 |
+|------|---------|----------|------|---------|
+| Sprint B 基础 | throttle.test.ts | 5 | 11/11 GREEN | T1-T5 (决策树核心) |
+| Sprint B 可靠性 | throttle-reliability.test.ts | 7 (含 T20) | 11/11 + 1 GREEN | T6-T10 + T20 (SIGTERM) |
+| Sprint C-1 | counter-store.test.ts | 6 | 6/6 GREEN | T11-T13 (atomic write / SIGTERM / reset) |
+| Sprint C-2a | auto-handler.test.ts | 6 | 6/6 GREEN | T14-T16 (login / failure / rate) |
+| Sprint C-2b | guard.test.ts | 5 | 5/5 GREEN | T17-T18 (GuardError + integration) |
+| Sprint C-3 | throttle-fs-integration.test.ts | 8 | 8/8 GREEN | T19 真 fs 往返 + 隔日 + SyntaxError + tmp 清理 |
+| **小计 Sprint C** | 6 files | **38** | **38/38** | — |
+
+**全套 vitest**: 512/0/1 (1 skipped pre-existing) — 25 it() 新增（Sprint B 后 487 → Sprint C 512）
+
+### 15.4 §14.8 probe 假设验证摘要 (F1-F5)
+
+| 发现 | 影响 | 落地位置 |
+|------|------|---------|
+| **F1** tmp suffix 必须 `crypto.randomUUID()` 不用 `Date.now()` | 同毫秒并发 ENOENT | `counter-store.ts:76` |
+| **F2** POSIX atomic = "无 torn write + 无 ENOENT" 不保证 last-write-wins | S2 期望修正: `final sent ∈ {1..10}` | 测试断言容差 |
+| **F3** 损坏 JSON 抛 `SyntaxError` 不被吞 | `load()` 必须 throw 不 return null | `counter-store.ts:68` |
+| **F4** `mkdir -p` 自动建 `~/.bapply/` | `writeAtomic` 第一步必 `mkdir({recursive:true})` | `counter-store.ts:75` |
+| **F5** SIGTERM handler 不调 `process.exit` | T8 必须断言 3: `exitCalls === 0` | `throttle.ts:240-249` + T20 |
+
+**probe 摘要**: 12/12 PASS, 单账号红线守住 (0 触碰 BOSS)
+
+### 15.5 §3.10 refactor 盘点结果 (C-3)
+
+| Caller | refactor 前 | refactor 后 | 改动 |
+|--------|------------|------------|------|
+| `auto-handler.ts:33` | `CounterStore` | `CounterStore` | 0 |
+| `guard.test.ts:99` | `createInMemoryCounterStore()` | 同 | 0 |
+| `throttle-reliability.test.ts` ×6 | inline `{ load, writeAtomic }` | 同 (shape 兼容) | 0 |
+| `throttle.test.ts` ×3 | inline `{ load, writeAtomic }` | 同 (shape 兼容) | 0 |
+| `auto-handler.test.ts:95` | `createInMemoryCounterStore()` | 同 | 0 |
+
+**3 问**: ① 下游成立 ✅ ② 无副作用依赖 ✅ ③ 错误边界仍有效 ✅
+
+### 15.6 §4.4 自验证清单
+
+| 项 | 证据 |
+|----|------|
+| ✓ 单测 (语言相关) | `npx vitest run` → 512/0/1 PASS (1 skipped pre-existing) |
+| ✓ 集成测试 | T19 真 fs 往返 8 it() 全 PASS (os.tmpdir + fs.mkdtemp 隔离) |
+| ✓ 类型检查 | `npx tsc --noEmit` → 0 新错 (2 pre-existing: puppeteer-extra-plugin-stealth / OpenAI thinking) |
+| ✓ live 集成 | N/A (per §3.12 单账号红线, prototype 12/12 替代) |
+| N/A 浏览器 | Sprint C 全后端算法 + state machine, 无 UI |
+
+### 15.7 单账号红线守住验证
+
+| 假设/场景 | 是否触碰 BOSS | 证据 |
+|----------|--------------|------|
+| H1-H5 probe (Sprint C-1 前置) | ❌ 0 触碰 | 仅 fs + in-memory |
+| C-1 counter-store 实施 | ❌ 0 触碰 | fsp + crypto |
+| C-2a auto-handler 实施 | ❌ 0 触碰 | bossSearch / sendGreeting / loginByQR 全 deps 注入 |
+| C-2b guard 实施 | ❌ 0 触碰 | 仅 class + helper |
+| C-3 throttle 接入 | ❌ 0 触碰 | type alias 重构, 接口形状不变 |
+| T19 真 fs 集成 | ❌ 0 触碰 | os.tmpdir + fs.mkdtemp 隔离 |
+| T20 SIGTERM 加固 | ❌ 0 触碰 | vi.spyOn(process, 'exit') |
+
+**结论**: Sprint C 全程 0 触碰 BOSS / loginByQR / sendGreeting, 单账号红线 100% 守住。
+
+### 15.8 Sprint D 候选 (per §9 后续)
+
+| # | 项 | 范围 | 依赖 |
+|---|----|------|------|
+| 1 | `scripts/install-cron.sh` 一键装 cron | bash + crontab 写入 | Sprint C 全完成 |
+| 2 | 飞书多维表格 notifier (替代 console.log) | webhook + 重试 | Sprint C-2b GuardNotifier 已注入 |
+| 3 | node-cron 替代 system cron | 进程内调度 + 跨中午 sleep | Sprint D-1 安装脚本 |
+| 4 | 历史 run rotate 30 天清理 | bash + find + rm | Sprint D-1 install |
+| 5 | 油猴 hook 模式 (Task #12-15) | ai-job-master fork | 平行路径, 可能根本取代本节流 |
+| 6 | `src/auto/warmup-engine.ts` 独立化 | 当前 inline 在 throttle.ts:281-287 | 重构, 不影响功能 |
+
+### 15.9 §10 重写流程在本节的兑现
+
+| 修订 | 位置 | 原因 | 状态 |
+|------|------|------|------|
+| §14.2.4 加 R1 (initial login) | 流程图 | 架构师 review | ✅ T14 |
+| §14.2.4 加 R2 (guard) | 流程图 | 反爬触发后继续浪费配额 | ✅ T17-T18 |
+| §14.2.4 加 R3 (失败率监控) | 流程图 | counter 写先于发送, 连续失败空转 | ✅ T16 |
+| §14.2.3 改 R4 (POSIX atomic 标准) | 关系图 | writeFile + openSync('r+') + fsyncSync 多余 | ✅ counter-store.ts |
+| §14.4 加 R5 (T8 exit 调用计数) | H3 风险 | handler 完成后未验证无 process.exit | ✅ T20 |
+| §14.6 R6 (退出码 0/1/2) | 退出码表 | 全失败 vs 部分失败需区分 | ✅ auto-handler.ts |
+| §14.3 加 R7 (工厂 reset) | refactor 盘点 | 单元测试隔离必需 | ✅ counter-store.ts |
+
+### 15.10 交付物路径 (Sprint C 总计)
+
+```
+src/auto/
+├── counter-store.ts             (NEW, ~110 行, R4+R7)
+├── guard.ts                     (NEW, ~50 行, R2)
+└── throttle.ts                  (MODIFIED, type alias 重构)
+
+src/cli/handlers/
+└── auto-handler.ts              (NEW, ~170 行, R1+R3+R6)
+
+tests/unit/auto/
+├── counter-store.test.ts        (NEW, ~220 行, T11-T13)
+├── guard.test.ts                (NEW, ~180 行, T17-T18)
+├── throttle-fs-integration.test.ts (NEW, ~230 行, T19)
+└── throttle-reliability.test.ts (MODIFIED, +50 行, T20)
+
+tests/unit/cli/handlers/
+└── auto-handler.test.ts         (NEW, ~250 行, T14-T16)
+
+scripts/
+└── probe-throttle-integration.mjs (NEW, ~250 行, 12/12 PASS)
+
+docs/adr/
+└── 0016-anti-bot-delivery-strategy.md (MODIFIED, +§14 + §15)
+```
+
+---
+
 ## Debug Gate 5 项（按 §3.8）
 
 ⚠️ **本 ADR 不是 bug 修复类决策，Debug Gate N/A**。如后续 live 跑发现撞墙，按 §3.8 重新走症状 / 多假设 / 修复 / 自验证 / 未证明 5 项。
