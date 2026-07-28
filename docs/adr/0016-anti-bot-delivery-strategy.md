@@ -694,8 +694,360 @@ TDD 5 测试 (per §4.3 上限 5) 用于 throttle;config schema 走 **2 个新 R
 - [x] `src/auto/session-detector.ts` 实施 - 1 stub function
 - [x] 10 个 RED 测试 (Sprint B Phase C) - 11 个全部 PASS
 - [ ] `src/auto/warmup-engine.ts` - 集成到 throttle.ts initCounter, 独立文件遗留
-- [ ] `src/auto/counter-store.ts` - 真实 fs atomic write (per §12 Issue 1 step 1-3); 当前测 mock 过
+- [x] `src/auto/counter-store.ts` - 真实 fs atomic write (Sprint C-1 完成, 5/5 GREEN, probe 12/12 PASS)
+- [x] `scripts/probe-throttle-integration.mjs` - H1-H5 假设验证 (Sprint C-1 前置, 12/12 PASS)
+- [x] `tests/unit/auto/counter-store.test.ts` - T11-T13 3 describes / 5 it() (Sprint C-1 完成, 5/5 GREEN)
+- [ ] `src/cli/handlers/auto-handler.ts` - Sprint C-2a (state machine + 失败率监控 + 退出码)
+- [ ] `src/auto/guard.ts` - Sprint C-2b (GuardError + blocked + notify)
+- [ ] `src/auto/throttle.ts` Sprint C-3 - 接入真实 counterStore (refactor + R5 + R7)
 - [ ] `scripts/install-cron.sh` / notifier / node-cron / run rotate / 油猴 / §12 5 项 = Sprint C/D 后续
+
+---
+
+## 14. Sprint C 集成设计 (2026-07-28)
+
+### 14.1 修订要点 (per 架构师 review)
+
+| # | 修订 | 原稿缺口 | 修订方案 |
+|---|------|---------|---------|
+| R1 | 初始 login 缺失 | `runDailyLoop` 直接进 bossSearch,无 cookie 必失败 | `idle → loginByQR() → running`,失败映射 `exit 2` |
+| R2 | Guard 风控墙完全消失 | `sendGreeting` 异常未分类,反爬触发后继续投递浪费配额 | 新 `GuardError` class + `blocked` 状态 + notify + 降级 warmup |
+| R3 | 失败率监控缺失 | counter 写先于发送,连续失败会空转耗尽配额 | 失败率 >30% 触发 `blocked` (等同 GuardError 路径) |
+| R4 | atomic write 模式非标准 | `writeFile + openSync('r+') + fsyncSync` 多余 | 标准 POSIX: `tmp + writeFile + sync + rename` |
+| R5 | T8 SIGTERM 加固 | handler 完成后未验证无 `process.exit` | T8 加断言 3: handler 内禁止调 `process.exit` |
+| R6 | 退出码语义模糊 | 全失败 vs 部分失败未区分 | 0=≥1 成功 / 1=全失败或部分失败 / 2=致命 (config/login/guard/失败率) |
+| R7 | refactor 工厂缺 reset | `createInMemoryCounterStore` 无 `.reset()` | 新增 `reset()` 方法, 单元测试隔离 |
+
+### 14.2 修订 4 类图
+
+#### 14.2.1 架构图(集成版)
+
+```
+                          ┌──────────────────────────────┐
+                          │  CLI 层 (src/cli/)           │
+                          │  ┌────────────────────────┐  │
+                          │  │ bapply auto --resume   │  │
+                          │  │ --dry-run --date ...   │  │
+                          │  └─────────┬──────────────┘  │
+                          └────────────┼─────────────────┘
+                                       │ invoke
+                                       ▼
+                          ┌──────────────────────────────┐
+                          │  Handler 层                  │
+                          │  ┌────────────────────────┐  │
+                          │  │ auto-handler.ts (新)   │  │
+                          │  │  state: idle|login|    │  │
+                          │  │   running|paused|      │  │
+                          │  │   blocked|done|aborted │  │
+                          │  │  runDailyLoop(config)  │  │
+                          │  └────┬─────────────────┬─┘  │
+                          └───────┼─────────────────┼────┘
+                                  │                 │
+              ┌───────────────────┘                 └────────────────────┐
+              ▼                                                          ▼
+┌─────────────────────────────┐                  ┌──────────────────────────────┐
+│   Auto 层 (src/auto/)       │                  │  Boss 层 (src/boss/) [现有]  │
+│  ┌───────────────────────┐  │                  │  ┌────────────────────────┐  │
+│  │ throttle.ts (已存在)  │  │                  │  │ search-jobs.mjs        │  │
+│  │  - throttleSend       │──┼─────────────────▶│  │ login-by-qr.mjs        │  │
+│  │  - ThrottleError      │  │                  │  │ send-greeting.mjs      │  │
+│  │  - SessionExpiredError│  │                  │  └────────────────────────┘  │
+│  └───────────────────────┘  │                  └──────────────────────────────┘
+│  ┌───────────────────────┐  │                              │
+│  │ counter-store.ts (新) │  │                              │
+│  │  - load(date)         │──┼──▶ fs: ~/.bapply/counter.json│
+│  │  - writeAtomic()      │  │                              │
+│  │  - createFsStore()    │  │                              │
+│  │  - createInMemoryStore│  │                              │
+│  └───────────────────────┘  │                              │
+│  ┌───────────────────────┐  │                              │
+│  │ guard.ts (新, C-2b)   │  │                              │
+│  │  - GuardError class   │  │                              │
+│  │  - isGuardError()     │  │                              │
+│  │  - GuardNotifier      │  │                              │
+│  └───────────────────────┘  │                              │
+└─────────────────────────────┘                              │
+                                  ┌──────────────────────────┘
+                                  ▼
+                          ┌──────────────────────────────┐
+                          │  External (单账号红线)        │
+                          │  - BOSS wapi / chat/start    │
+                          │  - feishu webhook (notify)   │
+                          │  - ~/.bapply/counter.json    │
+                          └──────────────────────────────┘
+```
+
+#### 14.2.2 时序图(集成版 — 含初始 login + guard + 失败率监控)
+
+```
+[user] bapply auto --resume --date 2026-07-28
+   │
+   ▼
+[CLI] parseArgs → AutoConfig
+   │
+   ▼
+[auto-handler] state = 'idle'
+   │
+   ▼
+[auto-handler] state = 'login' | await deps.loginByQR()
+   │                                       │
+   │                                  fail │ success
+   │                                       ▼
+   │                              state = 'running'
+   │                                       │
+   ▼ ◄─────────────────────────────────────┘
+[auto-handler] return { exitCode: 2, stats, state: 'aborted' }
+   │
+   ▼
+[CLI] process.exit(2)
+
+(below is only after login success)
+
+[auto-handler] jobs = await bossSearch(date)
+   │
+   ▼
+for each job in jobs:
+   │
+   ├─► [throttleSend] (job, deps, config)
+   │   │
+   │   ├─ time / cap / weekend check
+   │   ├─ counter.load + interval + longPause + bigBreak
+   │   ├─ counter.sent++ + counterStore.writeAtomic()  ←── [fs] atomic
+   │   ├─ sendGreeting(job):
+   │   │   │
+   │   │   ├─► [BOSS wapi] POST /chat/start
+   │   │   │
+   │   │   ├─ if SessionExpiredError:
+   │   │   │   └─► loginByQR() → retry sendGreeting (1 shot)
+   │   │   │
+   │   │   ├─ if GuardError (anti_bot / rate_limit / ip_block):
+   │   │   │   │
+   │   │   │   ├─► [feishu] notify('critical', msg)
+   │   │   │   ├─► degraded-warmup (cap × 0.5)
+   │   │   │   └─► state = 'blocked' → break loop → return { exitCode: 2 }
+   │   │   │
+   │   │   └─ if other error: log warn → continue (B2=a)
+   │   │
+   │   └─► return ThrottleDecision
+   │
+   ├─► if sleep: await sleep(sleepMs)
+   │
+   ├─► 每 10 次迭代后: stats.failed / stats.sent > 0.3 ?
+   │       │
+   │   yes ▼ no
+   │   blocked → exit 2      continue
+   │
+   └─► next job
+
+return { exitCode: 0|1|2, stats: { sent, ok, failed, blocked }, state }
+   │
+   ▼
+[CLI] process.exit(stats.exitCode)
+```
+
+#### 14.2.3 关系图(集成版)
+
+```
+src/cli/handlers/auto-handler.ts (~280 行, Sprint C-2a)
+  interface AutoHandlerDeps {
+    now: () => number
+    bossSearch: (date: string) => Promise<Job[]>
+    counterStore: CounterStore                       // C-1 注入
+    sendGreeting: (job: Job) => Promise<void>
+    loginByQR: () => Promise<void>
+    notifier: GuardNotifier                          // C-2b 注入
+    config: AutoConfig
+  }
+  type RunStats = { sent: number; ok: number; failed: number; blocked: boolean }
+  async function runDailyLoop(deps: AutoHandlerDeps): Promise<{ exitCode: 0|1|2; stats: RunStats }>
+        │
+        ├─ imports ──▶ src/auto/throttle.ts (已有, Sprint C-3 改 ThrottleDeps)
+        │                  - ThrottleError.layer = 'THROTTLE'
+        │                  - SessionExpiredError.layer = 'SEND'
+        │                  - throttleSend(job, deps, config) → ThrottleDecision
+        │
+        ├─ imports ──▶ src/auto/counter-store.ts (~80 行, Sprint C-1 新)
+        │                  interface CounterStore {
+        │                    load(date: string): Promise<DailyCounter | null>
+        │                    writeAtomic(counter: DailyCounter): Promise<void>
+        │                  }
+        │                  createFsCounterStore(filepath: string): CounterStore
+        │                  createInMemoryCounterStore(initial?: DailyCounter):
+        │                    CounterStore & { reset(): void }      // R7
+        │
+        ├─ imports ──▶ src/auto/guard.ts (~60 行, Sprint C-2b 新)
+        │                  class GuardError extends Error {
+        │                    readonly layer = 'GUARD' as const    // per §3.13
+        │                    reason: 'anti_bot' | 'rate_limit' | 'ip_block'
+        │                  }
+        │                  interface GuardNotifier {
+        │                    notify(level: 'warn' | 'critical', msg: string): Promise<void>
+        │                  }
+        │                  function isGuardError(e: unknown): e is GuardError
+        │
+        └─ imports ──▶ src/boss/{search-jobs, login-by-qr, send-greeting}.mjs (现有 stub)
+```
+
+#### 14.2.4 流程图(集成版状态机 — R1+R2+R3+R6)
+
+```
+                              ┌──────────┐
+                              │   idle   │ (initial)
+                              └─────┬────┘
+                                    │ runDailyLoop()
+                                    ▼
+                              ┌──────────┐
+                              │  login   │
+                              └─────┬────┘
+                              fail │ success (R1)
+                                   ▼
+                            ┌──────────┐
+                            │ aborted  │ ──► exit 2
+                            └──────────┘
+                                    │
+                                    ▼
+                              ┌──────────┐
+              ┌───────────────│ running  │────────────────┐
+              │               └─────┬────┘                │
+              │  jobs=[]           │ for each job:        │ DailyDone
+              │                    ▼                       │ DailyLimit
+              │               ┌──────────┐                │
+              │               │ throttle │                │
+              │               │ decision │                │
+              │               └────┬─────┘                │
+              │       ┌────────────┼────────────┐          │
+              │  proceed           │            abort      │
+              │   │                │            │          │
+              │   ▼                ▼            │          │
+              │  ┌──────────┐  ┌──────────┐     │          │
+              │  │ paused   │  │ sending  │     │          │
+              │  │ (sleep)  │  └────┬─────┘     │          │
+              │  │ after:   │       │           │          │
+              │  │ →running │  ┌────┴────┐      │          │
+              │  └──────────┘  │ send OK │ send fail      │
+              │                └────┬────┘   (B2=a:        │
+              │            success  │      continue)      │
+              │                     │           │          │
+              │                     │           ▼          │
+              │                     │      ┌────────┐      │
+              │                     │      │ next   │──────┤
+              │                     │      │ job    │      │
+              │                     │      └────────┘      │
+              │                     │           ▲          │
+              │                     │           │ GuardError (R2)
+              │                     │           ▼          │
+              │                     │      ┌──────────┐    │
+              │                     │      │ blocked  │    │
+              │                     │      │ +notify  │    │
+              │                     │      │ +degrade │    │
+              │                     │      └────┬─────┘    │
+              │                     │           │          │
+              │                     │           └──────────│
+              │                     │                      ▼
+              │                     │              exit 2
+              │                     ▼
+              │                ┌──────────┐
+              │                │  done    │ ──► exit 0/1 (R6)
+              │                └──────────┘
+              │                       ▲
+              │                       │ failure rate > 30% (R3)
+              │                       │
+              │                ┌──────────┐
+              │                │ blocked  │ ──► exit 2
+              │                └──────────┘
+              │
+              └────► exit 2 (致命)
+```
+
+### 14.3 §3.10 refactor 盘点
+
+`throttle.ts` ThrottleDeps 接入真实 CounterStore (Sprint C-3) 后 caller 影响:
+
+| caller | 当前 | C-3 接入后 | 影响 |
+|--------|------|-----------|------|
+| `tests/unit/auto/throttle.test.ts` | inline `{ load, writeAtomic }` mock | 改 `createInMemoryCounterStore()` + `.reset()` in `beforeEach` | 测试不破,加 `.reset()` |
+| `tests/unit/auto/throttle-reliability.test.ts` | 同上 | 同上 | 同上 |
+| **未来 `auto-handler.ts`** (C-2a) | — | 注入 `createFsCounterStore('~/.bapply/counter.json')` | 新增 caller,接口稳定 |
+
+**结论**: mock 改 `createInMemoryCounterStore()` 工厂函数 + `.reset()` (R7), 不变更 ThrottleDeps 接口形状 (CounterStore 仅引入 type, mock 实现同 shape), 向后兼容 11 个现有 test。
+
+### 14.4 §3.12 probe 假设清单 (per 硬性)
+
+| # | 假设 | 验证方式 | 不验证的后果 | 风险 |
+|---|------|---------|------------|------|
+| H1 | POSIX atomic write (`tmp + writeFile + sync + rename`) 在 macOS Node 24 真原子 | `probe-throttle-integration.mjs` Scenarios S1-S4: 并发 10 次写读不丢失 / 临时文件清理 / rename 异常回滚 | rename 失败 → counter 双写或丢失 | 中 |
+| H2 | `JSON.stringify + parse` 安全 (DailyCounter 无循环引用 / Date / BigInt) | S5-S6: 写读后字段一致 / 损坏 JSON 抛错不吞 | 解析失败 → 状态丢失或静默错误 | 低 |
+| H3 | SIGTERM handler `await writeAtomic` 完成后**不调用** `process.exit`, 事件循环自然结束 | S7-S8: handler 完整落盘 + exit 调用计数 0 + 后续进程可继续 | handler 跳过 → 进程提前退出丢数据 | 中 |
+| H4 | `createInMemoryCounterStore().reset()` 隔离测试间状态 | S9-S10: reset 后 load 返回 null / reset 后 write 不影响下次 test | 状态泄漏 → test 间 flaky | 低 |
+| H5 | `mkdir -p` (`fs.mkdir({ recursive: true })`) 在 `~/.bapply/` 不存在时自动创建 | S11-S12: 首次写入自动创建目录 | 缺目录 → 写失败 exit 2 | 低 |
+
+**单账号红线守住**: H1-H5 仅涉及 fs + in-memory, **不 probe BOSS / loginByQR / sendGreeting**。
+
+### 14.5 Sprint C 子任务拆分 (per §4.3)
+
+| Sprint | src files | tests | 范围 | 预计工时 |
+|--------|-----------|-------|------|---------|
+| **C-1** counter-store | 1 new (counter-store.ts) | 3 new (T11-T13: atomic write / SIGTERM / reset) | H1-H5 probe | ~30min |
+| **C-2a** auto-handler + 失败率 | 1 new (auto-handler.ts) | 3 new (T14-T16: initial login / exit 2 / 失败率阈值) | R1 + R3 + R6 | ~45min |
+| **C-2b** guard + blocked | 1 new (guard.ts) | 2 new (T17-T18: GuardError → blocked / notify → exit 2) | R2 | ~30min |
+| **C-3** throttle 集成 | 1 modified (throttle.ts) | 2 new (T19-T20: 真 fs 往返 / 加固 T8 exit 调用计数) | refactor + R5 + R7 | ~30min |
+
+合计: 3 new src + 1 modified src + 10 new tests, **每个 sub-sprint ≤ 1 src + ≤ 3 tests**, 远低于 §4.3 上限。
+
+### 14.6 退出码精化表 (R6)
+
+| 退出码 | 触发条件 | 例子 |
+|--------|---------|------|
+| **0** | ≥1 次 sendGreeting 成功, 且未触致命 | 40/40 全发, 39 OK + 1 reject |
+| **1** | 全部失败 / 部分失败 (无致命) | 40 全 reject, 或 5/40 OK 其余 reject |
+| **2** | 致命: config / login / guard / 失败率超阈 / counter write 失败 | loginByQR 失败、GuardError 触发、failed/sent > 0.3 |
+
+**实现**: `runDailyLoop` 返回 `{ exitCode: 0|1|2, stats }`, CLI 层 `process.exit(stats.exitCode)`。
+
+### 14.7 修订记录 (per §10 重写流程)
+
+| 修订 | 位置 | 原因 |
+|------|------|------|
+| 初始 login 显式加入 | §14.2.4 流程图 R1 | 架构师 review: 进程起手无 cookie 必失败 |
+| Guard / blocked / 失败率监控 | §14.2.4 流程图 R2+R3 | 反爬触发后继续投递浪费配额 |
+| atomic write 模式标准化 | §14.2.3 关系图 R4 | POSIX 标准: tmp + sync + rename |
+| T8 SIGTERM 加固 | §14.4 H3 风险列 R5 | handler 完成后需禁止 process.exit |
+| 退出码精化 | §14.6 R6 | 全失败 vs 部分失败需区分 |
+| 工厂函数加 reset | §14.3 refactor 盘点 R7 | 单元测试隔离必需 |
+
+### 14.8 probe 验证结果 (2026-07-28, per §3.12)
+
+`scripts/probe-throttle-integration.mjs` 12/12 PASS, 验证 §14.4 H1-H5 全部假设。
+
+**关键发现**:
+
+| # | 发现 | 影响 C-1 实现 |
+|---|------|-------------|
+| F1 | **tmp suffix 必须用 `crypto.randomUUID()`, 不用 `Date.now()`** | `Date.now()` 在并发同毫秒会生成相同 tmp 名, 后到的 rename ENOENT (S2 第一次跑挂) |
+| F2 | **POSIX atomic write 语义 = "无 torn write + 无 ENOENT", 不保证 "最后调用必胜"** | S2 期望修正: `final sent ∈ {1..10}`, 不是 `sent=10`. last-write-wins 在并发起跑下不严格保证 |
+| F3 | 损坏 JSON 抛 `SyntaxError` 不被吞 (per S6) | `load()` 实现必须 `throw`, 不能 `return null` |
+| F4 | `mkdir -p` (`fs.mkdir({ recursive: true })`) 自动建 `~/.bapply/` (S11) | `writeAtomic` 第一步必 `mkdir({recursive:true})` |
+| F5 | SIGTERM handler 完成后**未**调 `process.exit`, 事件循环自然结束 (S8) | T8 必须断言 3: `exitCalls.length === 0` |
+
+**probe 摘要**:
+
+```
+[PASS] H1-S1 single write/read roundtrip — sent=1
+[PASS] H1-S2 10x concurrent write, all resolve + final value in {1..10} — allResolved=true, final sent=6
+[PASS] H1-S3 tmp files cleaned after rename — leftovers=[]
+[PASS] H1-S4 readonly dir → write throws + tmp cleaned — threw=true, leftovers=0
+[PASS] H2-S5 complex counter roundtrip equality — equal=true
+[PASS] H2-S6 corrupted JSON throws SyntaxError (not silently null) — threw=true
+[PASS] H3-S7 SIGTERM handler completes writeAtomic (sent=999) — final sent=999
+[PASS] H3-S8 handler does NOT call process.exit — handlerThrew=false, exitCalls=0
+[PASS] H4-S9 reset() makes load return null — before.sent=5, after=null
+[PASS] H4-S10 after reset, new write does not retain old state — loaded={"date":"2026-07-29","sent":1,"cap":40}
+[PASS] H5-S11 first write creates ~/.bapply/ + counter.json — dir=true, file=true
+[PASS] H5-S12 write to existing dir does not throw — threw=false
+=== Total: 12/12 PASS ===
+```
+
+**单账号红线**: H1-H5 probe 0 触碰 BOSS / loginByQR / sendGreeting, 守住。
 
 ---
 
