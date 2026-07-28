@@ -18,6 +18,7 @@ import {
   type Job,
 } from '../../auto/throttle'
 import type { CounterStore } from '../../auto/counter-store'
+import { GuardError, isGuardError } from '../../auto/guard'
 
 /** Notifier 接口 (R2+C-2b 由 guard.ts 实现, 此处仅 interface) */
 export interface AutoNotifier {
@@ -111,6 +112,15 @@ export async function runDailyLoop(
     } catch (e) {
       if (e instanceof ThrottleError) {
         // 配额耗尽 / 17:30 / 周末 → 跳出循环, 不算 per-job 失败
+        break
+      }
+      if (isGuardError(e)) {
+        // R2 风控墙: 立即中断 + 通知 + 当日余量作废
+        stats.blocked = true
+        await deps.notifier.notify(
+          'critical',
+          `[AUTO.runner] 风控触发 (${(e as GuardError).reason}): ${(e as Error).message}`,
+        )
         break
       }
       // B2=a: 单 job 投递失败 → 继续下一 job

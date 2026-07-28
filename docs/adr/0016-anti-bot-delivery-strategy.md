@@ -699,7 +699,8 @@ TDD 5 测试 (per §4.3 上限 5) 用于 throttle;config schema 走 **2 个新 R
 - [x] `tests/unit/auto/counter-store.test.ts` - T11-T13 3 describes / 6 it() (Sprint C-1 完成, 6/6 GREEN)
 - [x] `src/cli/handlers/auto-handler.ts` - Sprint C-2a 完成 (R1 初始 login + R3 失败率监控 + R6 退出码 0/1/2, 6/6 GREEN)
 - [x] `tests/unit/cli/handlers/auto-handler.test.ts` - T14-T16 3 describes / 6 it() (Sprint C-2a 完成)
-- [ ] `src/auto/guard.ts` - Sprint C-2b (GuardError + blocked + notify)
+- [x] `src/auto/guard.ts` - Sprint C-2b 完成 (R2 GuardError + isGuardError + layer='GUARD', 5/5 GREEN)
+- [x] `tests/unit/auto/guard.test.ts` - T17-T18 2 describes / 5 it() (Sprint C-2b 完成, 5/5 GREEN)
 - [ ] `src/auto/throttle.ts` Sprint C-3 - 接入真实 counterStore (refactor + R5 + R7)
 - [ ] `scripts/install-cron.sh` / notifier / node-cron / run rotate / 油猴 / §12 5 项 = Sprint C/D 后续
 
