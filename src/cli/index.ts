@@ -25,6 +25,7 @@ import { createLLM } from '../llm/index.js'
 import { buildGreetingSystemPrompt, buildGreetingPrompt, buildResumeSummary } from '../template/index.js'
 import { listRecords, createRecord, updateRecord } from '../feishu/index.js'
 import { handleChromeCommand } from './handlers/chrome-handler.js'
+import { runAutoInitConfig } from './handlers/auto-config-init-handler.js'
 import { runSendCommand, type SendCommandResult } from './handlers/send-handler.js'
 import { runListCommand, type ListResult } from './handlers/list-handler.js'
 import { runSyncCommand, type SyncResult } from './handlers/sync-handler.js'
@@ -869,6 +870,86 @@ program
     const portNum = options.port ? Number(options.port) : undefined
     const out = handleChromeCommand({ port: portNum })
     console.log(chalk.cyan(out))
+  })
+
+// ============================================================
+// auto (Sprint D-1c §16.5 — 单账号反爬投递策略)
+// ============================================================
+
+/** RunAutoCommandOpts: 7 flags per §16.3.1 架构图 */
+interface RunAutoCommandOpts {
+  config?: string
+  dryRun?: boolean
+  quota?: string
+  phase?: 'morning' | 'afternoon'
+  date?: string
+  strictExitCode?: boolean
+}
+
+program
+  .command('auto')
+  .description('单账号反爬投递策略主入口（per ADR-0016 §16 — 时段配额 + warmup + 节流 + 容错）')
+  .option('--config <path>', 'auto.yaml 路径 (默认 ~/.bapply/auto.yaml)')
+  .option('--dry-run', '不真投递, 走完整流程验证')
+  .option('--quota <n>', '今日总配额 (按 morning:afternoon 比例拆, 缺省值 40:60)', (v) => Number(v))
+  .option('--phase <phase>', 'morning | afternoon (cron 调用必填)')
+  .option('--date <YYYY-MM-DD>', '任务日期 (默认今天)')
+  .option('--strict-exit-code', '全 reject 但 counter 走完 → exit 2 (致命软错误)', false)
+  .action(async (options: RunAutoCommandOpts) => {
+    console.log(chalk.cyan('🚀 bapply auto (Sprint D-1c §16) — 单账号反爬投递'))
+    console.log(chalk.yellow(`   config: ${options.config ?? '~/.bapply/auto.yaml'}`))
+    console.log(chalk.yellow(`   phase: ${options.phase ?? '(未指定)'}, date: ${options.date ?? '今天'}`))
+    console.log(chalk.yellow(`   quota: ${options.quota ?? '默认'}, dry-run: ${options.dryRun ?? false}, strict: ${options.strictExitCode ?? false}`))
+    console.log()
+    console.log(chalk.red('⚠️  auto runDailyLoop 主流程将在 Sprint D-2 实施'))
+    console.log(chalk.cyan('   当前可用: bapply auto init-config 生成配置模板'))
+    console.log(chalk.cyan('   详细: docs/adr/0016-anti-bot-delivery-strategy.md §16'))
+    process.exit(0)
+  })
+
+// ============================================================
+// auto init-config (Sprint D-1c §16.5 — 生成配置模板)
+// ============================================================
+
+program
+  .command('auto init-config')
+  .description('在 ~/.bapply/ 生成 auto.yaml + account-meta.json 2 个模板文件 (atomic write)')
+  .option('--config-dir <path>', '配置目录 (默认 ~/.bapply/)')
+  .option('--force', '强制覆盖已存在文件 (默认 false, 保护用户数据)', false)
+  .action(async (options: { configDir?: string; force?: boolean }) => {
+    const start = Date.now()
+    const configDir = options.configDir ?? '~/.bapply/'
+
+    try {
+      const result = await runAutoInitConfig({
+        configDir,
+        force: options.force ?? false,
+      })
+
+      if (result.skipped === 'exists') {
+        console.log(chalk.yellow(`\n⚠️  配置已存在, 跳过 (加 --force 覆盖):`))
+        console.log(`   ${result.configPath}`)
+        console.log(`   ${result.metaPath}`)
+        process.exit(0)
+      }
+
+      console.log(chalk.green('\n✅ 已生成配置模板:'))
+      console.log(`   📄 ${result.configPath}`)
+      console.log(`   📊 ${result.metaPath}`)
+      console.log()
+      console.log(chalk.cyan('💡 下一步:'))
+      console.log(chalk.cyan(`   1. 编辑 ${result.configPath} 调整 searches / quota`))
+      console.log(chalk.cyan(`   2. 跑 bapply auto --dry-run --phase morning 验证配置`))
+      console.log(chalk.cyan(`   3. cron: 0 9 * * 1-5 bapply auto --phase morning`))
+      console.log(chalk.cyan(`            0 14 * * 1-5 bapply auto --phase afternoon`))
+      process.exit(0)
+    } catch (err: any) {
+      console.error(chalk.red(`\n❌ 生成配置失败: ${err?.message ?? err}`))
+      process.exit(1)
+    } finally {
+      const elapsed = Date.now() - start
+      console.log(chalk.dim(`\n   耗时: ${elapsed}ms`))
+    }
   })
 
 // §3.9 顶层错误兜底（2026-07-23 Debug Gate）：

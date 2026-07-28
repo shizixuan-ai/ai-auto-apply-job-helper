@@ -1,0 +1,74 @@
+# ============================================================
+# bapply auto 配置示例 — 详细文档: docs/adr/0016-anti-bot-delivery-strategy.md
+# ============================================================
+# 用途: `bapply auto init-config` 默认生成的模板 (进 git, 作为 source of truth).
+#       用户首次跑 init-config 后, 应:
+#         1. 复制此文件结构 → ~/.bapply/auto.yaml
+#         2. 按需修改 searches / quota / throttle
+#         3. 跑 bapply auto --dry-run --phase morning 验证不触发 fail-fast
+#
+# 纪律: §3.5 设计前置 (auto.yaml schema 由 src/auto/config-schema.ts 校验);
+#       §3.13 错误分层 (zod 校验失败 → AutoConfigError(layer='CONFIG'));
+#       §3.12 mock 友好 (defaults 合并 max_failure_rate=0.3).
+# ============================================================
+
+version: 1
+
+# ─── 多轮搜索 (顺序执行, 跨轮去重, encryptJobId 主键) ──────────
+# 至少 1 项, 空数组 → fail-fast (per §11.5)
+# 字段含义:
+#   keyword  : 必填, 搜索关键词
+#   city     : 可选, BOSS 城市码 (如 "北京")
+#   jobType  : 可选, BOSS 职位类型码 (e.g. 1901 = 全职)
+#   salary   : 可选, BOSS 薪资范围码 (e.g. 406 = 10-20K)
+#   experience: 可选, BOSS 工作经验码 (e.g. 106 = 3-5 年)
+#   degree   : 可选, BOSS 学历码 (e.g. 203 = 本科)
+#   limit    : 可选, 该 keyword 最多取 N (默认 15)
+searches:
+  - keyword: "Java 后端"
+    city: "北京"
+    limit: 15
+  # - keyword: "Python 后端"
+  #   city: "上海"
+  #   limit: 10
+
+# ─── 时段配额 (per ADR §2: 上午 40 / 下午 60 = 日 100) ────────
+# morning + afternoon 之和 = 日配额 (warmup 阶段按比例缩)
+# weekly_cap = 周上限 (保守值 500, BOSS 周维度阈值未实测)
+quota:
+  morning: 40
+  afternoon: 60
+  weekly_cap: 500
+
+# ─── Warmup 折中 (单账号 Day1-7 cap=50 → Day8-14 cap=70 → Day15+ cap=100) ─
+# 详见 ADR §2 + R7 refactor: warmup schedule 触发 cap 缩放
+warmup:
+  enabled: true
+  schedule:
+    - { day_start: 1, cap: 50 }
+    - { day_start: 8, cap: 70 }
+    - { day_start: 15, cap: 100 }
+
+# ─── 节流 (per ADR §2: 上午 180-240s, 下午 150-195s, ±20% jitter) ─
+# morning_interval_ms   : [min, max] 上午每条间隔 (ms)
+# afternoon_interval_ms : [min, max] 下午每条间隔 (ms)
+# jitter_pct            : ±N% 随机偏移
+# long_pause            : 每 N 条 → 穿插 [min, max] ms 长休
+# afternoon_mid_break   : 下午 sent===N 时 → 穿插 [min, max] ms 大休 (单次, 防 §12 Issue 2)
+throttle:
+  morning_interval_ms: [180000, 240000]      # 3-4 min
+  afternoon_interval_ms: [150000, 195000]    # 2.5-3.25 min
+  jitter_pct: 20
+  long_pause: { every_n_jobs: 20, duration_ms: [300000, 600000] }  # 每 20 条 5-10 min
+  afternoon_mid_break: { after_job: 30, duration_ms: [600000, 900000] }  # 第 30 条 10-15 min
+
+# ─── 风控容错 (per ADR §16 缺口 2 暴露: max_failure_rate 默认 0.3) ─
+# guard_trigger_policy     : 'abort_day' = 当日余量作废 / 'abort_run' = 中断 run / 'continue' = 仅 log
+# max_failure_rate         : 失败率阈值 (0-1), 超阈 → blocked (per R3, 严格大于)
+# consecutive_guard_threshold: 连续 N 天触发 → 自动降档 warmup (per §2)
+# auto_regress_warmup      : true = 触发时自动降档 (per §16.3.3)
+safety:
+  guard_trigger_policy: 'abort_day'
+  max_failure_rate: 0.3
+  consecutive_guard_threshold: 3
+  auto_regress_warmup: true
