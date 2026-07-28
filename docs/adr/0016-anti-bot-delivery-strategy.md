@@ -1186,8 +1186,477 @@ scripts/
 └── probe-throttle-integration.mjs (NEW, ~250 行, 12/12 PASS)
 
 docs/adr/
-└── 0016-anti-bot-delivery-strategy.md (MODIFIED, +§14 + §15)
+└── 0016-anti-bot-delivery-strategy.md (MODIFIED, +§14 + §15 + §16)
 ```
+
+---
+
+## 16. Sprint D-1 设计 v2 (2026-07-28)
+
+> **修订背景**: §14 Sprint C 设计稿 v1 经架构师 review, 暴露 **4 项缺失 + 2 项地雷**, 本节为 v2 修订版。
+> **纪律**: §3.8 修 bug 归因纪律 (逐项承认 + 修订), §3.5 4 类图重画。
+
+### 16.1 缺口承认 (4 项)
+
+| # | 缺口 | v1 错误 | v2 修订 |
+|---|------|---------|---------|
+| 1 | **Guard 模块在 deps 中完全消失** | 只注入 `notifier` (通用), 缺 `guard.onBlock(reason, error)` 回调; blocked 触发后 warmup 降档逻辑无处落地 | AutoHandlerDeps 加 `guard?: { onBlock: (reason, error) => Promise<void> }` (per §3.13 layer 标注) |
+| 2 | **失败率监控机制 (config 暴露缺失)** | 硬编码 `0.3` 在 auto-handler.ts:77; 没走 config | `config.safety.max_failure_rate: number` 默认 0.3, deps.failureRateThreshold 从 config 取 |
+| 3 | **`--quota` 覆盖逻辑含糊** | `quota.morning = opts.quota` (上午 60 + 下午 60 = 120, 不符 user 本意) | `--quota N` = dailyCap = N, 按 `quota.morning / (quota.morning + quota.afternoon)` 比例拆 (默认 40:60) |
+| 4 | **accountMeta 加载模块未定义** | 时序图调 `loadAccountMeta()` 但关系图无 owner | 新增 `src/auto/account-meta-store.ts` (singleton + POSIX atomic write + recordBlock + regressWarmup) |
+
+### 16.2 地雷引用 (2 项)
+
+| # | 地雷 | D-1 必含约束 |
+|---|------|-------------|
+| 5 | **SIGTERM 安全落盘 (回退风险)** | `counter-store.ts:81` `fd.sync()` 已落地; probe F1-F5 12/12 PASS (commit `26f156b`). D-1 文档必须引用 `§14.8 F1-F5`, 防止未来 refactor 回 `writeFile + openSync('r+')` 伪原子. **新增 fs 写入模块 (account-meta-store) 必须复用相同 POSIX 模式**. |
+| 6 | **退出码歧义 (全 reject 但 counter 走完)** | RunStats 加 `effective_successes: number` (实际 BOSS 200 OK 数); CLI 加 `--strict-exit-code` flag (默认 false, 开启后 effective=0 → exit 2 视为致命软错误) |
+
+### 16.3 §3.5 4 类图 v2
+
+#### 16.3.1 架构图 (D1.1.v2)
+
+```
+                         ┌──────────────────────────────────────────┐
+                         │  user @ terminal                         │
+                         │  $ bapply auto --phase morning --quota 60│
+                         │  $ bapply auto init-config [--force]     │
+                         └─────────────┬────────────────────────────┘
+                                       │ argv
+                                       ▼
+                         ┌──────────────────────────────────────────┐
+                         │  bin/bapply.js (tsx wrapper)             │
+                         └─────────────┬────────────────────────────┘
+                                       │
+                                       ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│  src/cli/index.ts (commander)                                          │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │  program.command('auto')                                         │  │
+│  │    .option('--config <path>')                                    │  │
+│  │    .option('--dry-run')                                          │  │
+│  │    .option('--quota <n>')        [比例拆 D-1]                    │  │
+│  │    .option('--phase morning|afternoon')                          │  │
+│  │    .option('--date <YYYY-MM-DD>')                                │  │
+│  │    .option('--strict-exit-code')  [缺口 6]                        │  │
+│  │    .action(runAutoCommand) ──────────────────────────┐           │  │
+│  └─────────────────────────────────────────────────────┼──────────┘  │
+│  ┌─────────────────────────────────────────────────────┼──────────┐  │
+│  │  program.command('auto').command('init-config')     │           │  │
+│  │    .option('--force')                                │           │  │
+│  │    .action(runAutoInitConfig) ──────┐                │           │  │
+│  └─────────────────────────────────────┼────────────────┼──────────┘  │
+└────────────────────────────────────────┼────────────────┼─────────────┘
+                                         │                │
+                          ┌──────────────┘                │
+                          ▼                               ▼
+              ┌─────────────────────────┐    ┌──────────────────────────┐
+              │ auto-config-init-       │    │ auto-handler.ts (扩)     │
+              │ handler.ts (D-1c 新)    │    │  runDailyLoop(deps,date) │
+              │  writeTemplateYAML()    │    │  ↑ buildDefaultDeps:     │
+              │  writeTemplateAccountMeta│   │  - guard.onBlock (D-1)   │
+              │  → ~/.bapply/auto.yaml  │    │  - accountMetaStore (D-1)│
+              │  → ~/.bapply/           │    │  - strictExitCode (D-1)  │
+              │     account-meta.json   │    │  - safety.max_failure_   │
+              └─────────────────────────┘    │    rate (D-1)            │
+                          │                  └──────────────┬───────────┘
+                          ▼                                 │
+              ┌─────────────────────────┐                   │
+              │ config-loader.ts (D-1a) │                   │
+              │  loadAutoConfig(opts)   │                   │
+              │  - AutoConfigError      │                   │
+              │    layer='CONFIG'       │                   │
+              │  - --quota 比例拆分     │                   │
+              │  - safety 默认合并      │                   │
+              └────────┬────────────────┘                   │
+                       │                                    │
+                       ▼                                    │
+              ┌─────────────────────────┐                   │
+              │ config-schema.ts (D-1a) │                   │
+              │  AutoConfig (zod)       │                   │
+              │  + safety.max_failure_  │                   │
+              │    rate 默认 0.3        │                   │
+              └─────────────────────────┘                   │
+                       ▲                                    │
+                       │                                    │
+              ┌────────┴────────────┐                       │
+              │ account-meta-       │◄──────────────────────┤
+              │ store.ts (D-1b 新)  │  load/save/recordBlock │
+              │  POSIX atomic       │  /regressWarmup        │
+              └─────────────────────┘                       │
+                       ▲                                    │
+                       │ hook                                │
+              ┌────────┴────────────┐                       │
+              │ guard.ts (C-2b 已有) │  GuardError 触发 ────►│
+              └─────────────────────┘                       │
+                                                              ▼
+                                              ┌──────────────────────────┐
+                                              │ state machine (per §14.2.4)│
+                                              │  idle → login → running  │
+                                              │    ↓ GuardError / 失败率  │
+                                              │  [blocked] ← guard.onBlock│
+                                              │    ↓ accountMetaStore.   │
+                                              │      recordBlock         │
+                                              │    ↓ notifier critical   │
+                                              │  done | aborted          │
+                                              └──────────────────────────┘
+```
+
+#### 16.3.2 时序图 (D1.2.v2 — 加 guard.onBlock 分支)
+
+```
+[user] bapply auto --phase morning --date 2026-07-29 --quota 60 --strict-exit-code
+   │
+   ▼
+[CLI parser]  parseArgs → opts { config, dryRun, quota=60, phase, date, strictExitCode=true }
+   │
+   ▼
+[runAutoCommand]
+   │
+   ▼
+[config-loader.loadAutoConfig(opts)]
+   │
+   ├─ readFile ~/.bapply/auto.yaml ────────→ [fs]
+   │                                         │
+   │                                         ├─ ENOENT? → throw AutoConfigError('not_found')
+   │                                         │   CLI catch: "❌ 跑 init-config" → exit(2)
+   │                                         │
+   ├─ yaml.parse ─→ YAMLParseError ─────────→ throw AutoConfigError('yaml_parse')
+   │                                         │   CLI catch: "❌ <行号>" → exit(2)
+   │
+   ├─ configSchema.safeParse ─→ zod 校验 ───→ throw AutoConfigError('schema_invalid')
+   │                                         │   CLI catch: "❌ <字段路径>" → exit(2)
+   │
+   ├─ merge defaults (warmup, safety.max_failure_rate=0.3)
+   │
+   ├─ apply --quota override [缺口 3 修订]:
+   │   if opts.quota:
+   │     dailyCap = opts.quota                    // 60
+   │     ratio = quota.morning / (morning+afternoon)  // 40/100 = 0.4
+   │     quota.morning = round(dailyCap * ratio)     // 60 × 0.4 = 24
+   │     quota.afternoon = dailyCap - quota.morning   // 60 - 24 = 36
+   │
+   └─→ { config, accountMeta }
+   │
+   ▼
+[account-meta-store.load()]    [缺口 4 补充]
+   │
+   ├─ ENOENT? → 自动 init defaults (registeredAt = now), save
+   │
+   └─ return parsed
+   │
+   ▼
+[auto-handler.buildDefaultDeps(opts, accountMeta, config)]    [D-1 新函数]
+   │
+   │ deps = {
+   │   bossSearch, sendGreeting, loginByQR (boss 层),
+   │   counterStore: createFsCounterStore,
+   │   accountMetaStore: accountMetaStoreInstance,           ← 缺口 4
+   │   guard: {                                              ← 缺口 1
+   │     onBlock: async (reason, error) => {
+   │       await accountMetaStore.recordBlock(reason)
+   │       if (accountMetaStore.consecutiveBlocks >= safety.consecutive_guard_threshold)
+   │         await accountMetaStore.regressWarmup()
+   │       await notifier.notify('critical', `[AUTO.guard] ${reason}`)
+   │     }
+   │   },
+   │   notifier: consoleNotifier,
+   │   accountMeta, config,
+   │   failureRateThreshold: config.safety.max_failure_rate,  ← 缺口 2
+   │   strictExitCode: opts.strictExitCode,                   ← 缺口 6
+   │ }
+   │
+   ▼
+[runDailyLoop(deps, date)]
+   │
+   │ for each job:
+   │   ├─ throttleSend → {proceed|sleep|throw ThrottleError}
+   │   ├─ if sendGreeting throws GuardError:
+   │   │   await deps.guard.onBlock(reason, error)            ← 缺口 1 路径
+   │   │   stats.guardTriggers += 1
+   │   │   stats.blocked = true
+   │   │   break
+   │   ├─ if sendGreeting throws (other): stats.failed += 1
+   │   ├─ stats.sent += 1
+   │   ├─ if success: stats.effective_successes += 1          ← 缺口 6
+   │   ├─ 每 N 次迭代:
+   │   │   if stats.failed/stats.sent > config.safety.max_failure_rate:  ← 缺口 2
+   │   │     await deps.guard.onBlock('high_failure_rate', null)
+   │   │     stats.blocked = true
+   │   │     break
+   │
+   ▼
+[RunResult { exitCode, stats, state }]
+   │
+   │ stats.effective_successes = BOSS 200 OK count
+   │
+   ├─ if opts.strictExitCode && effective_successes === 0 && sent > 0:
+   │     exitCode = 2   ← 缺口 6 致命软错误
+   │
+   ▼
+[CLI] process.exit(result.exitCode)
+```
+
+#### 16.3.3 关系图 (D1.3.v2 — 加 guard + accountMeta + safety schema)
+
+```
+src/auto/config-schema.ts (~90 行, 新)                       ← D-1a
+  interface AutoConfig {
+    version: 1
+    searches: SearchEntry[]                                  ← 至少 1 项
+    quota: { morning, afternoon, weekly_cap }
+    warmup?: { enabled, schedule[] }
+    throttle: { morning_interval_ms, afternoon_interval_ms, jitter_pct,
+                long_pause, afternoon_mid_break }
+    safety: {                                                ← 缺口 2 暴露
+      guard_trigger_policy: 'abort_day' | 'abort_run' | 'continue'
+      max_failure_rate: number                               ← 默认 0.3 (per R3)
+      consecutive_guard_threshold: number                    ← 默认 3 (per §2)
+      auto_regress_warmup: boolean                           ← 默认 true
+    }
+  }
+  export const configSchema: z.ZodType<AutoConfig>
+
+src/auto/config-loader.ts (~70 行, 新)                       ← D-1a
+  class AutoConfigError extends Error {                      ← per §3.13
+    readonly layer = 'CONFIG' as const
+    constructor(public code: 'not_found'|'yaml_parse'|'schema_invalid',
+                options?: ErrorOptions)
+  }
+  function isAutoConfigError(e: unknown): e is AutoConfigError
+  async function loadAutoConfig(opts: LoadOpts): Promise<{ config, accountMeta }>
+        │ 应用 --quota 比例拆 (缺口 3)
+        │ 应用 safety 默认值 (缺口 2)
+
+src/auto/account-meta-store.ts (~90 行, 新)                   ← D-1b 缺口 4
+  interface AccountMeta {                                     ← 扩 throttle.ts 已存在
+    registeredAt, accountAgeDays, baseDailyCap,
+    targetDailyCap, weeklyCap, warmupSchedule,
+    currentTier: 'new'|'warm'|'old',                          ← 新
+    blockedHistory: Array<{ ts, reason }>                     ← 新
+  }
+  interface AccountMetaStore {
+    load(): Promise<AccountMeta>                              ← ENOENT 自动 init
+    save(meta): Promise<void>                                 ← POSIX atomic (复用 §14.8 F1-F5)
+    recordBlock(reason): Promise<AccountMeta>                 ← 持久化 + 更新 currentTier
+    regressWarmup(): Promise<AccountMeta>                     ← 连续 blocked 触发降档
+  }
+  function createFsAccountMetaStore(filepath): AccountMetaStore
+  function createInMemoryAccountMetaStore(initial?): AccountMetaStore & { reset() }
+
+src/auto/guard.ts (C-2b 已存在, 0 改)                       ← D-1 仅引用
+  class GuardError extends Error { layer = 'GUARD' as const }
+  function isGuardError(e: unknown): e is GuardError
+
+src/cli/handlers/auto-handler.ts (扩, +~80 行)                ← D-1b
+  interface AutoHandlerDeps {                                 ← Sprint C-2a 已定义, 加 3 字段
+    ...
+    accountMetaStore?: AccountMetaStore                       ← 缺口 4 (可选)
+    guard?: {                                                 ← 缺口 1 (可选)
+      onBlock: (reason: GuardReason | 'high_failure_rate',
+                error: GuardError | null) => Promise<void>
+    }
+    strictExitCode?: boolean                                  ← 缺口 6 (可选)
+  }
+  export interface RunStats {
+    sent: number; ok: number; failed: number; blocked: boolean;
+    effective_successes: number                               ← 缺口 6
+    guardTriggers: number                                     ← 新
+  }
+
+src/cli/handlers/auto-config-init-handler.ts (~70 行, 新)     ← D-1c
+  async function writeTemplateYAML(targetPath, opts): Promise<{ created, path }>
+  async function writeTemplateAccountMeta(targetPath, opts): Promise<{ created, path }>
+        │ 同步生成 2 个文件 (D-1.4 缺口)
+
+src/cli/index.ts (扩, +~60 行)                                ← D-1c
+  .command('auto')
+    .option(...7 flags per D1.1.v2...)
+    .action(runAutoCommand)
+  .command('auto').command('init-config')
+    .option('--force')
+    .action(runAutoInitConfig)
+
+docs/auto.example.yaml (~60 行, 进 git)                       ← D-1c
+  version: 1
+  searches: [{ keyword, city, limit }]
+  quota: { morning: 40, afternoon: 60, weekly_cap: 500 }
+  warmup: { enabled: true, schedule: [{day_start, cap}] }
+  throttle: { ... }
+  safety: {                                                   ← 暴露
+    guard_trigger_policy: 'abort_day'
+    max_failure_rate: 0.3
+    consecutive_guard_threshold: 3
+    auto_regress_warmup: true
+  }
+```
+
+#### 16.3.4 流程图 (D1.4.v2 — CLI 入口 + guard.onBlock 分支)
+
+```
+                            ┌─ bapply auto ─┐
+                            │   (--args)    │
+                            └───────┬───────┘
+                                    │
+                                    ▼
+                      ┌──────────────────────────────┐
+                      │ config-loader.loadAutoConfig │
+                      │ + accountMetaStore.load      │
+                      └──────────────┬───────────────┘
+                                     │
+              ┌──────────────────────┼──────────────────────┐
+              │                      │                      │
+        ENOENT?                YAML 解析错?          zod 校验错?
+              │                      │                      │
+              ▼                      ▼                      ▼
+    ┌──────────────────┐   ┌──────────────┐     ┌──────────────────┐
+    │ AutoConfigError  │   │ AutoConfig   │     │ AutoConfigError  │
+    │ ('not_found')    │   │ Error        │     │ ('schema_invalid')│
+    │ layer='CONFIG'   │   │ ('yaml_parse')│    │ layer='CONFIG'   │
+    └────────┬─────────┘   └──────┬───────┘     └────────┬─────────┘
+             │                     │                     │
+             └─────────────────────┼─────────────────────┘
+                                   │
+                                   ▼
+                          ┌──────────────────┐
+                          │ --quota 比例拆分 │  ← 缺口 3 修订
+                          │ safety 默认合并  │  ← 缺口 2 修订
+                          └────────┬─────────┘
+                                   │
+                                   ▼
+                          ┌──────────────────────┐
+                          │ buildDefaultDeps     │
+                          │ - counterStore (fs)  │
+                          │ - accountMetaStore   │  ← 缺口 4
+                          │ - guard.onBlock      │  ← 缺口 1
+                          │ - strictExitCode     │  ← 缺口 6
+                          └────────┬─────────────┘
+                                   │
+                                   ▼
+                          ┌──────────────────┐
+                          │ runDailyLoop     │  ← Sprint C-2a 状态机 (扩)
+                          └────────┬─────────┘
+                                   │
+       ┌───────────────────┬───────┴────────┬───────────────────┐
+       │                   │                │                   │
+ per-job success    per-job failure  GuardError 抛出    失败率超阈
+       │                   │                │                   │
+       ▼                   ▼                ▼                   ▼
+ stats.effective_    stats.failed   guard.onBlock       guard.onBlock
+  successes += 1     += 1           (reason, error)    ('high_failure_
+       │                   │           │                  rate', null)
+       │                   │           ▼                       │
+       │                   │    accountMetaStore.recordBlock  │
+       │                   │    notifier.notify('critical')    │
+       │                   │           │                       │
+       │                   │           ▼                       ▼
+       │                   │    stats.guardTriggers += 1      │
+       │                   │    stats.blocked = true          │
+       │                   │           │                       │
+       └───────────────────┴───────────┴───────────────────────┘
+                                       │
+                                       ▼
+                              ┌──────────────────┐
+                              │ RunResult 构造:  │
+                              │ - exitCode (R6)  │
+                              │ - strictExitCode?│  ← 缺口 6 修订
+                              │   effective=0   │
+                              │   → exit 2      │
+                              │ - stats.effective│
+                              │   _successes    │
+                              └────────┬─────────┘
+                                       │
+                                       ▼
+                              process.exit(exitCode)
+
+                            ┌─ bapply auto init-config ─┐
+                            │   (--force?)              │
+                            └─────────┬─────────────────┘
+                                      │
+                                      ▼
+                          ┌─────────────────────────┐
+                          │ writeTemplateYAML       │ ← 同时写 2 个文件
+                          │ writeTemplateAccountMeta│    (D-1.4 缺口 4)
+                          │ ~/.bapply/auto.yaml     │
+                          │ ~/.bapply/              │
+                          │   account-meta.json     │
+                          └────────┬────────────────┘
+                                   │
+                                   ▼
+                          ┌──────────────────┐
+                          │ return           │
+                          │ {created, paths} │
+                          └──────────────────┘
+```
+
+### 16.4 Sprint D-1 子任务拆分 (per §4.3)
+
+| Sprint | src files | tests | 范围 |
+|--------|-----------|-------|------|
+| **D-1a** | 2 new (config-schema + config-loader) | T21 + T22 + T23 | config-schema zod + loadAutoConfig + AutoConfigError + --quota 比例拆 + safety 默认值合并 |
+| **D-1b** | 1 new (account-meta-store) + 1 modified (auto-handler) | T25 | AccountMetaStore 接口 + recordBlock + regressWarmup + auto-handler deps 加 guard/accountMetaStore/strictExitCode + effective_successes |
+| **D-1c** | 1 new (auto-config-init-handler) + 1 modified (cli/index) | T24 | writeTemplateYAML + writeTemplateAccountMeta + CLI 注册 `auto` + `auto init-config` + 7 flag + docs/auto.example.yaml |
+
+**合计**: 4 new src + 2 modified src + 5 new tests
+
+### 16.5 测试计划
+
+| ID | 测试内容 | 覆盖缺口 |
+|----|---------|---------|
+| T21 | 加载合法 `auto.yaml` → 解析成功 + safety 默认值合并 (max_failure_rate=0.3) | #2 |
+| T22 | zod 校验失败 (缺 `searches[]`) → `AutoConfigError('schema_invalid')` (layer='CONFIG') + cause 链保留 | (新) |
+| T23 | `--quota 60` → quota.morning=24 + quota.afternoon=36 (40:60 比例拆) | #3 |
+| T24 | `init-config` 同时生成 `auto.yaml` + `account-meta.json` 2 个文件 + atomic write | #4 |
+| T25 | `runDailyLoop` + `guard.onBlock('high_failure_rate')` 触发 → accountMetaStore.recordBlock + 降档 + notifier critical + exit 2 | #1, #4 |
+
+### 16.6 §3.5 触发条件 + §3.10 refactor 盘点
+
+**触发条件**: ✅ 改 API 端点 (`bapply auto` + `auto init-config` 注册) + handler 入参出参 (loadAutoConfig signature) + 数据 (config schema + account-meta schema)
+
+**§3.10 refactor 盘点 (C-3 经验复用)**:
+
+| Caller | 当前 | D-1 后 | 影响 |
+|--------|------|--------|------|
+| `auto-handler.ts:33` (counterStore) | `CounterStore` | 同 | 0 |
+| `auto-handler.ts` (runDailyLoop 调用方) | Sprint C-2a 完整 | 加 3 可选字段 (guard/accountMetaStore/strictExitCode) | 1 caller (auto-handler 自身, deps 可选) |
+| `cli/index.ts` (command 注册) | 9 commands | + `auto` + `auto init-config` (新) | 0 (新增, 不破坏) |
+
+**结论**: auto-handler 接口向下兼容 (3 新字段全部可选), 不破 Sprint C-2a 6 it() + Sprint C-2b 5 it()。
+
+### 16.7 单账号红线守住
+
+| D-1 范围 | 是否触碰 BOSS | 备注 |
+|----------|--------------|------|
+| config-schema + config-loader | ❌ 0 触碰 | zod 校验 + fs read |
+| account-meta-store | ❌ 0 触碰 | POSIX atomic write (复用 §14.8 F1-F5) |
+| auto-handler 扩展 | ❌ 0 触碰 | deps 注入, 默认 in-memory guard/notifier |
+| auto-config-init-handler | ❌ 0 触碰 | 模板字符串 + fs write |
+| CLI index 注册 | ❌ 0 触碰 | commander 声明 |
+
+### 16.8 自检 Checklist (D-1 收尾)
+
+- [ ] 5 RED 测试 (T21-T25) 写完 + 跑 RED (5 failed)
+- [ ] config-schema.ts GREEN (zod 校验 + 类型导出)
+- [ ] config-loader.ts GREEN (loadAutoConfig + AutoConfigError + --quota 比例拆 + safety 默认值)
+- [ ] account-meta-store.ts GREEN (load/save/recordBlock/regressWarmup)
+- [ ] auto-handler.ts GREEN (deps 加 3 字段 + effective_successes + guardTriggers)
+- [ ] auto-config-init-handler.ts GREEN (writeTemplateYAML + writeTemplateAccountMeta)
+- [ ] cli/index.ts GREEN (.command('auto') + .command('auto init-config') + 7 flag)
+- [ ] docs/auto.example.yaml 进 git
+- [ ] 全套 vitest 512+5/0/1 PASS (1 skipped pre-existing)
+- [ ] tsc 0 新错
+- [ ] §16.9 §10 重写流程兑现
+
+### 16.9 §10 重写流程在本节的兑现
+
+| 修订 | 位置 | 原因 | 状态 |
+|------|------|------|------|
+| AutoHandlerDeps 加 guard.onBlock (缺口 1) | §16.3.2 时序图 | 架构师 review | 即将实施 D-1b |
+| config.safety.max_failure_rate 暴露 (缺口 2) | §16.3.3 关系图 | 硬编码 0.3 不灵活 | 即将实施 D-1a |
+| --quota 比例拆 (缺口 3) | §16.3.2 时序图 | user 本意 "今天总共 N" 不是 "上午 N" | 即将实施 D-1a |
+| accountMetaStore 模块化 (缺口 4) | §16.3.3 关系图 | singleton 持久化与 counter 不同 | 即将实施 D-1b |
+| SIGTERM 安全落盘引用 (地雷 5) | §16.2 | 防止未来回退 | 文档化已完 |
+| effective_successes + strictExitCode (地雷 6) | §16.3.2 时序图 | 全 reject 误判 exit 1 | 即将实施 D-1b + D-1c |
 
 ---
 
