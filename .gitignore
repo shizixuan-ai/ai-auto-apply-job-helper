@@ -52,3 +52,6 @@ npm-debug.log*
 # 用户真实简历（个人隐私，不 commit；项目保留 简历.md.example 模板）
 简历.yml
 
+
+# CDP 抓包临时文件（含敏感 network trace, 不入库）
+tests/fixtures/cdp-trace-*.jsonl
