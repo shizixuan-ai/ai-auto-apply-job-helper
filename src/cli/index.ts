@@ -30,6 +30,7 @@ import { runListCommand, type ListResult } from './handlers/list-handler.js'
 import { runSyncCommand, type SyncResult } from './handlers/sync-handler.js'
 import { runStatsCommand, type StatsResult } from './handlers/stats-handler.js'
 import { writeBaselineRecord, writeBaselineRecordSync, type BaselineRecord } from './observability/baseline-writer.js'
+import { buildSearchFilters } from './search-filters.js'
 
 /** SendCommandResult.action → process.exit code 映射（doc-only，CLI 层 switch 用） */
 const SEND_EXIT_CODE: Record<SendCommandResult['action'], number> = {
@@ -202,15 +203,23 @@ program
   .description('搜索岗位并展示列表（加 --write 进入 LLM 评分 + 写飞书模式）')
   .argument('<keyword>', '搜索关键词，如 "前端开发"')
   .option('-c, --city <city>', '城市，如 "北京"')
+  .option('--job-type <code>', 'BOSS 职位类型码（如 1901，DEEP probe 实测）')
+  .option('--salary <code>', 'BOSS 薪资范围码（如 406）')
+  .option('--experience <code>', 'BOSS 工作经验码（如 106）')
+  .option('--degree <code>', 'BOSS 学历码（如 203）')
   .option('--headless', '无头模式运行', false)
   .option('--cdp', '通过 CDP 连接已有 Chrome')
   // ===== Sprint 1A 引入 =====
   .option('--write', '真写飞书（不传 = 仅展示；与 --dry-run 互斥）', false)
   .option('--dry-run', '走完整流程但 createRecord 是 no-op', false)
   .option('--no-threshold', '不过滤（所有 scored 都算 passed，不写 BOSS）')
-  .option('-l, --limit <n>', '最多处理 N 个岗位', (v) => Number(v), 10)
+  .option('-l, --limit <n>', '最多处理 N 个岗位（默认 15，与 pageSize 对齐）', (v) => Number(v), 15)
   .action(async (keyword: string, options: {
     city?: string
+    jobType?: string
+    salary?: string
+    experience?: string
+    degree?: string
     headless: boolean
     cdp?: boolean
     write: boolean
@@ -222,6 +231,10 @@ program
     let status: BaselineRecord['status'] = 'ok'
     let resultCount = 0
     const cdp = options.cdp ?? program.opts().cdp ?? false
+
+    // Sprint 2026-07-18：搜索过滤 flag → BOSS SearchFilters（DEEP probe 实测）
+    //   无 flag → filters=undefined，searchJobs 调用与旧行为逐字节一致
+    const filters = buildSearchFilters(options)
 
     // ===== Sprint 1A: --write / --dry-run 模式 =====
     if (options.write || options.dryRun) {
@@ -246,7 +259,7 @@ program
 
       try {
         // 1) 搜索
-        const jobs = await searchJobs(page, keyword, options.city)
+        const jobs = await searchJobs(page, keyword, options.city, filters, { maxResults: options.limit })
         resultCount = jobs.length
 
         // 2) 构造 deps
@@ -327,10 +340,20 @@ program
     const page = session.page
 
     try {
-      const jobs = await searchJobs(page, keyword, options.city)
-      resultCount = jobs.length
+      const allJobs = await searchJobs(page, keyword, options.city, filters, { maxResults: options.limit })
+      resultCount = allJobs.length
+      // Sprint 2026-07-18：纯展示路径也应用 --limit（此前静默失效——
+      //   只 --write/--dry-run 路径 slice，纯 search 直接遍历全部）
+      const jobs = allJobs.slice(0, options.limit)
 
-      console.log(chalk.cyan(`\n📋 共找到 ${jobs.length} 个岗位:\n`))
+      const limited = allJobs.length > jobs.length
+      console.log(
+        chalk.cyan(
+          `\n📋 共找到 ${allJobs.length} 个岗位` +
+            (limited ? `，显示前 ${jobs.length} 个（--limit ${options.limit}）` : '') +
+            `:\n`,
+        ),
+      )
       jobs.forEach((job, i) => {
         console.log(`  ${chalk.yellow(`${i + 1}.`)} ${chalk.bold(job.title)}`)
         console.log(`     公司: ${job.company}  |  薪资: ${job.salary}  |  城市: ${job.city}`)
@@ -402,7 +425,7 @@ program
       const resumeSummary = buildResumeSummary({
         skills: ['TypeScript', 'React', 'Node.js'],
         yearsOfExperience: 3,
-        education: '本科',
+        degree: '本科',
       })
 
       console.log(chalk.cyan('🤖 正在生成话术...'))
@@ -848,4 +871,12 @@ program
     console.log(chalk.cyan(out))
   })
 
-program.parse()
+// §3.9 顶层错误兜底（2026-07-23 Debug Gate）：
+//   commander 的 async .action() 抛错默认不接 → unhandled promise rejection → Node 崩溃
+//   （原 `program.parse()` 从建文件起 806a7d9 就无兜底）。搜索被反爬打穿等领域错误
+//   经 handler catch 后 re-throw，此前一路逃到这里变成难看的 stack-trace 崩溃。
+//   改用 parseAsync().catch()：任何 throw → 干净的红字提示 + 退出码 1。
+program.parseAsync().catch((err: any) => {
+  console.error(chalk.red(`\n❌ ${err?.message ?? err}`))
+  process.exit(1)
+})

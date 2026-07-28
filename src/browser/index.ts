@@ -303,9 +303,55 @@ export async function closeBrowserSession(session: {
 // 登录（扫码）
 // ============================================================
 
+/**
+ * 假绿防御：URL 不在 /user/ + cookies 含真 auth token（__zp_stoken__ 或 zp_at）
+ * - 2026-07-21 live 发现：BOSS 服务端短期 session 缓存 + 临时追踪 cookie（无 __zp_stoken__）
+ *   就能让首屏 URL 跳到非 /user/ 路径，原 URL 检查误判"已登录" → 立即关浏览器，user 永远扫不了 QR
+ * - 真 auth token（__zp_stoken__ / zp_at）只有扫码后服务端才会签发
+ *
+ * 注意：searchJobs 等下游**不应**用本函数做"登录态判定"——
+ *   79fd0f5 落地后 loginByQR 会在扫码后落到 /hangzhou/ 等 landing 路径，
+ *   searchJobs 后续 hard navigate 到 /web/geek/recommend 时 BOSS 服务端会 strict 校验并
+ *   redirect 到 /user/，此时 cookies 仍有效但 URL 在 /user/ → URL 单判会假红。
+ *   下游请用 hasAuthToken（仅查 cookies，不看 URL）。
+ */
+async function isLoggedIn(page: any): Promise<boolean> {
+  const url = page.url()
+  if (!url.includes('zhipin.com') || url.includes('/user/')) return false
+  const cookies = await page.context().cookies()
+  return cookies.some(
+    (c: { name: string; domain?: string }) =>
+      c.domain?.includes('zhipin.com') &&
+      (c.name === '__zp_stoken__' || c.name === 'zp_at'),
+  )
+}
+
+/**
+ * 真登录态判定（cookie-only，2026-07-21 Sprint C+ 引入）
+ * - source of truth: cookies 含 __zp_stoken__ 或 zp_at
+ * - 不查 URL：BOSS 服务端对 hard navigate 可能 strict 校验拒绝并 redirect 到 /user/，
+ *   此时 cookies 仍有效但 URL 在 /user/ —— 用 URL 判会假红
+ * - 真实登录失效会在 Phase 2 API 调用时由 zhipin 401 自然捕获，无需这里兜底
+ * - 与 isLoggedIn 的区别：isLoggedIn 用于 loginByQR（需确保 page 在 BOSS 域），
+ *   hasAuthToken 用于 searchJobs 等下游（只关心 cookies 有效性）
+ *
+ * @internal 导出供 unit test
+ */
+export async function hasAuthToken(page: any): Promise<boolean> {
+  const cookies = await page.context().cookies()
+  return cookies.some(
+    (c: { name: string; domain?: string }) =>
+      c.domain?.includes('zhipin.com') &&
+      (c.name === '__zp_stoken__' || c.name === 'zp_at'),
+  )
+}
+
 export async function loginByQR(page: any): Promise<void> {
   await page.goto(BOSS_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 })
-  if (page.url().includes('zhipin.com') && !page.url().includes('/user/')) {
+  // 假绿防御（2026-07-21 live 发现）：URL 检查 + cookies 必含 __zp_stoken__ 或 zp_at
+  // 仅 URL 不在 /user/ 不足以证明已登录 —— BOSS 服务端短期 session 缓存 + 临时追踪 cookie
+  // 也能让首屏跳到非 /user/ 路径，导致"已登录"误判，关闭浏览器，user 永远看不到 QR
+  if (await isLoggedIn(page)) {
     console.log('✅ Cookie 有效，已登录')
     return
   }
@@ -320,7 +366,8 @@ export async function loginByQR(page: any): Promise<void> {
   while (true) {
     await new Promise(r => setTimeout(r, 1000))
 
-    if (page.url().includes('zhipin.com') && !page.url().includes('/user/')) {
+    // 假绿防御：QR 等待循环里也用 isLoggedIn（不再只看 URL）
+    if (await isLoggedIn(page)) {
       console.log('\n✅ 登录成功')
       await new Promise(r => setTimeout(r, 2000))
       return
@@ -339,6 +386,24 @@ export async function loginByQR(page: any): Promise<void> {
 // ============================================================
 // 搜索岗位 — API + DOM 混合模式
 // ============================================================
+
+/**
+ * BOSS 搜索过滤参数（DEEP probe 2026-07-18 抓包实测）
+ *
+ * BOSS wapi/zpgeek/search/joblist.json 接受这些为【string 顶层字段】
+ * （city 是 number，过滤码是 string——DEEP postData 逐个确认）
+ * 空串/undefined 不会塞进请求体。
+ */
+export interface SearchFilters {
+  /** 职位类型码，如 "1901" */
+  jobType?: string
+  /** 薪资范围码，如 "406" */
+  salary?: string
+  /** 工作经验码，如 "106" */
+  experience?: string
+  /** 学历码，如 "203" */
+  degree?: string
+}
 
 export interface SearchResult {
   id: string
@@ -392,7 +457,10 @@ export function extractHrUid(job: any): string | undefined {
 
 /** DOM-First 滚动预加载 + 摘取（API 降级时的 fallback） */
 async function extractJobsFromDOM(page: any): Promise<any[]> {
-  return page.evaluate(async (cfg: any) => {
+  // Sprint 2026-07-19：BOSS 风控 SPA 重定向会让 page.evaluate 抛 "Execution context destroyed"，
+  //   此前 throw 直接逃出 → CLI 崩。改为返空，让 searchJobs 整体返回 [] 而不是 uncaught throw。
+  try {
+    return await page.evaluate(async (cfg: any) => {
     const { scrollStep, waitMs, stableThreshold, maxRounds } = cfg
     let lastCount = 0
     let stableRounds = 0
@@ -437,12 +505,20 @@ async function extractJobsFromDOM(page: any): Promise<any[]> {
     })
     return results
   }, { scrollStep: 180, waitMs: 400, stableThreshold: 5, maxRounds: 40 })
+  } catch (e: any) {
+    if (process.env.BOSS_SEARCH_DEBUG === '1') {
+      console.warn('[searchJobs] DOM fallback failed:', e?.message?.slice(0, 200))
+    }
+    return []
+  }
 }
 
 export async function searchJobs(
   page: any,
   keyword: string,
   city?: string,
+  filters?: SearchFilters,
+  opts?: { maxResults?: number; pageThrottleMs?: number },
 ): Promise<SearchResult[]> {
   // ---- Phase 1: 安全入口 ----
   // Sprint 2D 修复：避免连续跑 search 时的 BOSS SPA navigation race
@@ -487,7 +563,14 @@ export async function searchJobs(
   }
 
   // 如果 recommend 也被重定向（仍 about:blank 或 /user/），抛错
-  if (page.url() === 'about:blank' || page.url().includes('/user/')) {
+  // Sprint C+ 修复（2026-07-21，ADR-0014）：79fd0f5 后 loginByQR 落点从 /web/geek/job 变到
+  //   /hangzhou/ 等 landing 路径，searchJobs 后续 hard navigate 时 BOSS 服务端 strict 校验
+  //   经常 redirect 到 /user/ —— 此时 cookies 仍有效，URL 单判会假红
+  // 新策略：about:blank = goto 完全失败（独立抛错），/user/ 改成 cookies 双判
+  if (page.url() === 'about:blank') {
+    throw new Error('页面未加载成功，请检查网络后重试')
+  }
+  if (!(await hasAuthToken(page))) {
     throw new Error('登录已失效，请先运行 bapply login 重新扫码登录')
   }
 
@@ -496,10 +579,23 @@ export async function searchJobs(
     query: keyword,
     scene: 1,
     page: 1,
-    pageSize: 20,
+    pageSize: 15,
   }
   if (city && CITY_CODES[city]) {
     apiBody.city = CITY_CODES[city]
+  }
+
+  // Sprint 2026-07-18：过滤参数（DEEP probe 抓包实测）
+  //   BOSS 接受 jobType/salary/experience/degree 为 string 顶层字段。
+  //   只塞"有值"的——空串/undefined 不进 body，保证无 filter 调用的 apiBody
+  //   与改动前逐字节一致（回归安全）。
+  if (filters) {
+    for (const key of ['jobType', 'salary', 'experience', 'degree'] as const) {
+      const value = filters[key]
+      if (value) {
+        apiBody[key] = value
+      }
+    }
   }
 
   // ⚠️ Sprint 2B P0 修复：env 判断移到 host 代码（page.evaluate 在浏览器上下文，
@@ -510,20 +606,91 @@ export async function searchJobs(
   // Sprint 2026-07-13 user-rolled-back：原本改为 robustEvaluate（ADR-0005），
   //   因 BOSS 服务端风控拦截才是真实问题（参见 feedback_boss_anti_bot_status memory）
   //   robustEvaluate 本身保留在 ./robust-evaluate.ts，后续 sprint 收编其他调用点
-  const apiResult = await page.evaluate(async (body: any) => {
+  // Sprint 2026-07-19：fetchPageJson 双重 try/catch
+  //   内层：fetch/json 异常 → {error}
+  //   外层：page.evaluate 自身异常（如风控 SPA navigation 摧毁 execution context）→ {error}
+  //   否则 throw 会逃出循环，触发不了原 DOM fallback
+  // Sprint 2026-07-19b：URL 加 ?_=<Date.now()> cache buster（与 BOSS web 一致：trace 抓 18 次全用此格式）
+  const fetchPageJson = async (body: any) => {
     try {
-      const res = await fetch('https://www.zhipin.com/wapi/zpgeek/search/joblist.json', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      })
-      const json = await res.json()
-      return json
+      return await page.evaluate(async (b: any) => {
+        try {
+          const res = await fetch(`https://www.zhipin.com/wapi/zpgeek/search/joblist.json?_=${Date.now()}`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(b),
+          })
+          return await res.json()
+        } catch (e: any) {
+          return { error: e.message }
+        }
+      }, body)
     } catch (e: any) {
-      return { error: e.message }
+      return { error: `page.evaluate threw: ${e.message}` }
     }
-  }, apiBody)
+  }
+
+  // Sprint 2026-07-19：分页 page 循环（DEEP probe 实测 page/pageSize 字段）
+  //   逐页拉取累加 + 跨页去重（encryptJobId）。停止条件（任一）：
+  //     1. 页返回 < pageSize（最后一页/空页）
+  //     2. 累计 >= maxResults（够了）
+  //     3. pageNum >= 安全上限 MAX_PAGES（防跑飞）
+  //   ⚠️ 停止靠"短页"启发式——BOSS hasMore/totalCount 字段名未实证（[AI 假设]）。
+  //   maxResults 缺省 = 单页(pageSize)，无 opts 调用即旧的单页行为（向后兼容）。
+  //   pageThrottleMs 页间节流（反爬，连续多页调用是风控高危模式）；测试传 0。
+  const PAGE_SIZE = apiBody.pageSize as number
+  const maxResults = opts?.maxResults ?? PAGE_SIZE
+  // Sprint 2026-07-19b：throttle 调速 + jitter
+  //   base 1500→3000ms（对齐 BOSS web 实测间隔 2.89s+）
+  //   + random(0, 13000) jitter（模拟用户自然滚动节奏，避免固定间隔被识别为 bot）
+  //   总间隔 3-16s（与 BOSS web 实测 2.89-15.54s 一致）
+  //   pageThrottleMs=0 → 跳过 throttle 和 jitter（测试用）
+  const pageThrottleMs = opts?.pageThrottleMs ?? 3000
+  const pageThrottleJitterMs = 13_000
+  const MAX_PAGES = 10
+
+  let firstApiResult: any = null
+  const rawJobList: any[] = []
+  const seenJobIds = new Set<string>()
+
+  for (let pageNum = 1; pageNum <= MAX_PAGES; pageNum++) {
+    const pageResult = await fetchPageJson({ ...apiBody, page: pageNum })
+    if (pageNum === 1) firstApiResult = pageResult
+
+    // 页级错误检查（P0 fix）：fetchPageJson catch 会返 {error}（无 code 字段），
+    //   此前被静默吞掉，line 720-721 的 fallback 日志不触发。中间页失败 → log + break。
+    if (pageResult?.error || pageResult?.code !== 0) {
+      if (isDebug || isProbe) {
+        console.warn(`[searchJobs] page ${pageNum} failed:`, pageResult?.error ?? `code=${pageResult?.code}`)
+      }
+      break
+    }
+
+    const list =
+      pageResult?.code === 0 && Array.isArray(pageResult?.zpData?.jobList)
+        ? pageResult.zpData.jobList
+        : []
+
+    for (const job of list) {
+      const jid = job.encryptJobId
+      if (jid && seenJobIds.has(jid)) continue // 跨页去重
+      if (jid) seenJobIds.add(jid)
+      rawJobList.push(job)
+    }
+
+    if (list.length < PAGE_SIZE) break // TODO[Sprint D]: 实证 BOSS hasMore/totalCount，替换短页启发式（commit 已诚实标注）
+    if (rawJobList.length >= maxResults) break // 够了
+    if (pageNum >= MAX_PAGES) break // 安全上限
+
+    if (pageThrottleMs > 0) {
+      const jitter = Math.floor(Math.random() * pageThrottleJitterMs)
+      await new Promise((r) => setTimeout(r, pageThrottleMs + jitter))
+    }
+  }
+
+  // firstApiResult 保留供 probe/debug + code 检查 + fallback 沿用（都看第 1 页）
+  const apiResult = firstApiResult ?? {}
 
   // 调试/探针：page.evaluate 之外做（host 有完整 Node API）
   if ((isDebug || isProbe) && apiResult?.zpData?.jobList?.[0]) {
@@ -571,9 +738,9 @@ export async function searchJobs(
     }
   }
 
-  // API 成功 → 解析结构化数据
-  if (apiResult.code === 0 && apiResult.zpData?.jobList?.length > 0) {
-    const jobs: SearchResult[] = apiResult.zpData.jobList.map((job: any) => ({
+  // API 成功 → 解析结构化数据（rawJobList = 分页累加去重后的原始 job）
+  if (rawJobList.length > 0) {
+    const jobs: SearchResult[] = rawJobList.map((job: any) => ({
       id: job.encryptJobId || `api_${Math.random().toString(36).slice(2, 9)}`,
       title: job.jobName ?? '',
       company: job.brandName ?? '',
@@ -633,7 +800,8 @@ export async function searchJobs(
       // DOM 提取失败不影响 API 数据
     }
 
-    return jobs
+    // 分页累加可能略超 maxResults（最后一页整页压过阈值）→ 截到调用方要的上限
+    return jobs.slice(0, maxResults)
   }
 
   // ---- Fallback: API 失败，纯 DOM 提取 ----
@@ -641,14 +809,29 @@ export async function searchJobs(
   if (apiResult.message) console.warn(`   原因: ${apiResult.message}`)
   if (apiResult.error) console.warn(`   异常: ${apiResult.error}`)  // Sprint 2B P0: page.evaluate fetch 抛错信息
 
-  await page.goto(`https://www.zhipin.com/web/geek/job?query=${encodeURIComponent(keyword)}`, {
-    waitUntil: 'domcontentloaded',
-    timeout: 30_000,
-  })
+  // §3.9 错误传播：fallback 的 page.goto 是「降级路径的降级路径」，此前(806a7d9,
+  //   2026-06-30 建文件起)裸奔无 try/catch。API 主路径一旦被反爬打穿走到这里，
+  //   BOSS 常直接掐连接(ERR_CONNECTION_CLOSED) / 导航失败 → 原始 Playwright 错误
+  //   逃出 searchJobs → CLI 顶层无兜底 → Node uncaught 崩溃。
+  //   这里把它转成「可操作的领域错误」：告诉用户是反爬 + 给下一步建议。
+  //   ⚠️ 保留原始 err.message 作为括号内证据（§3.8 不截断调试信息），方便归因。
+  try {
+    await page.goto(`https://www.zhipin.com/web/geek/job?query=${encodeURIComponent(keyword)}`, {
+      waitUntil: 'domcontentloaded',
+      timeout: 30_000,
+    })
+  } catch (err: any) {
+    throw new Error(
+      `搜索失败：BOSS 反爬拦截了 API 直调与降级页面加载（${err?.message ?? '未知错误'}）。` +
+        `当前 session/IP 很可能已被风控标记。建议：稍后重试、更换网络 IP、降低搜索频率。`,
+    )
+  }
 
   // 如果被重定向，已无计可施
   if (page.url() === 'about:blank') {
-    throw new Error('页面被反爬拦截，请使用 --cdp 模式连接真实 Chrome')
+    throw new Error(
+      '页面被反爬拦截（降级页面重定向到空白页）。建议：用 --cdp 连接已登录的真实 Chrome，或稍后重试 / 更换网络 IP。',
+    )
   }
 
   const domJobs = await extractJobsFromDOM(page)

@@ -9,9 +9,10 @@
 //   - 简历解析失败时整体直接返回 action: 'error'（无法打分）
 // ============================================================
 
-import type { ResumeSummary } from '../../types/index.js'
+import type { ResumeSummary, ScoreResult, ScoreWeights } from '../../types/index.js'
 import { scoreJob } from '../../scoring/index.js'
-import { ResumeNotFoundError, IncompleteResumeError } from '../../resume/md-fallback.js'
+import { formatDimensionsForFeishu } from '../../scoring/persistence.js'
+import { ResumeNotFoundError, IncompleteResumeError, ResumeParseError } from '../../resume/yaml-parser.js'
 
 // ============================================================
 // 类型定义
@@ -54,7 +55,7 @@ export interface SearchWriteOptions {
 /** 简历解析结果 */
 export interface ResumeResolution {
   summary: ResumeSummary
-  source: 'md'
+  source: 'yaml'
   warnings: string[]
 }
 
@@ -67,6 +68,8 @@ export interface FeishuJobFields {
   城市?: string
   分数: number
   匹配原因: string
+  /** Sprint 1C：6 维评分详情（JSON 字符串，飞书长文本字段塞 JSON） */
+  六维详情?: string
   JD摘要: string
   /** 飞书日期字段要毫秒时间戳（不是 ISO 字符串） */
   匹配时间: number
@@ -87,7 +90,16 @@ export interface SearchWriteDeps {
    * 老测试用 (jobId) 单参 — TypeScript 允许少传 optional 参数
    */
   fetchJobDetail: (jobId: string, ctx?: { lid?: string; securityId?: string }) => Promise<string>
-  scoreJob: (jd: string, summary: ResumeSummary, llm: unknown) => Promise<number>
+  /**
+   * Sprint 1C：scoreJob 返 ScoreResult（含 totalScore + totalReason + 6 维 dimensions）
+   * weights 参数 optional — 不传时用 DEFAULT_WEIGHTS
+   */
+  scoreJob: (
+    jd: string,
+    summary: ResumeSummary,
+    llm: unknown,
+    weights?: ScoreWeights,
+  ) => Promise<ScoreResult>
   createRecord: (fields: FeishuJobFields) => Promise<{ record_id: string }>
   resolveResume: () => Promise<ResumeResolution>
   /** LLM 实例（实际未在 handler 直接用，但 scoreJob deps 需要） */
@@ -106,7 +118,7 @@ export type SearchWriteResult =
       written: number
       failed: number
       dryRun: boolean
-      resumeSource: 'md'
+      resumeSource: 'yaml'
       resumeWarnings: string[]
     }
   | {
@@ -136,7 +148,11 @@ export async function runSearchAndWrite(
   try {
     resume = await deps.resolveResume()
   } catch (err) {
-    if (err instanceof ResumeNotFoundError || err instanceof IncompleteResumeError) {
+    if (
+      err instanceof ResumeNotFoundError ||
+      err instanceof IncompleteResumeError ||
+      err instanceof ResumeParseError
+    ) {
       return { action: 'error', error: err.message }
     }
     throw err
@@ -155,10 +171,10 @@ export async function runSearchAndWrite(
   for (const job of jobs) {
     try {
       const jd = await deps.fetchJobDetail(job.id, { lid: job.lid, securityId: job.securityId })
-      const score = await deps.scoreJob(jd, resume.summary, deps.llm)
+      const result = await deps.scoreJob(jd, resume.summary, deps.llm)
       scored++
 
-      const meetsThreshold = opts.noThreshold || score >= deps.threshold
+      const meetsThreshold = opts.noThreshold || result.totalScore >= deps.threshold
       if (!meetsThreshold) continue
 
       passed++
@@ -166,15 +182,17 @@ export async function runSearchAndWrite(
       // dryRun 或 --no-write 都不调 createRecord
       if (!opts.write) continue
 
-      const reason = `score=${score.toFixed(2)}`
+      const reason = `score=${result.totalScore.toFixed(2)}`
       const fields: FeishuJobFields = {
         职位: job.title,
         公司: job.company,
         BOSS_ID: job.id,
         薪资: job.salary ?? '',
         城市: job.city ?? '',
-        分数: score,
+        分数: result.totalScore,
         匹配原因: reason.slice(0, REASON_MAX),
+        // Sprint 1C：6 维详情塞 JSON 字符串进飞书长文本字段
+        六维详情: formatDimensionsForFeishu(result),
         JD摘要: jd.slice(0, JD_SNIPPET_MAX),
         // 飞书日期字段要毫秒时间戳（不是 ISO 字符串）
         匹配时间: Date.now(),

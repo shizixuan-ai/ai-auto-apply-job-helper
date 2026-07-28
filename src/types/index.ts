@@ -3,7 +3,37 @@
 // ============================================================
 
 /** LLM 供应商标识 */
-export type LLMProvider = 'deepseek' | 'openai' | 'anthropic' | 'ollama'
+/**
+ * Sprint 1D Phase 2（ADR-0011 §2.1）：string 化（替原 union），未来加供应商 0 改 types。
+ * 已知值见下方 LLM_PROVIDER_VALUES 常量（提供 IDE 提示 + 编译期拼写检查）。
+ * 运行时校验：createLLM switch default 抛 "不支持的 LLM 供应商"。
+ */
+export type LLMProvider = string
+
+/**
+ * Sprint 1D Phase 2（ADR-0011 §2.1）：已知 LLM 供应商常量
+ * - deepseek:  OpenAI 协议，默认 https://api.deepseek.com/v1，模型 deepseek-chat
+ * - openai:    OpenAI 协议，默认 https://api.openai.com/v1，模型 gpt-4o
+ * - anthropic: Anthropic 协议，默认 https://api.anthropic.com，模型 claude-sonnet-4-20250514
+ * - ollama:    OpenAI 协议（本地），默认 http://localhost:11434/v1，模型 llama3
+ * - minimax:   Anthropic 协议，端点 https://api.minimaxi.com/anthropic（ADR §1 H1），模型 MiniMax-M2.7-highspeed，鉴权 Bearer（ADR-0012）
+ * - huoshan:   Anthropic 协议（火山方舟 coding plan），端点 https://ark.cn-beijing.volces.com/api/coding，模型 glm-5.2，鉴权 Bearer（ADR-0012）
+ * - anthropic-compat: 通用 Anthropic 协议供应商（ADR-0013），所有字段从 env 读，无默认
+ *                    必须设 LLM_BASE_URL / LLM_MODEL / LLM_API_KEY;LLM_AUTH_STYLE 可选(默认 bearer)
+ *                    适配场景: deepseek v4 / 智谱 GLM API / 通义千问 Anthropic 兼容 / 任何 /v1/messages 端点
+ *
+ * 用法：
+ *   const provider: LLMProvider = LLM_PROVIDER_VALUES.MINIMAX  // IDE 拼写检查
+ */
+export const LLM_PROVIDER_VALUES = {
+  DEEPSEEK: 'deepseek',
+  OPENAI: 'openai',
+  ANTHROPIC: 'anthropic',
+  OLLAMA: 'ollama',
+  MINIMAX: 'minimax',
+  HUOSHAN: 'huoshan',
+  ANTHROPIC_COMPAT: 'anthropic-compat',
+} as const
 
 /** 投递状态 */
 export type ApplyStatus = 'pending' | 'greeted' | 'replied' | 'interviewing' | 'rejected' | 'closed'
@@ -105,13 +135,105 @@ export interface FeishuRecord {
   fields: Record<string, unknown>
 }
 
-/** 简历摘要（Sprint 1A 引入，供 scoring/greet 共用） */
+/**
+ * 简历摘要（Sprint 1B 扩展到 15 字段，原 5 字段 → 新 15 字段）
+ *
+ * - Sprint 1A：name, yearsOfExperience, education, skills, recentProjects
+ * - Sprint 1B 强切：移除 education（拆分为 school + degree）
+ *   + 新增 9 字段：gender, age, phone, email, targetRole, school, degree, major, isElite, isBigTech, workSummary
+ * - 所有字段 optional：parser 强校验，类型上 defensive
+ * - isElite / isBigTech 必填 boolean（候选人手填，不代码推）
+ *
+ * 字段来源：src/resume/yaml-parser.ts
+ */
 export interface ResumeSummary {
+  // 基础信息
   name?: string
+  gender?: '男' | '女' | '未知'
+  age?: number
+  phone?: string
+  email?: string
+
+  // 求职意向
+  targetRole?: string
+
+  // 教育背景（Sprint 1B 拆 education → school + degree）
+  school?: string
+  degree?: '本科' | '硕士' | '博士' | '其他'
+  major?: string
+
+  // 推断字段（Sprint 1B 手填，候选人最清楚自己）
+  isElite?: boolean
+
+  // 工作经历
   yearsOfExperience?: number
-  education?: string
-  skills?: string[]
+  isBigTech?: boolean
+  /** array of "{公司} - {时间段} - {职位} - {描述}"（yaml-parser 拍平后形态） */
   recentProjects?: string[]
+
+  // 技能
+  skills?: string[]
+
+  // 自我介绍（YAML `|` 块，parser 已 trim）
+  workSummary?: string
+}
+
+// ============================================================
+// Sprint 1C：6 维评分相关类型
+// ============================================================
+
+/**
+ * 单维度评分（Sprint 1C 6 维加权评分）
+ * - score: 0-1 之间的小数
+ * - reason: 评分理由（LLM 生成，可能为空字符串）
+ */
+export interface ScoreDimension {
+  score: number
+  reason: string
+}
+
+/**
+ * 6 维评分（Sprint 1C）
+ * 维度顺序按权重从高到低排列（仅美学，逻辑无关）
+ */
+export interface ScoreDimensions {
+  /** 学历匹配：学校层次 + 专业相关性 + 是否 985/211 */
+  education: ScoreDimension
+  /** 经验相关：工作年限 + 行业相关性 + 职位层级 */
+  experience: ScoreDimension
+  /** 技能契合：JD 要求技能 vs 候选人技能的覆盖度 */
+  skill: ScoreDimension
+  /** 项目深度：近期项目的复杂度、规模、影响力 */
+  project: ScoreDimension
+  /** 稳定性：跳槽频率 + 在职时长 */
+  stability: ScoreDimension
+  /** 综合潜力：成长性 + 学习能力 + 管理潜力 */
+  potential: ScoreDimension
+}
+
+/**
+ * 6 维权重（Sprint 1C）
+ * 权重总和必须 = 1（computeWeightedTotal 会校验）
+ */
+export interface ScoreWeights {
+  education: number
+  experience: number
+  skill: number
+  project: number
+  stability: number
+  potential: number
+}
+
+/**
+ * 评分结果（Sprint 1C 扩 6 维）
+ * - totalScore: 加权总分 0-1（本地重算，不信 LLM 算术）
+ * - totalReason: 总体匹配原因
+ * - dimensions: 6 维详情
+ */
+export interface ScoreResult {
+  totalScore: number
+  totalReason: string
+  dimensions: ScoreDimensions
 }
 
 /** 应用配置 */
@@ -126,13 +248,42 @@ export interface AppConfig {
   }
   llm: {
     provider: LLMProvider
-    deepseekApiKey?: string
-    openaiApiKey?: string
-    anthropicApiKey?: string
-    ollamaBaseUrl?: string
-    ollamaModel?: string
+    /**
+     * Sprint 2026-07-23 / 404-retry-5 轮教训：
+     * 协议（adapter）与供应商（provider）解耦 —— 同一供应商可能同时提供 OpenAI 协议端点
+     * 和 Anthropic 协议端点（如 DeepSeek /v1 vs /anthropic）。让用户显式选，不再写死绑。
+     * - 适用场景：用户在 .env 设 LLM_BASE_URL 指 /anthropic 端点但 LLM_PROVIDER=deepseek 时
+     *   旧实现会发 OpenAI 格式到 Anthropic 端点 → 404
+     * - 合法值: 'anthropic' | 'openai'
+     * - unset → 'anthropic'（默认，2026-07-23 决策）
+     * - 显式设了 → 完全覆盖 provider 推断的旧行为
+     */
+    adapter?: 'anthropic' | 'openai'
+    /**
+     * Sprint 1D Phase 2（ADR-0011 §2.3）：通用 3 字段
+     * - apiKey:   通用 API key（来源 env LLM_API_KEY）
+     * - baseURL:  通用 base URL（来源 env LLM_BASE_URL，可选 — provider 自带默认）
+     * - model:    通用模型名（来源 env LLM_MODEL，可选 — provider 自带默认）
+     */
+    apiKey?: string
+    baseURL?: string
+    model?: string
+    /**
+     * Anthropic 协议鉴权 header 风格（ADR-0013）
+     * - 适用场景：adapter='anthropic' 时（不论 provider 是什么）
+     * - 合法值: 'x-api-key' | 'bearer'
+     * - unset → 'bearer'（默认，适配多数国产 Anthropic 兼容）
+     */
+    authStyle?: 'x-api-key' | 'bearer'
   }
   boss: {
+    /**
+     * BOSS 直聘在线简历 UID（来源 env BOSS_RESUME_UID）
+     * @deprecated 2026-07-21：当前 src/ 无任何消费点（grep 0 hit），是死配置。
+     *                      保留解析仅为不破坏现存 .env；
+     *                      下次 sprint 确认无新使用场景后可直接删 types 字段 + config 解析 + docs 表格。
+     *                      用户侧建议：.env 删 `BOSS_RESUME_UID=...` 行。
+     */
     resumeUid?: string
   }
   browser: {
@@ -140,4 +291,6 @@ export interface AppConfig {
   }
   /** 评分阈值（search --write 命令使用，0~1） */
   scoreThreshold: number
+  /** 6 维权重（Sprint 1C，从 SCORE_WEIGHTS env 解析或用默认）*/
+  scoreWeights: ScoreWeights
 }

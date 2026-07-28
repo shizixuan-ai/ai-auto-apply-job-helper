@@ -52,16 +52,22 @@ function makeConfig(llmOverrides: Partial<AppConfig['llm']>): AppConfig {
     feishu: { appId: 'cli_test', appSecret: 'secret_test' },
     llm: {
       provider: 'deepseek',
-      deepseekApiKey: 'sk-ds-test',
-      openaiApiKey: 'sk-oai-test',
-      anthropicApiKey: 'sk-ant-test',
-      ollamaBaseUrl: 'http://localhost:11434',
-      ollamaModel: 'llama3',
+      // Sprint 1D Phase 2（ADR-0011）：apiKey 默认 'sk-test' 占位
+      // baseURL/model 默认 undefined — provider case 各自 fallback 到默认
+      apiKey: 'sk-test',
       ...llmOverrides,
     },
     boss: {},
     browser: {},
     scoreThreshold: 0.85,
+    scoreWeights: {
+      education: 0.1,
+      experience: 0.3,
+      skill: 0.1,
+      project: 0.3,
+      stability: 0.1,
+      potential: 0.1,
+    },
   }
 }
 
@@ -71,20 +77,20 @@ describe('createLLM — 供应商 switch', () => {
     mockCreate.mockReset()
   })
 
-  it('deepseek → OpenAIAdapter，baseURL=https://api.deepseek.com/v1', () => {
-    createLLM(makeConfig({ provider: 'deepseek' }))
+  it('deepseek → OpenAIAdapter，baseURL=https://api.deepseek.com（2026-07-23 跟官方文档对齐，无 /v1）', () => {
+    createLLM(makeConfig({ provider: 'deepseek', apiKey: 'sk-ds-test' }))
 
     expect(MockOpenAISpy).toHaveBeenCalledTimes(1)
     expect(MockOpenAISpy).toHaveBeenCalledWith(
       expect.objectContaining({
         apiKey: 'sk-ds-test',
-        baseURL: 'https://api.deepseek.com/v1',
+        baseURL: 'https://api.deepseek.com',
       }),
     )
   })
 
   it('openai → OpenAIAdapter，baseURL=https://api.openai.com/v1', () => {
-    createLLM(makeConfig({ provider: 'openai' }))
+    createLLM(makeConfig({ provider: 'openai', apiKey: 'sk-oai-test' }))
 
     expect(MockOpenAISpy).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -95,7 +101,7 @@ describe('createLLM — 供应商 switch', () => {
   })
 
   it('ollama → OpenAIAdapter，baseURL=http://localhost:11434/v1（不需要真实 key）', () => {
-    createLLM(makeConfig({ provider: 'ollama' }))
+    createLLM(makeConfig({ provider: 'ollama', apiKey: 'ollama' }))
 
     expect(MockOpenAISpy).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -109,6 +115,208 @@ describe('createLLM — 供应商 switch', () => {
     expect(() =>
       createLLM(makeConfig({ provider: 'unknown' as any })),
     ).toThrow(/不支持的 LLM 供应商/)
+  })
+
+  // ----------------------------------------------------------
+  // R8 (B1 / ADR-0012 §6): provider='huoshan' → AnthropicCompatAdapter + Bearer + ark coding
+  // ----------------------------------------------------------
+
+  it('R8: provider="huoshan" → AnthropicCompatAdapter (ark coding baseURL + Bearer + glm-5.2)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: () => Promise.resolve({ content: [{ type: 'text', text: 'huoshan 招呼' }] }),
+      text: () => Promise.resolve('{"content":[{"type":"text","text":"huoshan 招呼"}]}'),
+    } as unknown as Response)
+    vi.stubGlobal('fetch', fetchSpy)
+
+    try {
+      const adapter = createLLM(makeConfig({ provider: 'huoshan', apiKey: 'ark-test-key' }))
+      const result = await adapter.generate('JD 内容')
+
+      expect(result).toBe('huoshan 招呼')
+
+      const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit]
+      expect(url).toBe('https://ark.cn-beijing.volces.com/api/coding/v1/messages')
+      const headers = init.headers as Record<string, string>
+      // ADR-0012 §2.2：huoshan 走 Authorization: Bearer（ANTHROPIC_AUTH_TOKEN），不发 x-api-key
+      expect(headers['Authorization']).toBe('Bearer ark-test-key')
+      expect(headers['x-api-key']).toBeUndefined()
+      expect(headers['anthropic-version']).toBe('2023-06-01')
+      expect(init.body).toContain('glm-5.2')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  // ----------------------------------------------------------
+  // R1' (B2 / ADR-0012 §6): provider='minimax' → Bearer（原 x-api-key 是 bug）
+  // ----------------------------------------------------------
+
+  it('R1: provider="minimax" → AnthropicCompatAdapter (baseURL=https://api.minimaxi.com/anthropic + Bearer)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: () => Promise.resolve({ content: [{ type: 'text', text: 'minimax 招呼' }] }),
+      text: () => Promise.resolve('{"content":[{"type":"text","text":"minimax 招呼"}]}'),
+    } as unknown as Response)
+    vi.stubGlobal('fetch', fetchSpy)
+
+    try {
+      const adapter = createLLM(makeConfig({ provider: 'minimax', apiKey: 'sk-minimax-test' }))
+      const result = await adapter.generate('JD 内容')
+
+      expect(result).toBe('minimax 招呼')
+
+      const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit]
+      expect(url).toBe('https://api.minimaxi.com/anthropic/v1/messages')
+      const headers = init.headers as Record<string, string>
+      // ADR-0012 §5 E3：minimaxi 官方文档用 ANTHROPIC_AUTH_TOKEN（Bearer），非 x-api-key
+      expect(headers['Authorization']).toBe('Bearer sk-minimax-test')
+      expect(headers['x-api-key']).toBeUndefined()
+      expect(headers['anthropic-version']).toBe('2023-06-01')
+      expect(init.body).toContain('MiniMax-M2.7-highspeed')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  // ----------------------------------------------------------
+  // Sprint 2026-07-23: LLM_ADAPTER 显式选择协议（协议/供应商解耦）
+  // ----------------------------------------------------------
+  // 背景：用户 LLM_PROVIDER=deepseek + LLM_BASE_URL=/anthropic → OpenAIAdapter 写死
+  //   绑 deepseek，发 OpenAI 格式到 Anthropic 端点 → 404。新加 LLM_ADAPTER 字段
+  //   让用户显式选协议，LLM_PROVIDER 退化为纯标签。
+  // 决策（user 2026-07-23）：LLM_ADAPTER 缺失默认 'anthropic'。
+  // 兼容：LLM_ADAPTER 未设时，老 provider → adapter 映射保持原行为（无破坏）。
+
+  it('Sprint 2026-07-23: adapter="anthropic" + provider="deepseek" → AnthropicCompatAdapter（解耦关键 case）', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: () => Promise.resolve({ content: [{ type: 'text', text: 'v4 招呼' }] }),
+      text: () => Promise.resolve('{"content":[{"type":"text","text":"v4 招呼"}]}'),
+    } as unknown as Response)
+    vi.stubGlobal('fetch', fetchSpy)
+
+    try {
+      // 关键：provider=deepseek + adapter=anthropic + baseURL=/anthropic 端点
+      //   → 必须走 AnthropicCompatAdapter，不能走 OpenAIAdapter
+      const adapter = createLLM(makeConfig({
+        provider: 'deepseek',
+        adapter: 'anthropic',
+        apiKey: 'sk-ds-test',
+        baseURL: 'https://api.deepseek.com/anthropic',
+        model: 'deepseek-v4-flash',
+      }))
+      const result = await adapter.generate('JD 内容')
+
+      expect(result).toBe('v4 招呼')
+
+      const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit]
+      expect(url).toBe('https://api.deepseek.com/anthropic/v1/messages')
+      const headers = init.headers as Record<string, string>
+      expect(headers['Authorization']).toBe('Bearer sk-ds-test')
+      expect(headers['anthropic-version']).toBe('2023-06-01')
+      expect(init.body).toContain('deepseek-v4-flash')
+      // 关键断言：OpenAI SDK 绝不能被调用
+      expect(MockOpenAISpy).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('Sprint 2026-07-23: adapter="openai" + provider="deepseek" → 显式 OpenAIAdapter（覆盖 provider 推断）', () => {
+    const adapter = createLLM(makeConfig({
+      provider: 'deepseek',
+      adapter: 'openai',
+      apiKey: 'sk-ds-test',
+    }))
+
+    // 即便 AnthropicCompatAdapter 存在,显式 adapter=openai 也要走 OpenAI
+    expect(MockOpenAISpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiKey: 'sk-ds-test',
+        baseURL: 'https://api.deepseek.com', // 2026-07-23: 跟官方文档对齐(无 /v1)
+      }),
+    )
+  })
+
+  it('Sprint 2026-07-23: adapter 缺失 + provider=deepseek → 走老推断 OpenAIAdapter（向后兼容）', () => {
+    createLLM(makeConfig({ provider: 'deepseek', apiKey: 'sk-ds-test' }))
+
+    expect(MockOpenAISpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiKey: 'sk-ds-test',
+        baseURL: 'https://api.deepseek.com', // 2026-07-23: 跟官方文档对齐(无 /v1)
+      }),
+    )
+  })
+
+  it('Sprint 2026-07-23: adapter="anthropic" + authStyle="x-api-key" → 显式 x-api-key header', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: () => Promise.resolve({ content: [{ type: 'text', text: 'ok' }] }),
+      text: () => Promise.resolve('{"content":[{"type":"text","text":"ok"}]}'),
+    } as unknown as Response)
+    vi.stubGlobal('fetch', fetchSpy)
+
+    try {
+      const adapter = createLLM(makeConfig({
+        provider: 'deepseek',
+        adapter: 'anthropic',
+        authStyle: 'x-api-key',
+        apiKey: 'sk-x-api-key-test',
+        baseURL: 'https://api.deepseek.com/anthropic',
+      }))
+      await adapter.generate('JD')
+
+      const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit]
+      const headers = init.headers as Record<string, string>
+      expect(headers['x-api-key']).toBe('sk-x-api-key-test')
+      expect(headers['Authorization']).toBeUndefined()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  // ----------------------------------------------------------
+  // Sprint 2026-07-23 (cont): DeepSeek V4-flash 适配
+  // ----------------------------------------------------------
+  // 背景：Anthropic 协议下 V4-flash 强制 thinking,占满 1024 token 不出 text
+  // 修法：OpenAI 协议 + thinking:disabled + response_format:json_object
+  // probe-deepseek-thinking-off.mjs 实测三个 Q 全过
+
+  it('Sprint 2026-07-23: adapter="openai" + provider="deepseek" → 默认开 thinking:disabled + response_format:json_object', async () => {
+    const adapter = createLLM(makeConfig({
+      provider: 'deepseek',
+      adapter: 'openai',
+      apiKey: 'sk-ds-test',
+      baseURL: 'https://api.deepseek.com', // 2026-07-23: 跟官方文档对齐
+      model: 'deepseek-v4-flash',
+    }))
+
+    // 关键断言：构造时传 thinking + responseFormat
+    expect(MockOpenAISpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiKey: 'sk-ds-test',
+        baseURL: 'https://api.deepseek.com',
+      }),
+    )
+    // 验证 generate 行为：调 chat.completions.create 时 body 包含 thinking + response_format
+    mockCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: '{"totalScore": 0.8}' }, finish_reason: 'stop' }],
+    })
+    await adapter.generate('JD 文本')
+
+    const callArgs = mockCreate.mock.calls[0][0] as any
+    expect(callArgs.thinking).toEqual({ type: 'disabled' })
+    expect(callArgs.response_format).toEqual({ type: 'json_object' })
   })
 })
 
@@ -169,7 +377,7 @@ describe('OpenAIAdapter.generate', () => {
   })
 })
 
-describe('AnthropicAdapter.generate', () => {
+describe('AnthropicCompatAdapter.generate', () => {
   let fetchSpy: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
@@ -192,29 +400,76 @@ describe('AnthropicAdapter.generate', () => {
     } as unknown as Response
   }
 
-  it('调用 fetch 并返回 content[0].text', async () => {
+  // R5 (B5 / ADR-0011 §6): anthropic 默认 baseURL=https://api.anthropic.com 调 /v1/messages
+  it('R5: anthropic 默认 baseURL → fetch https://api.anthropic.com/v1/messages (x-api-key + anthropic-version header)', async () => {
     fetchSpy.mockResolvedValueOnce(
       mockOkResponse({
         content: [{ type: 'text', text: 'Anthropic 生成的招呼' }],
       }),
     )
 
-    const adapter = createLLM(makeConfig({ provider: 'anthropic' }))
+    const adapter = createLLM(makeConfig({ provider: 'anthropic', apiKey: 'sk-ant-test' }))
 
     const result = await adapter.generate('JD 内容', '系统提示')
 
     expect(result).toBe('Anthropic 生成的招呼')
     expect(fetchSpy).toHaveBeenCalledTimes(1)
-    expect(fetchSpy).toHaveBeenCalledWith(
-      'https://api.anthropic.com/v1/messages',
-      expect.objectContaining({
-        method: 'POST',
-        headers: expect.objectContaining({
-          'x-api-key': 'sk-ant-test',
-          'anthropic-version': '2023-06-01',
-        }),
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('https://api.anthropic.com/v1/messages')
+    expect(init.method).toBe('POST')
+    const headers = init.headers as Record<string, string>
+    // ADR-0012 §2.2：anthropic 官方保持 x-api-key（原生 API 标准），不发 Authorization
+    expect(headers['x-api-key']).toBe('sk-ant-test')
+    expect(headers['Authorization']).toBeUndefined()
+    expect(headers['anthropic-version']).toBe('2023-06-01')
+  })
+
+  // R5-supplement: AnthropicCompatAdapter 接受显式 baseURL（minimax → Bearer / ADR-0012 §2.2）
+  it('R5-supplement: 显式 baseURL=https://api.minimaxi.com/anthropic → fetch 走 minimax 端点 (Bearer)', async () => {
+    fetchSpy.mockResolvedValueOnce(
+      mockOkResponse({ content: [{ type: 'text', text: 'minimax 招呼' }] }),
+    )
+
+    const adapter = createLLM(
+      makeConfig({
+        provider: 'minimax',
+        apiKey: 'sk-minimax-test',
+        baseURL: 'https://api.minimaxi.com/anthropic',
+        model: 'MiniMax-M2.7-highspeed',
       }),
     )
+
+    await adapter.generate('JD 内容')
+
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('https://api.minimaxi.com/anthropic/v1/messages')
+    const headers = init.headers as Record<string, string>
+    expect(headers['Authorization']).toBe('Bearer sk-minimax-test')
+    expect(headers['x-api-key']).toBeUndefined()
+    expect(init.body).toContain('MiniMax-M2.7-highspeed')
+  })
+
+  // R9 (B4 / ADR-0012 §6): huoshan 错误路径 → throw（Bearer 路径不新增错误边界）
+  it('R9: huoshan 空内容 → throw（复用空内容 throw 纪律，Bearer 不改错误边界）', async () => {
+    fetchSpy.mockResolvedValueOnce(mockOkResponse({ content: [] }))
+
+    const adapter = createLLM(makeConfig({ provider: 'huoshan', apiKey: 'ark-test-key' }))
+
+    await expect(adapter.generate('JD')).rejects.toThrow(/Anthropic 返回空内容/)
+  })
+
+  it('R9: huoshan HTTP 401 → throw', async () => {
+    fetchSpy.mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+      json: () => Promise.reject(new Error('not json')),
+      text: () => Promise.resolve('{"error":"invalid token"}'),
+    } as unknown as Response)
+
+    const adapter = createLLM(makeConfig({ provider: 'huoshan', apiKey: 'ark-test-key' }))
+
+    await expect(adapter.generate('JD')).rejects.toThrow(/HTTP 401/)
   })
 
   // ----------------------------------------------------------------
@@ -225,6 +480,51 @@ describe('AnthropicAdapter.generate', () => {
     fetchSpy.mockResolvedValueOnce(mockOkResponse({ content: [] }))
 
     const adapter = createLLM(makeConfig({ provider: 'anthropic' }))
+
+    await expect(adapter.generate('JD')).rejects.toThrow(/Anthropic 返回空内容/)
+  })
+
+  // R10 (ADR-0012 §10 live 发现): 推理模型（glm-5.2 等）content[0] 是 thinking 块，
+  // 必须跳过 thinking 提取 type==='text' 块（否则误判空内容）
+  it('R10: content[0]=thinking + content[1]=text（推理模型）→ 提取 text 块', async () => {
+    fetchSpy.mockResolvedValueOnce(
+      mockOkResponse({
+        content: [
+          { type: 'thinking', thinking: '让我想想...' },
+          { type: 'text', text: '我在线，我是 glm-5.2' },
+        ],
+      }),
+    )
+
+    const adapter = createLLM(makeConfig({ provider: 'huoshan', apiKey: 'ark-test-key' }))
+
+    const result = await adapter.generate('确认在线')
+    expect(result).toBe('我在线，我是 glm-5.2')
+  })
+
+  it('R10: 多个 text 块 → 拼接', async () => {
+    fetchSpy.mockResolvedValueOnce(
+      mockOkResponse({
+        content: [
+          { type: 'thinking', thinking: '思考' },
+          { type: 'text', text: '第一段' },
+          { type: 'text', text: '第二段' },
+        ],
+      }),
+    )
+
+    const adapter = createLLM(makeConfig({ provider: 'huoshan', apiKey: 'ark-test-key' }))
+
+    const result = await adapter.generate('生成')
+    expect(result).toBe('第一段第二段')
+  })
+
+  it('R10: 只有 thinking 块无 text 块 → 抛空内容错', async () => {
+    fetchSpy.mockResolvedValueOnce(
+      mockOkResponse({ content: [{ type: 'thinking', thinking: '只想不说' }] }),
+    )
+
+    const adapter = createLLM(makeConfig({ provider: 'huoshan', apiKey: 'ark-test-key' }))
 
     await expect(adapter.generate('JD')).rejects.toThrow(/Anthropic 返回空内容/)
   })
@@ -254,5 +554,145 @@ describe('AnthropicAdapter.generate', () => {
     const adapter = createLLM(makeConfig({ provider: 'anthropic' }))
 
     await expect(adapter.generate('JD')).rejects.toThrow(/HTTP 401/)
+  })
+})
+
+// ============================================================
+// createLLM — anthropic-compat 通用 provider（ADR-0013）
+// ============================================================
+// R11: apiKey/baseURL/model 全传 → 透传给 adapter,无默认填充
+// R12: 任一必填缺失 → throw fail-fast
+// R13: authStyle='bearer' | 'x-api-key' → 对应 header,互斥
+// ============================================================
+
+describe('createLLM — anthropic-compat（ADR-0013）', () => {
+  let fetchSpy: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    MockOpenAISpy.mockClear()
+    mockCreate.mockReset()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function mockOk(body: unknown): Response {
+    return {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: () => Promise.resolve(body),
+      text: () => Promise.resolve(JSON.stringify(body)),
+    } as unknown as Response
+  }
+
+  it('R11: 全字段传 → AnthropicCompatAdapter,baseURL/model 透传无默认', async () => {
+    fetchSpy.mockResolvedValueOnce(
+      mockOk({ content: [{ type: 'text', text: 'ok' }] }),
+    )
+
+    const adapter = createLLM(
+      makeConfig({
+        provider: 'anthropic-compat',
+        apiKey: 'sk-ac-test',
+        baseURL: 'https://api.deepseek.com/anthropic',
+        model: 'deepseek-v4-flash',
+
+        authStyle: 'x-api-key',
+      }),
+    )
+
+    await adapter.generate('JD')
+
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit]
+    // 关键:baseURL/model 透传,无任何"smart default" 注入
+    expect(url).toBe('https://api.deepseek.com/anthropic/v1/messages')
+    expect((init.body as string)).toContain('deepseek-v4-flash')
+  })
+
+  it('R12: 缺 apiKey → throw "必填 LLM_API_KEY"', () => {
+    expect(() =>
+      createLLM(
+        makeConfig({
+          provider: 'anthropic-compat',
+          apiKey: undefined,
+          baseURL: 'https://x.com/anthropic',
+          model: 'm',
+        }),
+      ),
+    ).toThrow(/anthropic-compat.*必填.*LLM_API_KEY/)
+  })
+
+  it('R12: 缺 baseURL → throw "必填 LLM_BASE_URL"', () => {
+    expect(() =>
+      createLLM(
+        makeConfig({
+          provider: 'anthropic-compat',
+          apiKey: 'sk-x',
+          baseURL: undefined,
+          model: 'm',
+        }),
+      ),
+    ).toThrow(/anthropic-compat.*必填.*LLM_BASE_URL/)
+  })
+
+  it('R12: 缺 model → throw "必填 LLM_MODEL"', () => {
+    expect(() =>
+      createLLM(
+        makeConfig({
+          provider: 'anthropic-compat',
+          apiKey: 'sk-x',
+          baseURL: 'https://x.com/anthropic',
+          model: undefined,
+        }),
+      ),
+    ).toThrow(/anthropic-compat.*必填.*LLM_MODEL/)
+  })
+
+  it('R13: authStyle=bearer → Authorization: Bearer,无 x-api-key', async () => {
+    fetchSpy.mockResolvedValueOnce(mockOk({ content: [{ type: 'text', text: 'ok' }] }))
+
+    const adapter = createLLM(
+      makeConfig({
+        provider: 'anthropic-compat',
+        apiKey: 'sk-bearer',
+        baseURL: 'https://x.com/anthropic',
+        model: 'm',
+
+        authStyle: 'bearer',
+      }),
+    )
+
+    await adapter.generate('JD')
+
+    const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit]
+    const headers = init.headers as Record<string, string>
+    expect(headers['Authorization']).toBe('Bearer sk-bearer')
+    expect(headers['x-api-key']).toBeUndefined()
+  })
+
+  it('R13: authStyle=x-api-key → x-api-key,无 Authorization', async () => {
+    fetchSpy.mockResolvedValueOnce(mockOk({ content: [{ type: 'text', text: 'ok' }] }))
+
+    const adapter = createLLM(
+      makeConfig({
+        provider: 'anthropic-compat',
+        apiKey: 'sk-xapi',
+        baseURL: 'https://x.com/anthropic',
+        model: 'm',
+
+        authStyle: 'x-api-key',
+      }),
+    )
+
+    await adapter.generate('JD')
+
+    const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit]
+    const headers = init.headers as Record<string, string>
+    expect(headers['x-api-key']).toBe('sk-xapi')
+    expect(headers['Authorization']).toBeUndefined()
   })
 })

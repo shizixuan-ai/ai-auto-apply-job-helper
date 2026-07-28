@@ -40,7 +40,7 @@
 
 | 变量 | 必填 | 默认 | 说明 |
 |------|------|------|------|
-| `BOSS_RESUME_UID` | ⨁ | — | BOSS 直聘在线简历 UID（在简历页 URL 中可找到）。仅在某些简历抓取场景需要。 |
+| `BOSS_RESUME_UID` | ⨁ | — | ⚠️ **已弃用(2026-07-21)**：当前 src/ 无任何消费点（grep 0 hit），是死配置。可从 .env 安全删除。详见 `src/types/index.ts` 的 `@deprecated` JSDoc。 |
 
 ---
 

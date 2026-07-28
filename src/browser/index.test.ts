@@ -260,10 +260,15 @@ describe('extractHrUid (Sprint 2B — probe 验证后修正)', () => {
 // ============================================================
 
 describe('searchJobs — Phase 1 跳过逻辑（Sprint 2D）', () => {
-  function makeSearchPage(currentUrl = 'about:blank') {
+  function makeSearchPage(currentUrl = 'about:blank', cookies: Array<{ name: string; value: string; domain: string }> = [
+    { name: '__zp_stoken__', value: 'valid_token', domain: '.zhipin.com' },
+  ]) {
     return {
       goto: vi.fn().mockResolvedValue(undefined),
       url: vi.fn().mockReturnValue(currentUrl),
+      // Sprint C+ (2026-07-21 ADR-0014): hasAuthToken 调用 page.context().cookies()
+      //   必须有默认 mock，否则 Sprint 2D-1/2/3/4/5/6/7/8 全挂
+      context: () => ({ cookies: vi.fn().mockResolvedValue(cookies) }),
       // Sprint 2D: 让 evaluate 返 BOSS API 成功（非空 jobList）→ 避免走 DOM 降级
       // DOM 降级会再调 page.goto，干扰 Sprint 2D 测的"Phase 1 goto 次数"
       evaluate: vi.fn().mockResolvedValue({
@@ -374,6 +379,97 @@ describe('searchJobs — Phase 1 跳过逻辑（Sprint 2D）', () => {
 })
 
 // ============================================================
+// Sprint C+ (2026-07-21 ADR-0014): searchJobs 假红防御
+// ------------------------------------------------------------
+// 79fd0f5 修复 loginByQR 假绿后，loginByQR return 时 page 落在 /hangzhou/ 等
+// landing 路径（不再是 /web/geek/job 假绿 URL）。searchJobs Phase 1 后续
+// hard navigate 到 /web/geek/recommend 时，BOSS 服务端 strict 校验会 redirect
+// 到 /user/ —— 此时 cookies 仍有效（__zp_stoken__ 在），但 URL 在 /user/。
+// 老代码 URL 单判 → 假红 throw "登录已失效"，user 必须重新扫码。
+//
+// 修复：/user/ 检查改用 hasAuthToken（cookie-only），URL 单判只判 about:blank
+// ============================================================
+
+describe('searchJobs — 假红防御（Sprint C+, ADR-0014）', () => {
+  function makeSearchPageWithAuth(
+    currentUrl: string,
+    cookies: Array<{ name: string; value: string; domain: string }> = [
+      { name: '__zp_stoken__', value: 'valid_token', domain: '.zhipin.com' },
+    ],
+  ) {
+    return {
+      goto: vi.fn().mockResolvedValue(undefined),
+      url: vi.fn().mockReturnValue(currentUrl),
+      context: () => ({ cookies: vi.fn().mockResolvedValue(cookies) }),
+      // 让 evaluate 返 BOSS API 成功（避免走 DOM 降级干扰）
+      evaluate: vi.fn().mockResolvedValue({
+        code: 0,
+        zpData: { jobList: [{ encryptJobId: 'fake', jobName: 'fake', brandName: 'fake' }] },
+      }),
+    }
+  }
+
+  // ----------------------------------------------------------
+  // 核心 BUG 路径：URL /user/ 但 cookies 有效 → **不应** throw "登录已失效"
+  // 旧实现：throw "登录已失效"（假红，user 重新扫码）❌
+  // 新实现：不 throw（cookies 是 source of truth，URL 是 BOSS 服务端 strict 校验的副作用）
+  // ----------------------------------------------------------
+  it('Sprint C+ 1/3 (回归测试): URL 在 /user/ 但 cookies 含 __zp_stoken__ → **不应** throw "登录已失效"', async () => {
+    const page = makeSearchPageWithAuth('https://www.zhipin.com/web/user/?ka=header-login')
+    // 模拟 BOSS 实际行为：即便 session 有效，hard navigate 会被 redirect 到 /user/
+    // 但 cookies（__zp_stoken__）仍然在 context 里
+
+    // 关键断言：不抛"登录已失效"
+    await expect(
+      searchJobs(page as any, 'Java'),
+    ).resolves.not.toThrow()
+    // 显式断言错误信息也不应包含"登录已失效"
+    try {
+      await searchJobs(page as any, 'Java')
+    } catch (e: any) {
+      expect(e.message).not.toMatch(/登录已失效/)
+    }
+  })
+
+  // ----------------------------------------------------------
+  // 真红路径：URL /user/ + cookies 无 __zp_stoken__ → 必须 throw "登录已失效"
+  // 新实现的回归保护：hasAuthToken 真的检测到无 auth token 时仍要 throw
+  // ----------------------------------------------------------
+  it('Sprint C+ 2/3 (回归保护): URL /user/ + cookies 无 __zp_stoken__ → 必须 throw "登录已失效"', async () => {
+    const page = makeSearchPageWithAuth(
+      'https://www.zhipin.com/web/user/?ka=header-login',
+      // 只有临时追踪 cookie，无真 auth token
+      [
+        { name: '__c', value: '178461****', domain: '.zhipin.com' },
+        { name: 'lastCity', value: '101210100', domain: '.zhipin.com' },
+      ],
+    )
+
+    await expect(
+      searchJobs(page as any, 'Java'),
+    ).rejects.toThrow(/登录已失效/)
+  })
+
+  // ----------------------------------------------------------
+  // about:blank 独立抛错（不是"登录已失效"）
+  // 旧实现：about:blank 也归到"登录已失效"，语义错误
+  // 新实现：about:blank = goto 完全失败，抛"页面未加载成功"
+  // ----------------------------------------------------------
+  it('Sprint C+ 3/3: page.url() === "about:blank" → 抛 "页面未加载成功"（不是"登录已失效"）', async () => {
+    const page = makeSearchPageWithAuth('about:blank')
+    // cookies 有效，但 page 在 about:blank → goto 失败
+
+    try {
+      await searchJobs(page as any, 'Java')
+      expect.fail('应抛异常')
+    } catch (e: any) {
+      expect(e.message).toMatch(/页面未加载成功/)
+      expect(e.message).not.toMatch(/登录已失效/) // 关键：不是 login 问题
+    }
+  })
+})
+
+// ============================================================
 // Sprint 2E: fetchJobDetail 懒加载防御（ADR-0004）
 // ============================================================
 // 核心问题（2026-07-10 真实探针）：
@@ -475,5 +571,197 @@ describe('Sprint 2E: fetchJobDetail 懒加载防御', () => {
       expect(err.message).toContain('.job-sec-text')
       expect(err.message).toContain('textLength')
     }
+  })
+})
+
+// ============================================================
+// searchJobs — 搜索过滤参数（DEEP probe 2026-07-18 实测）
+// ------------------------------------------------------------
+// DEEP probe 抓包确认：BOSS wapi/zpgeek/search/joblist.json 接受
+//   jobType / salary / experience / degree 为【string 顶层字段】
+//   （city 是 number，这几个过滤码是 string）
+// searchJobs 新增可选第 4 参 filters?: SearchFilters
+// 约束：只塞"有值"的 filter，空值/undefined 不进 body（回归安全）
+// ============================================================
+describe('searchJobs — 过滤参数（DEEP probe）', () => {
+  function makeFilterPage(currentUrl = 'https://www.zhipin.com/web/geek/recommend') {
+    return {
+      goto: vi.fn().mockResolvedValue(undefined),
+      url: vi.fn().mockReturnValue(currentUrl),
+      // Sprint C+ (2026-07-21 ADR-0014): hasAuthToken 调用 page.context().cookies()
+      context: () => ({ cookies: vi.fn().mockResolvedValue([{ name: '__zp_stoken__', value: 'valid', domain: '.zhipin.com' }]) }),
+      evaluate: vi.fn().mockResolvedValue({
+        code: 0,
+        zpData: { jobList: [{ encryptJobId: 'fake', jobName: 'fake', brandName: 'fake' }] },
+      }),
+    }
+  }
+
+  // page.evaluate(fn, apiBody) —— 第 2 个参数就是 apiBody
+  function capturedApiBody(page: ReturnType<typeof makeFilterPage>) {
+    return page.evaluate.mock.calls[0][1]
+  }
+
+  it('filter-1: 传 4 个 filter → apiBody 含 string 字段（jobType/salary/experience/degree）', async () => {
+    const page = makeFilterPage()
+    await searchJobs(page as any, 'Java', undefined, {
+      jobType: '1901',
+      salary: '406',
+      experience: '106',
+      degree: '203',
+    })
+    const body = capturedApiBody(page)
+    expect(body.jobType).toBe('1901')
+    expect(body.salary).toBe('406')
+    expect(body.experience).toBe('106')
+    expect(body.degree).toBe('203')
+    // 均为 string（DEEP 实测格式）
+    expect(typeof body.jobType).toBe('string')
+    expect(typeof body.salary).toBe('string')
+  })
+
+  it('filter-2: 不传 filters → apiBody 无这些 key（回归安全，与旧行为一致）', async () => {
+    const page = makeFilterPage()
+    await searchJobs(page as any, 'Java')
+    const body = capturedApiBody(page)
+    expect(body).not.toHaveProperty('jobType')
+    expect(body).not.toHaveProperty('salary')
+    expect(body).not.toHaveProperty('experience')
+    expect(body).not.toHaveProperty('degree')
+    // 基础字段仍在
+    expect(body.query).toBe('Java')
+    expect(body.scene).toBe(1)
+    // pageSize 与 CLI --limit 默认对齐（15）
+    expect(body.pageSize).toBe(15)
+  })
+
+  it('filter-3: 空串/undefined 的 filter 不塞进 body（只塞有值的）', async () => {
+    const page = makeFilterPage()
+    await searchJobs(page as any, 'Java', undefined, {
+      jobType: '1901',
+      salary: '',
+      experience: undefined,
+    })
+    const body = capturedApiBody(page)
+    expect(body.jobType).toBe('1901')
+    expect(body).not.toHaveProperty('salary')
+    expect(body).not.toHaveProperty('experience')
+  })
+})
+
+// ============================================================
+// searchJobs — 分页 page 循环（Sprint 2026-07-19）
+// ------------------------------------------------------------
+// DEEP probe 实测：BOSS joblist.json 请求字段 page/pageSize（pageSize=15）。
+// searchJobs 加 opts.maxResults 驱动翻页：逐页拉取累加，去重，
+//   停止条件（任一）：页返回<pageSize(到底) / 累计>=maxResults / 空页 / 安全上限。
+// opts.pageThrottleMs：页间节流（反爬），测试传 0。
+// 不传 maxResults → 只拉第 1 页（向后兼容）。
+// ============================================================
+describe('searchJobs — 分页 page 循环', () => {
+  // pagesData[i] = 第 i+1 页的 jobList
+  function makePaginatedPage(pagesData: any[][]) {
+    return {
+      goto: vi.fn().mockResolvedValue(undefined),
+      url: vi.fn().mockReturnValue('https://www.zhipin.com/web/geek/recommend'),
+      // Sprint C+ (2026-07-21 ADR-0014): hasAuthToken 调用 page.context().cookies()
+      context: () => ({ cookies: vi.fn().mockResolvedValue([{ name: '__zp_stoken__', value: 'valid', domain: '.zhipin.com' }]) }),
+      evaluate: vi.fn().mockImplementation(async (_fn: any, body: any) => {
+        // 只有 apiBody 带 .query；Phase 3 DOM 提取传的是 config（无 query）→ 返空跳过
+        if (!body || !body.query) return { code: 0, zpData: { jobList: [] } }
+        const list = pagesData[body.page - 1] ?? []
+        return { code: 0, zpData: { jobList: list } }
+      }),
+    }
+  }
+  function fakeJobs(n: number, prefix: string) {
+    return Array.from({ length: n }, (_, i) => ({
+      encryptJobId: `${prefix}_${i}`,
+      jobName: `job${i}`,
+      brandName: 'co',
+    }))
+  }
+  // 从 evaluate 调用里提取真正发出去的 page 序列（过滤掉 DOM 提取的 config 调用）
+  function apiPages(page: ReturnType<typeof makePaginatedPage>) {
+    return page.evaluate.mock.calls.filter((c: any) => c[1]?.query).map((c: any) => c[1].page)
+  }
+
+  it('分页-1: maxResults 跨 3 页 → 逐页拉取直到最后一页(不足 15 条)停止', async () => {
+    const page = makePaginatedPage([fakeJobs(15, 'p1'), fakeJobs(15, 'p2'), fakeJobs(5, 'p3')])
+    const jobs = await searchJobs(page as any, 'Java', undefined, undefined, { maxResults: 40, pageThrottleMs: 0 })
+    expect(apiPages(page)).toEqual([1, 2, 3])
+    expect(jobs.length).toBe(35) // 15+15+5，未达 40 但最后一页不足 15 → 停
+  })
+
+  it('分页-2: 累计达到 maxResults → 提前停止 + 结果截到 maxResults', async () => {
+    const page = makePaginatedPage([fakeJobs(15, 'p1'), fakeJobs(15, 'p2'), fakeJobs(15, 'p3')])
+    const jobs = await searchJobs(page as any, 'Java', undefined, undefined, { maxResults: 20, pageThrottleMs: 0 })
+    expect(apiPages(page)).toEqual([1, 2]) // 2 页即够(30>=20)
+    expect(jobs.length).toBe(20) // 截到 maxResults
+  })
+
+  it('分页-3: 不传 maxResults → 只拉第 1 页(向后兼容)', async () => {
+    const page = makePaginatedPage([fakeJobs(15, 'p1'), fakeJobs(15, 'p2')])
+    const jobs = await searchJobs(page as any, 'Java')
+    expect(apiPages(page)).toEqual([1])
+    expect(jobs.length).toBe(15)
+  })
+
+  it('分页-4: 跨页重复 id → 去重', async () => {
+    const p1 = fakeJobs(15, 'p1')
+    // 第 2 页前 5 个与第 1 页重复，后 10 个新增（共 15 条 → 不触发短页停止）
+    const p2 = [...p1.slice(0, 5), ...fakeJobs(10, 'p2')]
+    const page = makePaginatedPage([p1, p2]) // 第 3 页 undefined → 空 → 停
+    const jobs = await searchJobs(page as any, 'Java', undefined, undefined, { maxResults: 40, pageThrottleMs: 0 })
+    expect(apiPages(page)).toEqual([1, 2, 3]) // 显式断言：必须真翻 3 页（p3 是探底）
+    const ids = jobs.map((j) => j.id)
+    expect(new Set(ids).size).toBe(ids.length) // 无重复
+    expect(jobs.length).toBe(25) // 15 + 10 新增
+  })
+
+  it('分页-5: 12 页全 15 条 → MAX_PAGES=10 安全上限触发(只翻 10 页)', async () => {
+    // 12 页全 15 条：既不会触发"短页"也不会"达 maxResults"，唯一停止 = MAX_PAGES
+    const pagesData = Array.from({ length: 12 }, (_, i) => fakeJobs(15, `p${i + 1}`))
+    const page = makePaginatedPage(pagesData)
+    const jobs = await searchJobs(page as any, 'Java', undefined, undefined, { maxResults: 999, pageThrottleMs: 0 })
+    expect(apiPages(page)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) // 10 次后 break
+    expect(jobs.length).toBe(150) // 10 页 * 15 全去重通过
+  })
+
+  it('分页-6: 第 2 页 fetch 失败 → break + 保留第 1 页数据 + 警告日志', async () => {
+    // 第 2 页 fetch 抛异常 → fetchPageJson catch 返 {error: '...'} → 应 break
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      url: vi.fn().mockReturnValue('https://www.zhipin.com/web/geek/recommend'),
+      // Sprint C+ (2026-07-21 ADR-0014): hasAuthToken 调用 page.context().cookies()
+      context: () => ({ cookies: vi.fn().mockResolvedValue([{ name: '__zp_stoken__', value: 'valid', domain: '.zhipin.com' }]) }),
+      evaluate: vi.fn().mockImplementation(async (_fn: any, body: any) => {
+        if (!body || !body.query) return { code: 0, zpData: { jobList: [] } }
+        if (body.page === 1) return { code: 0, zpData: { jobList: fakeJobs(15, 'p1') } }
+        if (body.page === 2) return { error: 'fetch failed: BOSS 风控' } // 中间页失败
+        return { code: 0, zpData: { jobList: fakeJobs(15, `p${body.page}`) } }
+      }),
+    }
+    const jobs = await searchJobs(page as any, 'Java', undefined, undefined, { maxResults: 40, pageThrottleMs: 0 })
+    expect(apiPages(page)).toEqual([1, 2]) // 第 2 页失败立即 break，不翻 3+
+    expect(jobs.length).toBe(15) // 只保留第 1 页数据
+  })
+
+  it('分页-7: page.evaluate 自身抛"Execution context destroyed" → 不逃出循环 + 走 DOM fallback', async () => {
+    // 模拟 BOSS 风控 SPA 重定向：page.evaluate 在中途被摧毁（thrown 而非返 {error}）
+    // 此前会让 throw 逃出循环 → 整个 searchJobs 崩，DOM fallback 触发不了（bug）
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      url: vi.fn().mockReturnValue('https://www.zhipin.com/web/geek/recommend'),
+      // Sprint C+ (2026-07-21 ADR-0014): hasAuthToken 调用 page.context().cookies()
+      context: () => ({ cookies: vi.fn().mockResolvedValue([{ name: '__zp_stoken__', value: 'valid', domain: '.zhipin.com' }]) }),
+      evaluate: vi.fn().mockImplementation(async () => {
+        const err = new Error('Execution context was destroyed, most likely because of a navigation.')
+        throw err // page.evaluate 自身 throw
+      }),
+    }
+    // 不应该抛 — 应返回 [] 然后 DOM fallback 接走
+    const jobs = await searchJobs(page as any, 'Java', undefined, undefined, { maxResults: 40, pageThrottleMs: 0 })
+    expect(jobs).toEqual([]) // 翻页全失败 + 无 DOM 元素 → 空数组（不崩）
   })
 })

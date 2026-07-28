@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "capturedAt": "2026-07-18T03:29:57.459Z",
+    "capturedAt": "2026-07-23T06:40:25.435Z",
     "source": "BOSS /wapi/zpgeek/search/joblist.json",
     "method": "context.cookies() + Node fetch (绕过 page navigation 干扰)",
     "keyword": "Java后端",
@@ -10,40 +10,36 @@
     "note": "契约测试的\"黄金基准\"。BOSS 改版时重新跑 npm run probe:boss 覆盖。"
   },
   "sampleJob": {
-    "securityId": "GGiI3FFm_s8b0-L1yB5liFKbovSy7XVeN48NBJgWkYJryxd2MKtmZgW0UIEads5lIdu9XboGEcUQJJjCrp5a-AJ9UJq77t2_MrLDe9DiNpNczcmEu_COb_NGXGRcT8jmWF4ZAfV5K5vqrZ5hxGdzNIBq5uL9rc3S5jkF2hxZb6hxj3lmtRSUhbPbZOplMRcrLOmPmGOzlW51qJhydVpcGvZt1x6gVBhmvhafgfE~",
+    "securityId": "s8Vw5zbztFN5n-z10FpuGKlzMUIskNTfXryGlDi5W7QErkQ6sagNDe_D_ekCDxZmBsxzoXBeKif1bBK-69MxZOv717JyhckIIUyan3oGvOcYFzsJd7ITdaulLMW4o9QoAtNzEgPs7KrwQlgSnRuxLxcOS3c2NX7LH1HahiEdzPSorVr2ib4XPsVwig7c32K5Xq1hx6XHaY_Ie4WnubMIBbtQUmdEEgp3AAqN15dI8kip8Qw2_Piny5hePgDTz2J8",
     "bossAvatar": "https://...",
     "bossCert": 3,
-    "encryptBossId": "f520e09f579cdcab0nF_3dS4FlE~",
-    "bossName": "韩女士",
-    "bossTitle": "hr",
+    "encryptBossId": "0ba82ed8444367b70nd62tW4E1Q~",
+    "bossName": "李女士",
+    "bossTitle": "HRBP",
     "goldHunter": 0,
-    "bossOnline": false,
-    "encryptJobId": "f2c455e1153aff450nd909u7GFNS",
+    "bossOnline": true,
+    "encryptJobId": "bac447f8552f8a7d1X162NS6ElNS",
     "expectId": 0,
-    "jobName": "AI游戏开发工程...",
-    "lid": "uOOLya9D02.search.1",
+    "jobName": "售前解决方案经理",
+    "lid": "2LvtFQQnoFI.search.1",
     "salaryDesc": "",
     "jobLabels": [
-      "3-5年",
+      "5-10年",
       "本科"
     ],
     "jobValidStatus": 1,
     "iconWord": "",
     "skills": [
-      "3D游戏客户端开发经验",
-      "Unity3D开发经验",
-      "手游开发经验",
-      "VR/AR开发经验",
-      "Shader开发经验",
-      "图形渲染"
+      "计算机/通信相关专业",
+      "机械/电子工程相关专业"
     ],
-    "jobExperience": "3-5年",
+    "jobExperience": "5-10年",
     "daysPerWeekDesc": "",
     "leastMonthDesc": "",
     "jobDegree": "本科",
     "cityName": "北京",
-    "areaDistrict": "朝阳区",
-    "businessDistrict": "亚运村",
+    "areaDistrict": "大兴区",
+    "businessDistrict": "亦庄",
     "jobType": 0,
     "proxyJob": 0,
     "proxyType": 0,
@@ -61,44 +57,40 @@
     },
     "afterNameIcons": [],
     "beforeNameIcons": [],
-    "encryptBrandId": "96eac17f...",
-    "brandName": "FunPlus",
+    "encryptBrandId": "ce1b4422...",
+    "brandName": "欣奕华",
     "brandLogo": "https://...",
-    "brandStageName": "B轮",
-    "brandIndustry": "游戏",
-    "brandScaleName": "1000-9999人",
+    "brandStageName": "未融资",
+    "brandIndustry": "智能硬件",
+    "brandScaleName": "500-999人",
     "welfareList": [
-      "股票期权",
-      "定期体检",
+      "生日福利",
+      "餐补",
+      "有无线网",
+      "通讯补贴",
+      "团建聚餐",
       "节日福利",
       "员工旅游",
       "带薪年假",
-      "五险一金",
-      "绩效奖金",
-      "餐补",
       "年终奖",
-      "企业年金",
-      "保底工资",
-      "零食下午茶",
-      "补充医疗保险",
-      "加班补助"
+      "五险一金"
     ],
-    "industry": 100002,
+    "industry": 100018,
     "contact": false,
     "showTopPosition": false
   },
   "userRelatedFields": [
     {
       "key": "encryptBossId",
-      "value": "f520e09f579cdcab0nF_3dS4FlE~"
+      "value": "0ba82ed8444367b70nd62tW4E1Q~"
     },
     {
       "key": "encryptJobId",
-      "value": "f2c455e1153aff450nd909u7GFNS"
+      "value": "bac447f8552f8a7d1X162NS6ElNS"
     },
     {
       "key": "encryptBrandId",
-      "value": "96eac17fed77c8c61nJ43N66"
+      "value": "ce1b4422853c85cf1Hx929W9Fg~~"
     }
   ]
 }

@@ -68,3 +68,14 @@ rules:
         command: "node scripts/verify-jd-length.mjs"
         timeout_sec: 60
         reason: "Sprint 2E：fetchJobDetail 拿到的 JD 必须 ≥ MIN_JD_LENGTH (500)，防御 BOSS 首屏懒加载假绿"
+
+  # 规则 5：searchJobs 翻页路径变更 → 验证真实 BOSS API 真翻 ≥2 页
+  - pattern: "src/browser/index.ts"
+    required_for:
+      - "src/browser/index.ts"
+    skip_when: "! curl -s http://localhost:9222/json/version > /dev/null"
+    triggers:
+      - id: search-pagination-smoke
+        command: "npx tsx scripts/smoke-search-pagination.mjs"
+        timeout_sec: 60
+        reason: "searchJobs 翻页路径变更 — 验证真实 BOSS joblist.json 真翻 ≥2 页（不只看 mock）"

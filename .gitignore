@@ -50,13 +50,8 @@ npm-debug.log*
 *.copy.md
 
 # 用户真实简历（个人隐私，不 commit；项目保留 简历.md.example 模板）
-#   - 简历.md: 主文件
-#   - 简历.md.*: 任何衍生（.bak, 尾点, .local 等）
-#   - 简历 copy.* / 简历_example.*: macOS / hook 偶发的 "copy" / "example" 后缀备份
-#   - 任何"简历"开头的非模板文件（除 简历.md.example）
-简历.md
-简历.md.*
-简历 copy.*
-简历_example.*
-简历 example.*
+简历.yml
 
+
+# CDP 抓包临时文件（含敏感 network trace, 不入库）
+tests/fixtures/cdp-trace-*.jsonl
