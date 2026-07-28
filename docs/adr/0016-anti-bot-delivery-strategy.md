@@ -694,10 +694,11 @@ TDD 5 测试 (per §4.3 上限 5) 用于 throttle;config schema 走 **2 个新 R
 - [x] `src/auto/session-detector.ts` 实施 - 1 stub function
 - [x] 10 个 RED 测试 (Sprint B Phase C) - 11 个全部 PASS
 - [ ] `src/auto/warmup-engine.ts` - 集成到 throttle.ts initCounter, 独立文件遗留
-- [x] `src/auto/counter-store.ts` - 真实 fs atomic write (Sprint C-1 完成, 5/5 GREEN, probe 12/12 PASS)
+- [x] `src/auto/counter-store.ts` - 真实 fs atomic write (Sprint C-1 完成, 6/6 GREEN, probe 12/12 PASS)
 - [x] `scripts/probe-throttle-integration.mjs` - H1-H5 假设验证 (Sprint C-1 前置, 12/12 PASS)
-- [x] `tests/unit/auto/counter-store.test.ts` - T11-T13 3 describes / 5 it() (Sprint C-1 完成, 5/5 GREEN)
-- [ ] `src/cli/handlers/auto-handler.ts` - Sprint C-2a (state machine + 失败率监控 + 退出码)
+- [x] `tests/unit/auto/counter-store.test.ts` - T11-T13 3 describes / 6 it() (Sprint C-1 完成, 6/6 GREEN)
+- [x] `src/cli/handlers/auto-handler.ts` - Sprint C-2a 完成 (R1 初始 login + R3 失败率监控 + R6 退出码 0/1/2, 6/6 GREEN)
+- [x] `tests/unit/cli/handlers/auto-handler.test.ts` - T14-T16 3 describes / 6 it() (Sprint C-2a 完成)
 - [ ] `src/auto/guard.ts` - Sprint C-2b (GuardError + blocked + notify)
 - [ ] `src/auto/throttle.ts` Sprint C-3 - 接入真实 counterStore (refactor + R5 + R7)
 - [ ] `scripts/install-cron.sh` / notifier / node-cron / run rotate / 油猴 / §12 5 项 = Sprint C/D 后续
