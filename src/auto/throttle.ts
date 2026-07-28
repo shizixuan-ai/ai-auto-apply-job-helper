@@ -76,6 +76,10 @@ export interface AccountMeta {
   targetDailyCap: number
   weeklyCap: number
   warmupSchedule: WarmupTier[]
+  /** D-1b §16.3.3: 当前 warmup 档位 (default 'old' = 已过 warmup) */
+  currentTier?: 'new' | 'warm' | 'old'
+  /** D-1b §16.3.3: 被风控触发历史 (per ADR §16.3.2 时序图 recordBlock) */
+  blockedHistory?: Array<{ ts: number; reason: string }>
 }
 
 export interface QuotaConfig {
