@@ -2451,6 +2451,503 @@ E-1 非 bug 修复而是新模块, §10 不直接适用. 但相关 ADR §3 假�
 
 ---
 
+## 17.14 Sprint E-1b 收尾 (2026-07-29, wiring + config-schema + env 探测)
+
+> **目标**: 把 E-1 实现的 `feishu-notifier.ts` 接入 `buildDefaultDeps` 默认值 + `cli/index.ts` 探测 env var (`FEISHU_WEBHOOK_URL`), 让用户不需写代码就能启用飞书告警.
+> **触发**: §17.13.10 计划 + 架构师 review 必跑 (配置层变更, per memory `feedback_architect_review_required.md` 触发时机表).
+> **纪律**: §3.6 (env 探测自动合并); §3.9 (env merge 路径不破坏 safety 合并); §3.10 refactor (4 文件 0 行为破坏); §3.13 (0 新 error class).
+
+### 17.14.1 任务总览 (1 commit)
+
+| Commit | 范围 | 文件 |
+|--------|------|------|
+| `36b914c` | E-1b wiring + 14 RED + env 探测 + yaml 示例 | `src/auto/config-schema.ts` / `src/auto/config-loader.ts` / `src/cli/handlers/auto-handler.ts` / `src/cli/index.ts` / `docs/auto.example.yaml` / `tests/unit/cli/handlers/build-default-deps.test.ts` (+14 it()) |
+
+### 17.14.2 架构师 review 必跑结果 (per 触发时机)
+
+| 触发项 | 状态 | 备注 |
+|--------|------|------|
+| **配置层变更** (config-schema 加 notifier 字段) | ✅ 触发 review | per memory `feedback_architect_review_required.md` 触发时机表 |
+| **找到的问题** | **1 必须修正 + 1 强烈建议** | 4 类图设计阶段 + 实施前捕获 |
+| **修正 1**: 4 字段显式透传 | ✅ 落地 (T42b 验证) | `webhookUrl / maxRetries / initialBackoffMs / timeoutMs` |
+| **强建议**: 简化 `feishuWebhookUrl` 字段, 由 CLI 层 merge | ✅ 落地 (T43 验证) | `mergeWebhookFromEnv` helper |
+
+### 17.14.3 4 类图 (E-1b 实际落地, 含架构师 review 修正)
+
+#### 17.14.3.1 架构图
+
+```
+                       ┌─────────────────────────┐
+                       │ process.env (Node 进程) │
+                       │  FEISHU_WEBHOOK_URL     │
+                       └────────────┬────────────┘
+                                    │ env 探测
+                                    ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  src/cli/index.ts bapply auto action                                         │
+│                                                                              │
+│  config = {                                                                  │
+│    ...loadAutoConfig(...),                                                   │
+│    ...mergeWebhookFromEnv(result.config, process.env.FEISHU_WEBHOOK_URL)   │
+│  }                                                                           │
+└────────────────────────┬─────────────────────────────────────────────────────┘
+                         │
+                         ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  src/auto/config-schema.ts (扩)                                      │
+│  NotifierConfigSchema (.strict) {                                    │
+│    webhookUrl?: string.url                                           │
+│    maxRetries?: number.positive                                      │
+│    initialBackoffMs?: number.nonnegative                            │
+│    timeoutMs?: number.positive                                       │
+│  }                                                                   │
+│  DEFAULT_NOTIFIER = {} (空对象 = console fallback)                   │
+└────────────────────────┬─────────────────────────────────────────────┘
+                         │
+                         ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  src/auto/config-loader.ts (扩 +5 行)                                │
+│  loadAutoConfig 加载 → safeParse → notifier ?? DEFAULT_NOTIFIER 合并 │
+└────────────────────────┬─────────────────────────────────────────────┘
+                         │
+                         ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│  src/cli/handlers/auto-handler.ts buildDefaultDeps (简化为 2 层探测)   │
+│                                                                        │
+│  resolveNotifier(opts):                                                │
+│    1. opts.notifier (test/manual override, 最高优先级)                │
+│    2. cfg.webhookUrl 存在                                              │
+│       → factory({ webhookUrl, maxRetries: cfg.maxRetries,             │
+│                   initialBackoffMs: cfg.initialBackoffMs,             │
+│                   timeoutMs: cfg.timeoutMs })    ← 4 字段全透传        │
+│    3. fallback → consoleNotifier                                       │
+│                                                                        │
+│  factory 默认 = createFeishuNotifier (E-1 已有)                         │
+└────────────────────────┬────────────────────┬────────────────────────┘
+                         │                    │
+                         ▼                    ▼
+         ┌─────────────────────────┐  ┌────────────────────────────┐
+         │ consoleNotifier (默认)   │  │ createFeishuNotifier (E-1) │
+         │ AutoNotifier impl       │  │ AutoNotifier impl          │
+         │ ⚙️  console.log          │  │ ⚙️  webhook POST + 3 retry │
+         └─────────────────────────┘  └────────────────────────────┘
+```
+
+#### 17.14.3.2 时序图 (完整 wiring 链)
+
+```
+[user] FEISHU_WEBHOOK_URL=https://... bapply auto --phase morning
+   │
+   ▼
+[CLI parseArgs] opts (config, dryRun, quota, phase, strictExitCode)
+   │
+   ▼
+[loadAutoConfig]
+   │
+   ├─ AutoConfigSchema.safeParse (含 NotifierConfigSchema.optional)
+   │  例 yaml: notifier: { webhookUrl: "https://yaml...", maxRetries: 5 }
+   │
+   ├─ notifier ?? DEFAULT_NOTIFIER 合并
+   │
+   └─→ { config: AutoConfig }
+   │
+   ▼
+[CLI mergeWebhookFromEnv] (E-1b 新增)
+   │
+   │ envUrl = process.env.FEISHU_WEBHOOK_URL
+   │              = "https://env..." (来自 process.env)
+   │ if (envUrl) {
+   │   config = { ...config, notifier: { ...config.notifier, webhookUrl: envUrl } }
+   │ }
+   │   ↑ env 覆盖 yaml (yaml 其他字段 maxRetries 等保留)
+   │
+   │ + 合并 CLI flags (dryRun/phase)
+   ▼
+[buildDefaultDeps]
+   │
+   │ resolveNotifier(opts):
+   │   opts.notifier? 不设
+   │   cfg.webhookUrl = "https://env..." ← 已被 env merge 覆盖
+   │   cfg.maxRetries = 5 ← YAML 透传 (其他 3 字段同)
+   │   → createFeishuNotifier({
+   │       webhookUrl: "https://env...",
+   │       maxRetries: 5,
+   │       initialBackoffMs: 500,    ← (假设 yaml 也设了)
+   │       timeoutMs: 8000,         ← (假设 yaml 也设了)
+   │     })
+   │
+   └─→ deps.notifier = feishuNotifier
+   │
+   ▼
+[runDailyLoop] 跑 job → 触发 critical/warn → deps.notifier.notify()
+   │
+   └─→ feishuNotifier.notify() → POST 飞书 webhook → 实时推送用户
+```
+
+#### 17.14.3.3 关系图 (E-1b 改动文件清单)
+
+```
+src/auto/config-schema.ts (扩)
+  export const NotifierConfigSchema = z.object({
+    webhookUrl: z.string().url().optional(),
+    maxRetries: z.number().int().positive().optional(),
+    initialBackoffMs: z.number().int().nonnegative().optional(),
+    timeoutMs: z.number().int().positive().optional(),
+  }).strict()                                                  // ← 架构师 review: 拒绝冗余字段
+  export type NotifierConfig = z.infer<typeof NotifierConfigSchema>
+  export const DEFAULT_NOTIFIER: NotifierConfig = {}
+  AutoConfigSchema.notifier: NotifierConfigSchema.optional()
+
+src/auto/config-loader.ts (扩 +5 行)
+  loadAutoConfig 内部:
+    notifier: result.data.notifier ?? DEFAULT_NOTIFIER   // 类似 safety 模式
+
+src/cli/handlers/auto-handler.ts (扩 +50/-10 行)
+  export interface BuildDefaultDepsOpts {
+    ...(原 7 字段)...
+    notifier?: AutoNotifier                              // 1. test override
+    notifierFactory?: (opts: FeishuNotifierOpts) => AutoNotifier  // 2. factory 注入
+    // ↓ E-1b 简化:删 feishuWebhookUrl
+    ...(其他字段)
+  }
+
+  export function mergeWebhookFromEnv(
+    config: SchemaAutoConfig,
+    envUrl: string | undefined,
+  ): SchemaAutoConfig
+
+  export async function buildDefaultDeps(opts) {
+    ...
+    const notifier = resolveNotifier(opts)               // E-1b 简化 2 层探测
+    ...
+  }
+
+  function resolveNotifier(opts) {                       // E-1b 内部 helper
+    if (opts.notifier) return opts.notifier              // 1. test override
+    const cfg = opts.config.notifier
+    if (cfg?.webhookUrl) {
+      const factory = opts.notifierFactory ?? createFeishuNotifier
+      return factory({                                   // ← 架构师 review 必修正: 4 字段显式透传
+        webhookUrl: cfg.webhookUrl,
+        maxRetries: cfg.maxRetries,
+        initialBackoffMs: cfg.initialBackoffMs,
+        timeoutMs: cfg.timeoutMs,
+      })
+    }
+    return consoleNotifier                               // 3. fallback
+  }
+
+src/cli/index.ts (扩 +6 行)
+  bapply auto action:
+    const withEnv = mergeWebhookFromEnv(
+      result.config,
+      process.env.FEISHU_WEBHOOK_URL,    // ← CLI 层 env 探测
+    )
+    config = { ...withEnv, dryRun, phase }
+
+docs/auto.example.yaml (扩 +13 行 commented)
+  notifier:
+    # webhookUrl: "https://..."        # 推荐用 env 注入
+    # maxRetries: 3
+    # initialBackoffMs: 1000
+    # timeoutMs: 5000
+
+tests/unit/cli/handlers/build-default-deps.test.ts (扩 +14 it())
+  T41 (6 it): NotifierConfigSchema parse + DEFAULT_NOTIFIER + .strict
+  T42 (4 it): buildDefaultDeps 探测 4 场景 (含 4 字段显式透传验证)
+  T43 (4 it): mergeWebhookFromEnv 4 场景
+
+§3.13 错误分层: 0 新 error class (沿用 feishu-notifier warnLogger [FEISHU] prefix)
+§3.9  不变量: notify 永不 throw + env merge 函数不变异 (返回新对象)
+```
+
+#### 17.14.3.4 流程图 (探测 2 层 + fallback)
+
+```
+┌─ resolveNotifier(opts) ─┐
+│                          │
+│ opts.notifier?           │
+└────┬────────────────┬───┘
+  yes (test override)│   no
+                    ▼
+            ┌─────────────────┐
+            │ cfg?.webhookUrl │
+            └────┬─────────┬──┘
+              yes         no
+                ▼           ▼
+   ┌────────────────────┐  ┌──────────────────────┐
+   │ factory({          │  │ consoleNotifier      │
+   │   webhookUrl:      │  │ (fallback ✅)        │
+   │     cfg.webhookUrl,│  │                      │
+   │   maxRetries:      │  │ return               │
+   │     cfg.maxRetries,│  │                      │
+   │   initialBackoffMs:│  │                      │
+   │     cfg.initial-   │  │                      │
+   │     BackoffMs,     │  │                      │
+   │   timeoutMs:       │  │                      │
+   │     cfg.timeoutMs, │  │                      │
+   │ })                 │  │                      │
+   │ (4 字段显式透传)   │  │                      │
+   │                    │  │                      │
+   │ factory 默认 =      │  │                      │
+   │  createFeishu-     │  │                      │
+   │  Notifier          │  │                      │
+   └────────────────────┘  └──────────────────────┘
+
+(类型收敛: cfg 经 `cfg?.webhookUrl` truthy check 后, TS 自动窄化为 NonNullable,
+  cfg.maxRetries 等字段访问无需再 ! / ?)
+```
+
+### 17.14.4 §3.9 错误传播图 (env merge 路径)
+
+```
+[CLI bapply auto action]
+   │
+   ├─ loadAutoConfig (per D-1a, 不变)
+   │
+   ├─ mergeWebhookFromEnv(result.config, envUrl)         ← E-1b 新
+   │     │
+   │     ├─ envUrl undefined / '' → return config (不变异)
+   │     │
+   │     └─ envUrl set → return { ...config,            ← 返回新对象
+   │                              notifier: {           ← 浅合并
+   │                                ...config.notifier, ← 保留其他 4 字段
+   │                                webhookUrl: envUrl, ← env 覆盖
+   │                              } }
+   │       (浅合并失败时, fallback DEFAULT_NOTIFIER 由 config-loader 已 merge)
+   │
+   ├─ buildDefaultDeps(config_with_env_merged)            ← 简化为 2 层探测
+   │
+   └─ runDailyLoop → deps.notifier.notify()              ← 同 E-1 §17.13.6
+
+(env merge 永不 throw, 与 feishuNotifier.notify 永不 throw 同层错误不变量)
+```
+
+### 17.14.5 §3.10 refactor 盘点 (E-1b)
+
+```bash
+$ git grep -n 'createFeishuNotifier\|mergeWebhookFromEnv\|notifierFactory\|NotifierConfigSchema'
+src/auto/config-schema.ts:export const NotifierConfigSchema
+src/auto/config-schema.ts:export type NotifierConfig
+src/auto/config-schema.ts:export const DEFAULT_NOTIFIER
+src/auto/feishu-notifier.ts:export function createFeishuNotifier
+src/cli/handlers/auto-handler.ts:export function mergeWebhookFromEnv
+src/cli/handlers/auto-handler.ts:notifierFactory?: (opts: FeishuNotifierOpts) => AutoNotifier
+src/cli/handlers/auto-handler.ts:createFeishuNotifier (resolveNotifier 内部)
+src/cli/index.ts:mergeWebhookFromEnv(config, process.env.FEISHU_WEBHOOK_URL)
+tests/unit/cli/handlers/build-default-deps.test.ts:NotifierConfigSchema, DEFAULT_NOTIFIER
+tests/unit/cli/handlers/build-default-deps.test.ts:mergeWebhookFromEnv
+```
+
+| Caller | 影响 | 边界 |
+|--------|------|------|
+| `src/auto/config-schema.ts` | +23 行新 schema + DEFAULT_NOTIFIER | 新字段 optional,向后兼容 |
+| `src/auto/config-loader.ts` | +1 行 (import) + 1 行 (merge) | 类似 safety 模式,0 行为变化 |
+| `src/cli/handlers/auto-handler.ts` | -10 (feishuWebhookUrl) +50 (resolveNotifier + mergeWebhookFromEnv) | 接口向下兼容 (新字段 optional) |
+| `src/cli/index.ts` | +6 行 (env merge 调用) | 0 行为变化 (env 空时 mergeWebhookFromEnv 返原 config) |
+| `docs/auto.example.yaml` | +13 行 commented | 0 影响 (新字段默认全 commented) |
+
+**3 问**: ① 下游成立 ✅ ② 无副作用依赖 ✅ ③ 错误边界仍有效 ✅ (env merge 不 throw, resolveNotifier 不 throw).
+
+**结论**: 4 文件改动,但所有 caller 都是 0 行为破坏 (新字段 optional + env merge 兼容空值 + factory 4 字段显式透传保证契约).
+
+### 17.14.6 §3.13 错误分层 (E-1b 0 新错 class)
+
+E-1b 不引入新 error class. 错误分层现状:
+
+- CONFIG (AutoConfigError, layer='CONFIG') — D-1a
+- META (AccountMetaError, layer='META') — D-1b
+- GUARD (GuardError, layer='GUARD') — C-2b
+- THROTTLE (ThrottleError, layer='THROTTLE') — Sprint B
+- SEND (SessionExpiredError, layer='SEND') — Sprint B
+- STUB (BOSSStubError, layer='STUB') — D-2
+- AUTO.runner / AUTO.guard / AUTO.stub — D-2
+- FEISHU (warnLogger [FEISHU] prefix) — E-1
+
+E-1b 改动:
+- NotifierConfigSchema 用 `.strict()` 让 zod 拒绝未定义字段 (架构师 review 关键修正)
+- zod safeParse 失败由现有 AutoConfigError(layer='CONFIG', code='schema_invalid') 抛出 — **复用既有错误流**
+- mergeWebhookFromEnv / resolveNotifier 永不 throw — §3.9 不变量
+
+### 17.14.7 自检 Checklist (E-1b 收尾, per 架构师 review 反馈落地 7 步)
+
+- [x] **第 1 步 review 触发**: 配置层变更 (per memory `feedback_architect_review_required.md` 触发时机表)
+- [x] **第 2 步 立即开 sub-task** (#48-#52)
+- [x] **第 3 步 4 类图重画**: 架构 / 时序 / 关系 / 流程 全画 (E-1b.1 阶段)
+- [x] **第 4 步 §3.9 错误传播图重画**: mergeWebhookFromEnv / resolveNotifier 路径 (§17.14.4 已画)
+- [x] **第 5 步 §3.10 refactor 盘点**: 4 文件改动, 0 行为破坏 (§17.14.5 已盘点)
+- [x] **第 6 步 ADR §17.14 收尾**: 本节
+- [x] **第 7 步 §4.4 自验证 5 项**:
+  - 单测 14/14 (T41+T42+T43)
+  - 集成 600/0/1 PASS (1 skipped pre-existing)
+  - 类型 tsc 0 新错 (1 pre-existing: OpenAI thinking)
+  - N/A live (feishu 非 BOSS, mock 替代)
+  - N/A 浏览器 (后端模块)
+- [x] **架构师 review 必修正**: 4 字段显式透传 (T42b 验证)
+- [x] **架构师 review 强烈建议**: feishuWebhookUrl 删除, CLI 层 merge 接管 (T43 验证)
+- [x] **单账号红线**: 0 触碰 BOSS
+- [x] **commit 累计 10**: 此前 9 + E-1b `36b914c`
+
+### 17.14.8 §10 重写流程在本节的兑现
+
+| E-1 §17.9 规划 | E-1b 兑现 | 状态 |
+|----------------|-----------|------|
+| "替换 consoleNotifier 默认值" | env 探测 + yaml 配 → 自动选 feishu (无 → fallback console) | ✅ |
+| "wiring 阶段" (隐含 E-1b) | config-schema + config-loader + auto-handler + cli/index 4 文件闭环 | ✅ |
+| "auto.yaml 同步" | docs/auto.example.yaml +13 行 commented 示例 | ✅ |
+
+新增记忆点 (写入 memory 候选):
+
+### 17.14.9 关键经验 (架构师 review 第 2 次后沉淀)
+
+| 经验 | 来源 | 决策 |
+|------|------|------|
+| **"..." 默认值散弹 = 设计缺口** | E-1b 我画 4 类图写 `createFeishuNotifier({webhookUrl, ...})`, 假装透传所有 YAML 字段但实际只传 1 个 | `...` 散弹 = TS 谎言, 同 `feedback_type_cast_design_gap` 根因 |
+| **3 层探测 → 2 层更清晰** | 架构师 review 指出 opts.feishuWebhookUrl + config.notifier.webhookUrl + ? 让函数签名复杂 | env 探测职责上移到 CLI, buildDefaultDeps 只看最终 config |
+| **架构师 review 第 6 项: 协议语义** | E-1 加上后, E-1b 验证有效 (loc 配置参数未被透传 = 契约违背) | 5 项清单 → 6 项 (配置语义 / 运维边界 / 类型扩展 / 单账号红线 / 文档完整 / **协议语义**) |
+| **`.strict()` 是 zod 默认** | 默认 zod 接受额外字段, 易引入类型 cast 类的设计 gap | 所有扩展 schema 默认加 `.strict()` (per type cast memory 教训) |
+
+---
+
+## 17.15 Sprint E-1c/d 实际跑通 (2026-07-29, 修 pre-existing bug + 真实 4 场景测试)
+
+> **目的**: 验证 Sprint D-2 + E-1 + E-1b 落地后的 auto pipeline **真实跑通** (排除 cron 调度). 不引新功能, 修复一个 D-1c 漏的 commander 注册冲突 + 确认 dotenv 已配置 + 写真实 4 场景.
+> **纪律**: §3.11 hook 不能只信 (本节就是反向案例: 561+ vitest PASS 但 commander 冲突没人发现); §3.12 probe before src 思路推广到 "跑实际命令验证"; 单账号红线守住 (3 STUB 拦截所有 BOSS 触碰).
+
+### 17.15.1 任务总览 (1 commit)
+
+| Commit | 范围 | 文件 |
+|--------|------|------|
+| `53ca678` | 修 pre-existing commander 冲突 + docs/env.example.md + 实际跑通验证 | `src/cli/index.ts` (-3/+3 替换 `program.command('auto init-config')` 为 `autoCmd.command('init-config')`) / `docs/env.example.md` (NEW, 42 行) |
+
+### 17.15.2 4 场景实测 (per §3.11 hook 不能只信 → 反向验证)
+
+sandboxed via `HOME=/tmp/test-home` (避免触碰真实 `~/.bapply/`):
+
+| # | 场景 | 命令 | 期望 | 实测 |
+|---|------|------|------|------|
+| 1 | init-config 写模板 | `bapply auto init-config` | 写 2 文件 (auto.yaml + account-meta.json, atomic write) | ✅ 2 文件已写 |
+| 2 | dry-run 无 FEISHU env | `bapply auto --dry-run --phase morning` | consoleNotifier fallback, 红字打印 loginByQR stub fail → exit 2 | ✅ exit 2 state aborted, 红字 "🔴 [CRITICAL] [AUTO.runner] login failed" |
+| 3 | dry-run + env var | `FEISHU_WEBHOOK_URL=... bapply auto --dry-run --phase morning` | feishuNotifier 真 POST to mock | ✅ Mock 收到 `{msg_type:'text', content:{text:'🔴 [CRITICAL]...'}}` |
+| 4 | dry-run + .env file | `cd /tmp/.../.env-folder && bapply auto --dry-run --phase morning` | dotenv side-effect 自动读 .env → 同 scenario 3 | ✅ Mock 收到同一 payload |
+
+**Mock http server 验证 payload** (per scenario 3/4, `/tmp/mock-webhook.log`):
+```json
+{"msg_type":"text","content":{"text":"🔴 [CRITICAL] [AUTO.runner] login failed: [AUTO.stub] loginByQR 未接线 (D-2 单账号红线: 不触碰 BOSS), 后续 Sprint E 真账号模块替换"}}
+```
+
+### 17.15.3 关键发现
+
+#### 17.15.3.1 dotenv 已配置 (用户原意"配置从 .env 获取" = 已工作)
+
+`src/config/index.ts:1` 已经 `import 'dotenv/config'`. 项目已装 dotenv 16.4.7 作为 dep (per package.json).
+
+- 任何 `bapply` 子命令启动时 → dotenv 自动读 `process.cwd()/.env`
+- 注入到 `process.env`
+- CLI auto handler `mergeWebhookFromEnv(result.config, process.env.FEISHU_WEBHOOK_URL)` 自然拿到
+
+**确认**: 不需新增 .env 加载代码 (per memory `feedback_dotenv_already_loads`, 避免重发明 dotenv).
+
+#### 17.15.3.2 Pre-existing commander 注册冲突 (D-1c 漏)
+
+`src/cli/index.ts` line 994 (Sprint D-1c 提交 `69a464b` 引入):
+```typescript
+program
+  .command('auto init-config')         // ← 顶层 command, 与 line 901 'auto' 冲突
+```
+
+修复 (commit `53ca678`, -3/+3 行):
+```typescript
+const autoCmd = program                  // ← 捕获 auto Command 引用
+  .command('auto')
+  ...
+
+autoCmd                                  // ← 在 autoCmd 上挂 init-config
+  .command('init-config')
+  ...
+```
+
+**根因 (per §3.8 修 bug 归因纪律)**:
+- 症状: `bapply auto` 启动即 throw "cannot add command 'auto' as already have command 'auto'"
+- 多假设:
+  1. ❌ 路径冲突 (sub vs parent 冲突 commander API 用错)
+  2. ❌ 重复注册 → 不是
+  3. ❌ commander API 误用 → 实际是 (应为 `.command('auto').command('init-config')` 链式)
+- 根因: D-1c 提交 `69a464b` 时, `auto-config-init-handler.test.ts` 单独测了 handler, 但 CLI 端注册没测 → 561 vitest PASS 但运行时立刻崩 (per §3.11 hook 错觉)
+- 修复: 捕获 autoCmd const, 用 `.command('init-config')` 在 autoCmd 上 (commander 子命令 API)
+
+#### 17.15.3.3 自验证 §4.4 5 项
+
+- [x] **单测**: 600/0/1 PASS (含 E-1b 14 it() + 本节未引入新 RED)
+- [x] **集成**: 4 场景实际跑通 (per §3.11 不只信 hook)
+- [x] **类型**: tsc 0 新错 (1 pre-existing: OpenAI thinking)
+- [x] **live**: 4 场景真跑过 (sandboxed HOME=/tmp/test-home) — 排除 cron 调度
+- [x] **浏览器**: N/A (CLI 后端模块)
+
+#### 17.15.3.4 单账号红线守住
+
+| 路径 | 是否触碰 BOSS |
+|------|--------------|
+| init-config (atomic write 2 文件) | ❌ 0 触碰 |
+| runDailyLoop 入口 loginByQR | ❌ STUB 抛 `BOSSStubError` (per D-2 §17.8) |
+| 后续 bossSearch / sendGreeting | ❌ 永远到不了 (loginByQR 先抛) |
+| feishu webhook 真 POST (scenarios 3/4) | ❌ feishu ≠ BOSS, 允许 |
+| 自动请求 ~9999 mock server | ❌ localhost |
+
+**结论**: Sprint E-1c/d 真实跑通, 单账号红线 0 触碰.
+
+### 17.15.4 §3.10 refactor 盘点 (E-1c/d 2 文件微改)
+
+```bash
+$ git diff --stat src/cli/index.ts
+src/cli/index.ts | 6 +++---
+```
+
+| Caller | 影响 |
+|--------|------|
+| `src/cli/index.ts` line 901-987 | `const autoCmd =` (1 字变更) |
+| `src/cli/index.ts` line 994 | `program` → `autoCmd` (1 字变更) |
+| `src/cli/index.ts` line 994 | `'auto init-config'` → `'init-config'` (1 字变更) |
+
+**3 问**: ① 下游成立 ✅ (auto + auto init-config 都注册成功) ② 无副作用依赖 ✅ (其他 8 命令不动) ③ 错误边界仍有效 ✅ (commander 报错链不变).
+
+### 17.15.5 §10 重写流程在本节的兑现
+
+E-1c/d 是 bug 修复 + 真实跑通, §10 重写流程不直接适用. 但需复核:
+
+| 项 | E-1c/d 验证 | 状态 |
+|----|-------------|------|
+| §17.9 E-1 规划 (飞书 notifier 集成) | E-1 (4 字段透传) + E-1b (env 探测) + E-1c (真实跑通) = 闭环 | ✅ |
+| §3.11 hook 错觉 → 必须真跑 (sandbox 安全) | 4 场景全部真跑 | ✅ |
+| §3.12 probe before src | dotenv 复用既有, 不重发明 | ✅ |
+| 单账号红线 | 守住 (3 STUB) | ✅ |
+
+### 17.15.6 关键经验 (新增)
+
+| 经验 | 来源 | 决策 |
+|------|------|------|
+| **`bapply auto` 真实可测试** (排除 cron) | 4 场景跑通证明 pipeline + wiring + notifier + env 探测全套实际工作 | 3 STUB 拦截 BOSS, 排除 cron 后, 整个配置 + 投递框架可安全实测 |
+| **D-1c 漏 commander CLI 端测试** | vitest 测了 handler 但没测 commander 注册层, 561 PASS 但立即 throw | 加 commander 注册端 e2e 测试 (类似 scenario 1) 或 live smoke test (CI step) |
+| **dotenv 复用既有** | 我准备加 .env 加载, grep 发现 `src/config/index.ts:1` 已有 | 改源码前先 `grep dotenv`, 复用既有 dep |
+| **`HOME` override 安全测 `~/.bapply/`** | `~/.bapply/cookies.json` 真实 cookie 不能覆盖 | 测试时 `HOME=/tmp/test-home` 让 `~` 指向 sandbox |
+
+### 17.15.7 §9 Sprint E 后续状态更新
+
+| 子任务 | 状态 |
+|--------|------|
+| **E-1 飞书 notifier** | ✅ `6004964` |
+| **E-1b wiring + config + env** | ✅ `36b914c` |
+| **E-1c 真实跑通 + 修 init-config bug** | ✅ `53ca678` (本节) |
+| **E-2 install-cron.sh** | ⏳ 未开 (本 session 焦点在排除 cron) |
+| **E-3 node-cron 替代** | ⏳ 可选 |
+| **E+ 真账号 STUB 替换** | ❌ 单账号红线禁止 |
+
+
+
+---
+
+---
+
 ## Debug Gate 5 项（按 §3.8）
 
 ⚠️ **本 ADR 不是 bug 修复类决策，Debug Gate N/A**。如后续 live 跑发现撞墙，按 §3.8 重新走症状 / 多假设 / 修复 / 自验证 / 未证明 5 项。
