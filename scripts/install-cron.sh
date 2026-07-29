@@ -271,7 +271,7 @@ build_crontab_linux() {
 }
 
 # ============== 主流程 ==============
-step "install-cron: phase=$PHASE morning=$HOUR_MORNING:$MINUTE_MORNING afternoon=$HOUR_AFTERNOON:$MINUTE_AFTERNOON uninstall=$DO_UNINSTALL dryRun=$DO_DRY_RUN"
+step "install-cron: phase=$PHASE morning=$(printf '%02d:%02d' "$HOUR_MORNING" "$MINUTE_MORNING") afternoon=$(printf '%02d:%02d' "$HOUR_AFTERNOON" "$MINUTE_AFTERNOON") uninstall=$DO_UNINSTALL dryRun=$DO_DRY_RUN"
 
 if [[ "$DO_UNINSTALL" -eq 1 ]]; then
   # ============== Uninstall ==============
@@ -340,7 +340,7 @@ if [[ "$PLATFORM" == "darwin" ]]; then
   # 打印 summary
   echo ""
   ok "Cron 已装"
-  info "⏰ 下一触发: 周一 ${HOUR_MORNING}:${MINUTE_MORNING} (morning) / 周一 ${HOUR_AFTERNOON}:${MINUTE_AFTERNOON} (afternoon)"
+  info "⏰ 下一触发: 周一 $(printf '%02d:%02d' "$HOUR_MORNING" "$MINUTE_MORNING") (morning) / 周一 $(printf '%02d:%02d' "$HOUR_AFTERNOON" "$MINUTE_AFTERNOON") (afternoon)"
   info "📄 日志: $LOGS_OUT / $LOGS_ERR"
   if [[ -n "$FEISHU_URL" ]]; then
     info "🔔 飞书告警: 已启用"
@@ -376,7 +376,7 @@ else
 
   echo ""
   ok "Cron 已装"
-  info "⏰ 下一触发: 周一 ${HOUR_MORNING}:${MINUTE_MORNING} (morning) / 周一 ${HOUR_AFTERNOON}:${MINUTE_AFTERNOON} (afternoon)"
+  info "⏰ 下一触发: 周一 $(printf '%02d:%02d' "$HOUR_MORNING" "$MINUTE_MORNING") (morning) / 周一 $(printf '%02d:%02d' "$HOUR_AFTERNOON" "$MINUTE_AFTERNOON") (afternoon)"
   info "📄 日志: 走 mail 或 /var/log/syslog (Linux 默认无独立 stdout file)"
   if [[ -n "$FEISHU_URL" ]]; then
     info "🔔 飞书告警: 已启用"
