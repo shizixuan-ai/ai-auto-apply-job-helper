@@ -113,7 +113,7 @@ describe('T18: auto-handler 捕获 GuardError', () => {
     const result = await runDailyLoop(deps, '2026-07-28')
 
     expect(result.stats.blocked).toBe(true)
-    expect(result.exitCode).toBe(2)
+    expect(result.exitCode).toBe(3)  // D-3 §17.12 修正 3: 风控 = exit 3 (区别 fatal 2)
     expect(result.state).toBe('blocked')
     // j1 j2 ok, j3 guard, j4 j5 未尝试
     expect(result.stats.sent).toBeLessThan(5)

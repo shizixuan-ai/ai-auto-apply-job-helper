@@ -1660,6 +1660,409 @@ docs/auto.example.yaml (~60 行, 进 git)                       ← D-1c
 
 ---
 
+## 17. Sprint D-2 收尾 (2026-07-28)
+
+> **目标**: 把 `bapply auto` 主命令闭环 (config + meta + deps 拼装 + runDailyLoop + process.exit), 但 **单账号红线守住**: `bossSearch` / `sendGreeting` / `loginByQR` 全 STUB_THROW, 真账号模块待 Sprint E+ (需 user 实测窗口允许).
+> **纪律**: §3.13 错误分层 (STUB / AUTO.runner / AUTO.guard + STUB error class); §3.9 错误传播图 (guard.onBlock 内 recordBlock 失败 → swallow + notifier warn); §3.10 refactor (新 export, 现有 caller 0 改).
+
+### 17.1 子任务总览 (4 commit)
+
+| # | Commit | 内容 |
+|---|--------|------|
+| 1 | `d1fb6a2` | D-1a: config-schema + config-loader + AutoConfigError (T21-T23 9/9) |
+| 2 | `3ec11f0` | D-1b: account-meta-store + auto-handler 扩 guard/onBlock (T25-T29 23/23) |
+| 3 | `69a464b` | D-1c: auto-config-init-handler + CLI 注册 (T24 5/5) |
+| 4 | `78eb94c` | **D-2**: buildDefaultDeps + `bapply auto` 主命令 wiring (T26-T29 12/12) |
+
+### 17.2 D-2a buildDefaultDeps 拼装 helper (per §16.3.1 架构图)
+
+**职责**: 把 fs counter / fs accountMeta / guard.onBlock / console notifier / 3 STUB 全部拼成一个 `AutoHandlerDeps`, 让 `runDailyLoop` 一行调起.
+
+**API 形态** (`src/cli/handlers/auto-handler.ts`):
+
+```typescript
+export interface BuildDefaultDepsOpts {
+  configDir: string                    // 默认 ~/.bapply/
+  config: AutoConfig                   // from loadAutoConfig
+  accountMeta: AccountMeta             // from accountMetaStore.load()
+  notifier?: AutoNotifier              // 默认 console
+  rand?: () => number                  // 测试可注入
+  now?: () => number
+  accountMetaStoreFactory?: (configDir: string) => AccountMetaStore
+  counterStoreFactory?: (configDir: string) => CounterStore
+  guard?: GuardCallback                // 测试可注入
+  strictExitCode?: boolean             // D-1b 缺口 6
+}
+
+export async function buildDefaultDeps(
+  opts: BuildDefaultDepsOpts,
+): Promise<AutoHandlerDeps>
+```
+
+**关键设计决策**:
+
+1. **`DEFAULT_SAFETY_VALUE` 内联常量** (避免依赖 config-schema 类型, 减少 cross-module 耦合): `consecutive_guard_threshold=3` / `max_failure_rate=0.3` / `auto_regress_warmup=true` / `guard_trigger_policy='abort_day'`
+2. **`buildDefaultGuard` 串联 recordBlock + regressWarmup**: `onBlock(reason, error)` → `recordBlock` → 读 `blockedHistory.length` → `>= threshold` 则 `regressWarmup` + notifier critical
+3. **`safeLoadHistoryLen` 防崩**: recordBlock 之后读最新状态, 失败返 0 不抛
+4. **`consoleNotifier` 暴露**: 默认 `console.log`, 但 tag 化 (`🔴 [CRITICAL]` / `🟡 [WARN]`) 让脚本可 grep
+
+### 17.3 D-2b `bapply auto` 主命令 wiring (`src/cli/index.ts`)
+
+**改动**: 把 D-1c 留的占位替换为实际 wiring:
+
+```typescript
+.action(async (options) => {
+  // 1. 解析 configDir (默认 ~/.bapply)
+  // 2. loadAutoConfig → AutoConfig (or AutoConfigError exit 2)
+  // 3. accountMetaStore.load → AccountMeta (or AccountMetaError exit 2)
+  // 4. buildDefaultDeps({ configDir, config, accountMeta, quotaOverride })
+  // 5. runDailyLoop(deps, date) → RunResult
+  // 6. process.exit(result.exitCode) (0=成功 / 1=部分失败 / 2=致命/风控)
+})
+```
+
+**关键设计决策**:
+
+- **`quotaOverride` CLI 透传**: `bapply auto --quota 60` → 拆 morning=24/afternoon=36 (比例 40/60), 走 D-1a 缺口 3 修订
+- **`--strict-exit-code` 透传**: 走 D-1b 缺口 6 (`effective_successes=0 + strict=true → exit 2`)
+- **`--phase morning|afternoon`**: 走 throttle.phase 选择 interval 配置
+- **`--dry-run`**: 走 D-1a config.dryRun (保留 throttle 不发请求, 但仍消耗 counter 用于验证)
+
+### 17.4 §3.9 错误传播图 (D-2 关键)
+
+```
+[buildDefaultDeps guard.onBlock(reason, error)]
+        │
+        ├─ recordBlock(reason, error)
+        │     ├─ ok → meta 更新 (currentTier 写入内存)
+        │     └─ throw AccountMetaError
+        │           └─ try/catch → notifier.warn + return ← 禁区 0
+        │
+        ├─ safeLoadHistoryLen
+        │     ├─ ok → blockedHistoryLen
+        │     └─ throw → 返 0 (不抛) ← 禁区 0
+        │
+        └─ blockedHistoryLen >= threshold ?
+              ├─ yes → regressWarmup()
+              │     ├─ ok → tier 降档
+              │     │     ├─ 变化 → notifier.critical 提示降档
+              │     │     └─ 不变 → notifier.critical 普通
+              │     └─ throw → try/catch → notifier.warn (不抛)
+              └─ no → 跳过
+```
+
+**关键不变量**: `onBlock` 永不 throw (`buildDefaultDeps` 调用方 = `runDailyLoop`, 期望 `onBlock` 静默, 否则吞掉外层 throw 后果不可控).
+
+### 17.5 §3.13 错误分层 (D-2 落地 4 处)
+
+| 类 / 标注 | layer | 触发位置 |
+|-----------|-------|----------|
+| `class BOSSStubError extends Error` | `'STUB'` | `bossSearch`/`sendGreeting`/`loginByQR` STUB |
+| `notifier msg` | `[AUTO.runner]` | R1 login failed / R3 失败率超阈 (未注入 guard 时) |
+| `notifier msg` | `[AUTO.guard]` | R2/R3 触发 guard.onBlock (recordBlock + 降档 + 提示) |
+| `notifier msg` | `[AUTO.stub]` | (保留位, 当前用 BOSSStubError 自带 msg, 后续飞书 notifier 复用) |
+
+### 17.6 §3.10 refactor 盘点 (D-2)
+
+```bash
+$ git grep 'buildDefaultDeps' src/ tests/
+src/cli/index.ts:import { buildDefaultDeps, ... } from './handlers/auto-handler'
+src/cli/handlers/auto-handler.ts:export async function buildDefaultDeps(...)
+tests/unit/cli/handlers/build-default-deps.test.ts:import { buildDefaultDeps, ... }
+```
+
+| Caller | 改动前依赖 | 改动后依赖 | 边界保持 |
+|--------|-----------|-----------|----------|
+| `src/cli/index.ts` `bapply auto` action | D-1c 占位 | `buildDefaultDeps(opts)` → `runDailyLoop(deps, date)` | ✅ |
+| `tests/unit/cli/handlers/build-default-deps.test.ts` | (不存在) | T26-T29 (12 it) | ✅ (新测试) |
+
+**0 caller 改动** (D-1c 占位 + 测试全部新增). `runDailyLoop` 签名 0 改 (`AutoHandlerDeps` 已含 `accountMetaStore?` + `guard?` + `strictExitCode?`).
+
+### 17.7 测试矩阵 (Sprint D-1 → Sprint D-2)
+
+| 阶段 | PASS | FAIL | skipped | 增量 |
+|------|------|------|---------|------|
+| Sprint B 后 | 487 | 0 | 1 | (基线) |
+| Sprint C 后 | 512 | 0 | 1 | +25 (C-2a/b/c) |
+| D-1a | 521 | 0 | 1 | +9 (T21-T23) |
+| D-1b | 544 | 0 | 1 | +23 (T25-T29 + handler T25-T28) |
+| D-1c | 549 | 0 | 1 | +5 (T24) |
+| **D-2** | **561** | **0** | **1** | **+12 (T26-T29 buildDefaultDeps)** |
+
+**Sprint D 总计**: 487 → 561 = +74 it. (含 D-1 +37, D-2 +12, hook 审计补 D-1b P0+P1 = +25)
+
+### 17.8 单账号红线守住验证 (D-2)
+
+| STUB | 测试 | 抛错 | 状态 |
+|------|------|------|------|
+| `bossSearch` | T28a (`build-default-deps.test.ts`) | `BOSSStubError('bossSearch')` | ✅ |
+| `sendGreeting` | T28b | `BOSSStubError('sendGreeting')` | ✅ |
+| `loginByQR` | T28c | `BOSSStubError('loginByQR')` | ✅ |
+
+**默认 fs store + 默认 fs config-loader + 3 STUB + 默认 console notifier** = 完整端到端可走, 但 0 触碰 BOSS API. `bapply auto` 跑起来会:
+
+1. loadAutoConfig → ok
+2. accountMetaStore.load → ok (fs atomic)
+3. buildDefaultDeps → 拼装 + STUB 注入
+4. runDailyLoop → R1 loginByQR() → throw `BOSSStubError`
+5. notifier critical: `[AUTO.runner] login failed: [AUTO.stub] loginByQR 未接线 (...)`
+6. exitCode = 2, state = `aborted`
+
+### 17.9 Sprint E 规划 (后续 session)
+
+| 子任务 | 文件 | 内容 |
+|--------|------|------|
+| **E-1 飞书 notifier** | `src/auto/feishu-notifier.ts` NEW (~120 行) | webhook URL + 签名 + 重试 (3 次指数退避) + AutoNotifier 接口实现; 替换 `consoleNotifier` 默认值 |
+| **E-2 install-cron.sh** | `scripts/install-cron.sh` NEW (~50 行) | 一键装 system cron (morning 9:30 + afternoon 14:30 周一到周五); `--uninstall` 反向 |
+| **E-3 node-cron 可选** | `src/cli/cron-runner.ts` NEW (~80 行) | 进程内调度 (替代 system cron); 需 `node-cron` 依赖 |
+
+**Sprint E+ 真账号模块替换 STUB** (单账号红线禁止, **需 user 实测窗口显式允许**):
+
+| 模块 | 替换 STUB | 接入路径 |
+|------|-----------|----------|
+| `bossSearch` | 真 `searchJobs` (Sprint C 已落地, 用 page.evaluate + robustEvaluate) | `buildDefaultDeps` 接受 `bossSearchImpl` opt |
+| `sendGreeting` | 真 `sendGreeting` (Sprint C 已落地, page.goto + form fill) | `buildDefaultDeps` 接受 `sendGreetingImpl` opt |
+| `loginByQR` | 真 `loginByQR` (Sprint A 已落地, 油猴 hook 配合) | `buildDefaultDeps` 接受 `loginByQRImpl` opt |
+
+**前置条件** (Sprint E+ 启动前):
+
+- [ ] user 实测窗口允许 (单账号红线临时放开, **session 内明确表态**)
+- [ ] 油猴 hook (Task #12-15) 上线并验证 (per `feedback_boss_anti_bot_status.md`)
+- [ ] live 实测 (受控环境跑 5 个真实 job, per §3.11 hook 错觉警告)
+- [ ] 失败率监控 (per §17.4 错误传播图, 失败率高时自动停)
+
+### 17.10 §10 重写流程在本节的兑现 (D-2)
+
+| 修订 | 位置 | 原因 | 状态 |
+|------|------|------|------|
+| `buildDefaultDeps` 新 export (D-1c 占位兑现) | §17.2 API 形态 | `bapply auto` 主命令需拼装 deps | ✅ D-2 |
+| `DEFAULT_SAFETY_VALUE` 内联常量 | §17.2 决策 1 | 避免 cross-module 耦合 | ✅ D-2 |
+| `buildDefaultGuard` 串联 recordBlock + regressWarmup | §17.2 决策 2 | §16.3.2 时序图落地 | ✅ D-2 |
+| `safeLoadHistoryLen` 防崩 | §17.4 错误传播图 | §3.9 防 onBlock 抛 | ✅ D-2 |
+| `consoleNotifier` 暴露 + tag 化 | §17.2 决策 4 | 脚本可 grep | ✅ D-2 |
+| `BOSSStubError` class + STUB layer | §17.5 错误分层 | §3.13 + 单账号红线 | ✅ D-2 |
+| `bapply auto` wiring (D-1c 占位兑现) | §17.3 | 主命令闭环 | ✅ D-2 |
+| `quotaOverride` 比例拆 (CLI → config) | §17.3 决策 2 | D-1a 缺口 3 兑现 | ✅ D-2 |
+| `--strict-exit-code` 透传 | §17.3 决策 3 | D-1b 缺口 6 兑现 | ✅ D-2 |
+
+### 17.11 自检 Checklist (D-2 收尾)
+
+- [x] 全套 vitest **561/0/1 PASS** (+12 D-2)
+- [x] tsc 0 新错 (2 pre-existing: puppeteer-stealth + OpenAI thinking)
+- [x] §3.10 refactor 盘点 0 caller 改动 (D-2 wiring 闭环)
+- [x] §3.13 错误分层 5 处 (STUB + AUTO.runner + AUTO.guard + 既存 META/GUARD/CONFIG/THROTTLE/SEND)
+- [x] §3.9 错误传播图 (D-2 §17.4 已画, guard.onBlock 内部 3 重 try/catch)
+- [x] §4.4 自验证 5 项 (单测/集成/类型/live/浏览器) — live 留给 Sprint E+
+- [x] §17.5 错误分层 4 处 (新 STUB + 3 AUTO.* 标注)
+- [x] §17.7 测试矩阵 (487 → 561 = +74 Sprint D)
+- [x] §17.8 单账号红线 100% 守住 (3 STUB 全 throw)
+- [x] Sprint E 规划 + 替换 STUB 前置条件明确 (待 user 实测窗口)
+- [x] **8 commit 已落本地 (未推送, 等 user 决策)**
+
+---
+
+## 17.12 Sprint D-3 收尾 (2026-07-28, 架构师 review 反馈)
+
+> **触发**: Sprint D-2 落地后架构师 review, 识别 **3 项必须修正 + 2 项强烈建议** 语义缺口. 本节为 D-3 闭环.
+> **纪律**: §3.13 错误分层 (exit 3 新增 / dry-run 隔离 / safety 优先级); §3.10 refactor (现有 caller 0 改); §3.12 probe before src (单测修复 mock 假绿问题).
+
+### 17.12.1 3 项必须修正 (架构师 review)
+
+| # | 缺口 | D-2 错误 | D-3 修订 |
+|---|------|---------|---------|
+| 1 | **config.safety 优先级被硬编码覆盖** | `buildDefaultGuard` 完全用内联 `DEFAULT_SAFETY_VALUE`, 忽略用户 YAML 的 `safety` | `buildDefaultGuard({ safety })` 接受 safety 参数, `threshold = safety?.x ?? DEFAULT_SAFETY_VALUE.x` |
+| 2 | **dry-run 污染正式计数** | dry-run 与正式投递共用 fs counter, 真账号接入后配额被 dry-run 耗尽 | dry-run 时 `createInMemoryCounterStore()`, fs counter 仅 dryRun=false 路径用 |
+| 3 | **风控触发 exit code 模糊** | blocked 与 fatal/login-fail 共用 exit 2, 运维告警误报 | `RunResult.exitCode: 0\|1\|2 → 0\|1\|2\|3`; blocked → exit 3, fatal → exit 2 (cron/alerting 区分) |
+
+### 17.12.2 2 项强烈建议
+
+| # | 建议 | D-3 处理 |
+|---|------|---------|
+| 1 | `--phase` 与 throttle 显式关联 | buildDefaultDeps 注释加 config.phase 透传说明, throttle.ts 已 selectByPhase 无需改 |
+| 2 | accountMetaStore 并发安全 | D-1b 已用 POSIX atomic (tmp + writeFile + sync + rename), 引用 §14.8 F1-F5 |
+
+### 17.12.3 实现细节
+
+**修正 1 (config.safety 优先级合并)**:
+
+```typescript
+// src/cli/handlers/auto-handler.ts
+function buildDefaultGuard(deps: {
+  accountMetaStore: AccountMetaStore
+  notifier: AutoNotifier
+  safety?: SafetyConfig  // NEW D-3
+}): GuardCallback {
+  const { accountMetaStore, notifier, safety } = deps
+  // D-3 §17.12.1 修正 1: 用户 safety.xxx 优先, 缺字段 fallback DEFAULT_SAFETY_VALUE
+  const threshold = safety?.consecutive_guard_threshold
+    ?? DEFAULT_SAFETY_VALUE.consecutive_guard_threshold
+  ...
+}
+
+// buildDefaultDeps 透传
+const guard = opts.guard ?? buildDefaultGuard({
+  accountMetaStore, notifier,
+  safety: opts.config.safety,
+})
+```
+
+**修正 2 (dry-run 隔离 counter)**:
+
+```typescript
+// src/cli/handlers/auto-handler.ts buildDefaultDeps
+const counterStore = opts.config.dryRun
+  ? createInMemoryCounterStore()  // NEW D-3: dry-run 不写 fs
+  : opts.counterStoreFactory
+    ? opts.counterStoreFactory(configDir)
+    : createFsCounterStore(path.join(configDir, 'counter.json'))
+```
+
+**修正 3 (exit code 3 = blocked)**:
+
+```typescript
+// src/cli/handlers/auto-handler.ts RunResult
+export interface RunResult {
+  /** D-3 §17.12.1 修正 3: 退出码扩展为 0|1|2|3
+   * - 0 = success (≥1 effective_successes)
+   * - 1 = partial failure
+   * - 2 = fatal/aborted (login failed / config error / strictExitCode 全 reject)
+   * - 3 = blocked (R2 GuardError / R3 失败率超阈, 可恢复, 不需人工)
+   */
+  exitCode: 0 | 1 | 2 | 3
+  ...
+}
+
+// runDailyLoop 退出码精化 (per §17.4 决策树)
+let exitCode: 0 | 1 | 2 | 3
+if (stats.blocked) {
+  exitCode = 3  // D-3 NEW: 风控暂停, 区别 fatal 2
+} else if (deps.strictExitCode && ...) { exitCode = 2 }
+...
+```
+
+### 17.12.4 类型扩展 (config-schema vs throttle AutoConfig)
+
+CLI 之前用 `as unknown as` cast 跨模块类型, D-3 改为显式 intersection type:
+
+```typescript
+// BuildDefaultDepsOpts.config 接受 SchemaAutoConfig + dryRun/phase
+export interface BuildDefaultDepsOpts {
+  config: SchemaAutoConfig & { dryRun: boolean; phase: 'morning' | 'afternoon' }
+}
+
+// CLI 显式合并 dryRun/phase 进 config
+config = {
+  ...result.config,        // SchemaAutoConfig
+  dryRun: options.dryRun ?? false,
+  phase,                   // CLI flag
+}
+
+// 传给 AutoHandlerDeps.config 时 cast 为 throttle AutoConfig (无 safety)
+config: opts.config as unknown as ThrottleAutoConfig
+```
+
+### 17.12.5 测试矩阵 (D-2 → D-3)
+
+| 阶段 | PASS | FAIL | 增量 |
+|------|------|------|------|
+| Sprint D-2 | 561 | 0 | +12 D-2 |
+| **D-3** | **572** | **0** | **+11 D-3 (T30a-c 3 + T31a-c 3 + T32a-c 3 + T33a-b 2 = 11)** |
+
+**新增测试覆盖**:
+- T30a: config.safety.consecutive_guard_threshold=5 覆盖 DEFAULT (3 条 history 不降档)
+- T30b: safety 缺字段 fallback DEFAULT
+- T30c: safety 完全缺失 fallback DEFAULT
+- T31a: dry-run=true 用 in-memory counter (fs 不写)
+- T31b: dry-run=false 用 fs counter (持久化)
+- T31c: dry-run 仍 recordBlock (account-meta 不受影响)
+- T32a: GuardError → blocked → exit 3 (was 2)
+- T32b: loginByQR throw → aborted → exit 2 (与 blocked 区分)
+- T32c: R3 失败率超阈 → blocked → exit 3
+- T33a/b: config.phase 透传 (morning / afternoon)
+
+**修复旧测试** (因 exit 3 扩展影响):
+- T18 (guard.test.ts): exitCode 2 → 3
+- T16 (auto-handler.test.ts): exitCode 2 → 3
+- T25a/T25b/T26a/T27a (auto-handler-guard.test.ts): exitCode 2 → 3 (4 处)
+- 严格 exit 2 (strictExitCode fatal soft error): 保留 2 ✓
+
+### 17.12.6 §3.9 错误传播图 (D-3 新增)
+
+```
+[buildDefaultDeps guard.onBlock(reason, error)] (D-3 修正 1 路径)
+        │
+        ├─ recordBlock(reason, error)
+        │     ├─ ok → meta 更新
+        │     └─ throw AccountMetaError
+        │           └─ try/catch → notifier.warn + return ← 禁区 0 (D-1b)
+        │
+        ├─ safeLoadHistoryLen
+        │     ├─ ok → blockedHistoryLen
+        │     └─ throw → 返 0 (不抛) ← 禁区 0
+        │
+        └─ threshold = safety?.consecutive_guard_threshold (D-3 修正 1)
+                       ?? DEFAULT_SAFETY_VALUE.consecutive_guard_threshold
+              │
+              ▼
+              blockedHistoryLen >= threshold ?
+              ├─ yes → regressWarmup() → tier 降档 → notifier critical
+              └─ no → 跳过
+```
+
+### 17.12.7 §3.10 refactor 盘点 (D-3)
+
+```bash
+$ git grep 'buildDefaultGuard\|buildDefaultDeps\|config.safety\|dryRun' src/ tests/
+src/cli/handlers/auto-handler.ts:function buildDefaultGuard(...)
+src/cli/handlers/auto-handler.ts:export async function buildDefaultDeps(...)
+src/cli/handlers/auto-handler.ts:safety: opts.config.safety (NEW D-3)
+src/cli/handlers/auto-handler.ts:opts.config.dryRun (NEW D-3)
+src/cli/handlers/auto-handler.ts:exitCode: 0 | 1 | 2 | 3 (NEW D-3)
+src/cli/index.ts:config: ... dryRun, phase 合并 (NEW D-3)
+```
+
+| Caller | 改动前 | 改动后 | 边界 |
+|--------|--------|--------|------|
+| `src/cli/index.ts` `bapply auto` action | throttle AutoConfig cast | 显式合并 dryRun/phase → SchemaAutoConfig + extras | ✅ type-safe |
+| `src/cli/handlers/auto-handler.ts` `buildDefaultDeps` | DEFAULT_SAFETY_VALUE 硬编码 | safety 透传 + dryRun 分支 | ✅ |
+| `runDailyLoop` 退出码 | 0\|1\|2 | 0\|1\|2\|3 (blocked = 3) | ✅ process.exit 兼容 number |
+
+**0 caller 改动** (所有 caller 都是 D-1b/D-2 已落地, 仅测试和 ADR 更新).
+
+### 17.12.8 §3.13 错误分层 (D-3 新增 0 处, 复用既有)
+
+D-3 不引入新错误类, 仅扩展 `RunResult.exitCode` 类型 (0|1|2|3). 错误分层保持:
+- CONFIG (AutoConfigError, layer='CONFIG')
+- META (AccountMetaError, layer='META')
+- GUARD (GuardError, layer='GUARD')
+- THROTTLE (ThrottleError, layer='THROTTLE')
+- SEND (SessionExpiredError, layer='SEND')
+- STUB (BOSSStubError, layer='STUB') — D-2
+- AUTO.runner / AUTO.guard / AUTO.stub — D-2
+
+### 17.12.9 自检 Checklist (D-3 收尾)
+
+- [x] 全套 vitest **572/0/1 PASS** (+11 D-3)
+- [x] tsc 0 新错 (2 pre-existing: puppeteer-stealth + OpenAI thinking)
+- [x] §3.10 refactor 盘点 0 caller 改动 (D-3 wiring 闭环)
+- [x] §3.13 错误分层 0 新增 (复用既有 5 类)
+- [x] §3.9 错误传播图 (D-3 §17.12.6 已画, buildDefaultGuard 新 safety 路径)
+- [x] §4.4 自验证 5 项 (单测/集成/类型/live/浏览器) — live 留给 Sprint E+
+- [x] §17.12.5 测试矩阵 (561 → 572 = +11 D-3)
+- [x] §17.12.4 类型扩展 (config-schema AutoConfig + dryRun/phase 合并, 替代 cast)
+- [x] 单账号红线 100% 守住 (3 STUB 全 throw)
+- [x] **9 commit 已落本地 (8 + D-3, 未推送, 等 user 决策)**
+
+### 17.12.10 关键经验 (写入 memory 候选)
+
+| 经验 | 来源 | 决策 |
+|------|------|------|
+| **mock 通过 ≠ 假设正确 (反例)** | T32a/c fail: fs counter 上次数据污染, mock 没覆盖 fs 路径 | T32 测试改用 `createInMemoryCounterStore()` 注入, 防 fs 遗留 |
+| **类型 cast 是设计缺口** | D-1a 用 `as unknown as` 跨模块 cast, D-3 显式 intersection 修正 | `SchemaAutoConfig & { dryRun, phase }` 替代 cast |
+| **架构师 review 必跑** | Sprint D-2 后架构师 review 找出 3 必须修正 + 2 建议, 防真账号接入后才暴露 | D-3 闭环后, Sprint E+ 启动前再请架构师 review |
+
+---
+
 ## Debug Gate 5 项（按 §3.8）
 
 ⚠️ **本 ADR 不是 bug 修复类决策，Debug Gate N/A**。如后续 live 跑发现撞墙，按 §3.8 重新走症状 / 多假设 / 修复 / 自验证 / 未证明 5 项。

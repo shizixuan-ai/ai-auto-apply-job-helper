@@ -210,10 +210,10 @@ describe('T25: guard.onBlock 触发 (D-1b 缺口 1+4)', () => {
     expect(critical.length).toBeGreaterThanOrEqual(1)
     expect(critical.some(c => c.msg.includes('[AUTO.guard]'))).toBe(true)
 
-    // 5. stats.blocked + guardTriggers + exit 2
+    // 5. stats.blocked + guardTriggers + exit 3 (D-3 §17.12 修正 3: 风控 = exit 3, 区别 fatal 2)
     expect(result.stats.blocked).toBe(true)
     expect(result.stats.guardTriggers).toBe(1)
-    expect(result.exitCode).toBe(2)
+    expect(result.exitCode).toBe(3)
     expect(result.state).toBe('blocked')
   })
 
@@ -248,10 +248,10 @@ describe('T25: guard.onBlock 触发 (D-1b 缺口 1+4)', () => {
     expect(critical[0]?.msg).toContain('[AUTO.guard]')
     expect(critical[0]?.msg).toContain('anti_bot')
 
-    // 5. stats.blocked + guardTriggers + exit 2 + state=blocked
+    // 5. stats.blocked + guardTriggers + exit 3 + state=blocked (D-3 §17.12 修正 3)
     expect(result.stats.blocked).toBe(true)
     expect(result.stats.guardTriggers).toBe(1)
-    expect(result.exitCode).toBe(2)
+    expect(result.exitCode).toBe(3)
     expect(result.state).toBe('blocked')
 
     // 6. send 在 j2 后停止 (j3 未投)
@@ -281,9 +281,9 @@ describe('T25: guard.onBlock 触发 (D-1b 缺口 1+4)', () => {
     // 3. blockedHistory 未变
     expect(m.accountMeta.getState().blockedHistory.length).toBe(0)
 
-    // 4. stats.blocked + exit 2 (R3 行为不变)
+    // 4. stats.blocked + exit 3 (R3 行为不变, 但 D-3 §17.12 修正 3: exit 3 区分 fatal 2)
     expect(result.stats.blocked).toBe(true)
-    expect(result.exitCode).toBe(2)
+    expect(result.exitCode).toBe(3)
     expect(result.state).toBe('blocked')
 
     // 5. notifier critical 仍被调 (旧的 [AUTO.runner] 前缀)
@@ -372,8 +372,8 @@ describe('T27: R2 GuardError + guard 未注入 → 向后兼容 (P1)', () => {
     expect(result.stats.blocked).toBe(true)
     expect(result.stats.guardTriggers).toBe(1)
 
-    // 5. exit 2 (R2 致命)
-    expect(result.exitCode).toBe(2)
+    // 5. exit 3 (R2 风控, D-3 §17.12 修正 3 区分 fatal 2)
+    expect(result.exitCode).toBe(3)
     expect(result.state).toBe('blocked')
 
     // 6. notifier critical 仍调 (旧的 [AUTO.runner] 前缀, 含 reason)

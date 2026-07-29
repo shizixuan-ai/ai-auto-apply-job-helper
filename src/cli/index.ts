@@ -920,7 +920,7 @@ program
     console.log()
 
     // ── 1. loadAutoConfig (per §16.3.4 流程图 D1.4.v2) ─────
-    let config: import('../auto/throttle.js').AutoConfig
+    let config: import('../auto/config-schema.js').AutoConfig & { dryRun: boolean; phase: 'morning' | 'afternoon' }
     try {
       const result = await loadAutoConfig({
         configPath,
@@ -929,9 +929,13 @@ program
         quotaOverride,
         dryRun: options.dryRun,
       })
-      // D-1a AutoConfig (zod) 字段比 throttle.ts AutoConfig 多 safety/warmup
-      // runDailyLoop 只用 throttle/quota/phase/dryRun, 多余字段被丢弃
-      config = result.config as unknown as import('../auto/throttle.js').AutoConfig
+      // D-3 §17.12 修正 1+2: 把 CLI flags (dryRun/phase) 合并进 config
+      // 让 buildDefaultDeps 一次性拿到 schema 字段 (safety) + CLI 字段 (dryRun)
+      config = {
+        ...result.config,
+        dryRun: options.dryRun ?? false,
+        phase,
+      }
     } catch (e) {
       if (isAutoConfigError(e)) {
         const err = e as import('../auto/config-loader.js').AutoConfigError

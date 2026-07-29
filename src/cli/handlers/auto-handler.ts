@@ -17,7 +17,7 @@
 import {
   throttleSend,
   ThrottleError,
-  type AutoConfig,
+  type AutoConfig as ThrottleAutoConfig,
   type AccountMeta,
   type ThrottleDeps,
   type Job,
@@ -32,7 +32,8 @@ import {
   createFsAccountMetaStore,
 } from '../../auto/account-meta-store'
 import { GuardError, isGuardError, type GuardReason } from '../../auto/guard'
-import { type SafetyConfig } from '../../auto/config-schema'
+import { type SafetyConfig, type AutoConfig as SchemaAutoConfig } from '../../auto/config-schema'
+import { createInMemoryCounterStore } from '../../auto/counter-store'
 
 /** Notifier 接口 (R2+C-2b 由 guard.ts 实现, 此处仅 interface) */
 export interface AutoNotifier {
@@ -61,7 +62,7 @@ export interface AutoHandlerDeps {
   loginByQR: () => Promise<void>
   notifier: AutoNotifier
   accountMeta: AccountMeta
-  config: AutoConfig
+  config: ThrottleAutoConfig
   /** 测试可注入 noop sleep, 避免 interval 实际等待 */
   sleep?: (ms: number) => Promise<void>
   /** 失败率阈值 (默认 0.3 = 30%, per R3) */
@@ -93,7 +94,14 @@ export interface RunStats {
 }
 
 export interface RunResult {
-  exitCode: 0 | 1 | 2
+  /**
+   * D-3 §17.12 修正 3: 退出码扩展为 0|1|2|3
+   * - 0 = success (≥1 effective_successes)
+   * - 1 = partial failure (无 blocked, effective_successes > 0 但 < sent)
+   * - 2 = fatal/aborted (login failed / config error / strictExitCode 触发全 reject)
+   * - 3 = blocked (R2 GuardError / R3 失败率超阈, 可恢复, 不需人工)
+   */
+  exitCode: 0 | 1 | 2 | 3
   stats: RunStats
   state: HandlerState
 }
@@ -200,10 +208,12 @@ export async function runDailyLoop(
     }
   }
 
-  // ── 6. R6 + D-1b 缺口 6: 退出码精化 ─────────────────────────
-  let exitCode: 0 | 1 | 2
+  // ── 6. R6 + D-1b 缺口 6 + D-3 §17.12 修正 3: 退出码精化 ─────────
+  let exitCode: 0 | 1 | 2 | 3
   if (stats.blocked) {
-    exitCode = 2  // 致命 (R3 失败率 / R2 风控)
+    // D-3 §17.12 修正 3: 风控触发 → exit 3 (可恢复, 不需人工)
+    // 区别于 fatal exit 2 (login failed / config error)
+    exitCode = 3
   } else if (deps.strictExitCode && stats.effective_successes === 0 && stats.sent > 0) {
     // D-1b 缺口 6: --strict-exit-code 开启时, 全 reject 但 counter 走完视为致命软错误
     exitCode = 2
@@ -257,18 +267,23 @@ export const consoleNotifier: AutoNotifier = {
 /**
  * 默认 guard.onBlock (per §16.3.2 时序图 buildDefaultDeps.guard):
  *   1. recordBlock(reason) 持久化 blockedHistory (try/catch swallow)
- *   2. consecutiveBlocks >= DEFAULT_SAFETY.consecutive_guard_threshold → regressWarmup
+ *   2. consecutiveBlocks >= threshold (config.safety ?? DEFAULT_SAFETY) → regressWarmup
  *   3. notifier.notify('critical', `[AUTO.guard] ${reason}`)
  *
+ * D-3 §17.12 修正 1: threshold 优先级 = config.safety?.x ?? DEFAULT_SAFETY.x
  * §3.9 防崩: recordBlock / regressWarmup 失败 → swallow + notifier warn,
  * 让 buildDefaultDeps.onBlock 不抛 (外层 runDailyLoop 不依赖 onBlock 抛错)
  */
 function buildDefaultGuard(deps: {
   accountMetaStore: AccountMetaStore
   notifier: AutoNotifier
+  /** D-3 §17.12 修正 1: 用户 YAML 配的 safety (优先级最高) */
+  safety?: SafetyConfig
 }): GuardCallback {
-  const { accountMetaStore, notifier } = deps
-  const threshold = DEFAULT_SAFETY_VALUE.consecutive_guard_threshold  // 3
+  const { accountMetaStore, notifier, safety } = deps
+  // D-3 §17.12 修正 1: 用户 safety.xxx 优先, 缺字段 fallback DEFAULT_SAFETY_VALUE
+  const threshold = safety?.consecutive_guard_threshold
+    ?? DEFAULT_SAFETY_VALUE.consecutive_guard_threshold
   return {
     async onBlock(reason, error) {
       let currentTier: 'new' | 'warm' | 'old' | undefined
@@ -334,8 +349,11 @@ async function safeLoadHistoryLen(store: AccountMetaStore): Promise<number> {
 export interface BuildDefaultDepsOpts {
   /** 配置目录 (默认 ~/.bapply/, 用于 fs counter + account-meta 路径) */
   configDir: string
-  /** loadAutoConfig 返回的 config */
-  config: AutoConfig
+  /**
+   * loadAutoConfig 返回的 config (D-3 扩展: SchemaAutoConfig + dryRun/phase).
+   * 含 schema 字段 (version/searches/quota/throttle/safety) + CLI 合并字段 (dryRun/phase).
+   */
+  config: SchemaAutoConfig & { dryRun: boolean; phase: 'morning' | 'afternoon' }
   /** accountMetaStore.load() 返回的 meta (作为 AutoHandlerDeps.accountMeta 注入) */
   accountMeta: AccountMeta
   /** 自定义 notifier (默认 console) */
@@ -373,15 +391,18 @@ export async function buildDefaultDeps(
   const accountMetaStore = opts.accountMetaStoreFactory
     ? opts.accountMetaStoreFactory(configDir)
     : createFsAccountMetaStore(path.join(configDir, 'account-meta.json'))
-  const counterStore = opts.counterStoreFactory
-    ? opts.counterStoreFactory(configDir)
-    : createFsCounterStore(path.join(configDir, 'counter.json'))
+  // D-3 §17.12 修正 2: dry-run 用 in-memory counter, 不污染 fs (避免真账号接入后配额被 dry-run 消耗)
+  const counterStore = opts.config.dryRun
+    ? createInMemoryCounterStore()
+    : opts.counterStoreFactory
+      ? opts.counterStoreFactory(configDir)
+      : createFsCounterStore(path.join(configDir, 'counter.json'))
   const notifier = opts.notifier ?? consoleNotifier
+  // D-3 §17.12 修正 1: 透传 config.safety 给 guard (用户 YAML 优先级最高)
   const guard = opts.guard ?? buildDefaultGuard({
     accountMetaStore,
     notifier,
-    // 默认用 safety 默认值 (D-1a DEFAULT_SAFETY, threshold=3)
-    // 注: runDailyLoop 内部 failureRateThreshold 仍用 deps.failureRateThreshold ?? 0.3 (R3)
+    safety: opts.config.safety,  // 用户配的 safety 优先, 缺字段 fallback DEFAULT_SAFETY
   })
 
   return {
@@ -400,7 +421,9 @@ export async function buildDefaultDeps(
     },
     notifier,
     accountMeta: opts.accountMeta,
-    config: opts.config,
+    // D-3 §17.12: SchemaAutoConfig + dryRun/phase → throttle AutoConfig (throttle 不读 safety)
+    // cast 是单向的: safety 是 additive 字段, 不影响 throttle 行为
+    config: opts.config as unknown as ThrottleAutoConfig,
     // 可选 (per D-1b)
     accountMetaStore,
     guard,

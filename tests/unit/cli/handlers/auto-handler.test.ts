@@ -200,7 +200,7 @@ describe('T16: 失败率超阈 → blocked + exit 2', () => {
     expect(result.stats.failed).toBeGreaterThanOrEqual(4)
     expect(result.stats.ok).toBeGreaterThanOrEqual(6)
     expect(result.stats.blocked).toBe(true)
-    expect(result.exitCode).toBe(2)
+    expect(result.exitCode).toBe(3)  // D-3 §17.12 修正 3: 风控 = exit 3 (区别 fatal 2)
     expect(result.state).toBe('blocked')
 
     // notifier critical 应被调用 (per §14.2.4 流程图)
