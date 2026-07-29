@@ -21,6 +21,9 @@
     "verify:feishu": "tsx scripts/verify-feishu-schema.mjs",
     "smoke:cli": "tsx scripts/cli-smoke.mjs",
     "smoke:commands": "node scripts/cli-commands-smoke.mjs",
+    "cron:install": "bash scripts/install-cron.sh",
+    "cron:uninstall": "bash scripts/install-cron.sh --uninstall",
+    "probe:install-cron": "node scripts/probe-install-cron.mjs",
     "smoke": "tsx scripts/git-hooks/pre-commit",
     "prepare": "git config core.hooksPath scripts/git-hooks"
   },
