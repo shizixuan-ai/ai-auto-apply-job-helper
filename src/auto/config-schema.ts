@@ -63,6 +63,18 @@ export const SafetyConfigSchema = z.object({
   auto_regress_warmup: z.boolean(),                                  // 默认 true
 })
 
+/** §17.13 E-1b: NotifierConfig — 飞书 webhook 配置 (透传给 feishu-notifier.ts) */
+export const NotifierConfigSchema = z.object({
+  /** webhook URL (有 = 启用 feishu notifier, 无 = consoleNotifier fallback) */
+  webhookUrl: z.string().url().optional(),
+  /** Max retry attempts (默认 3, per feishu-notifier.ts) */
+  maxRetries: z.number().int().positive().optional(),
+  /** Initial backoff ms (默认 1000) */
+  initialBackoffMs: z.number().int().nonnegative().optional(),
+  /** Single request timeout ms (默认 5000) */
+  timeoutMs: z.number().int().positive().optional(),
+}).strict()
+
 // ─── 主 schema ───────────────────────────────────────────────
 
 export const AutoConfigSchema = z.object({
@@ -72,6 +84,7 @@ export const AutoConfigSchema = z.object({
   warmup: WarmupConfigSchema.optional(),
   throttle: ThrottleConfigSchema,
   safety: SafetyConfigSchema.optional(),                              // 缺 → 默认合并
+  notifier: NotifierConfigSchema.optional(),                         // E-1b 缺 = 默认无 webhook
 })
 
 // ─── TS 类型导出 ─────────────────────────────────────────────
@@ -81,6 +94,7 @@ export type QuotaConfig = z.infer<typeof QuotaConfigSchema>
 export type WarmupConfig = z.infer<typeof WarmupConfigSchema>
 export type ThrottleConfig = z.infer<typeof ThrottleConfigSchema>
 export type SafetyConfig = z.infer<typeof SafetyConfigSchema>
+export type NotifierConfig = z.infer<typeof NotifierConfigSchema>
 export type AutoConfig = z.infer<typeof AutoConfigSchema>
 
 // ─── 默认值常量 (per §16.1 缺口 2) ───────────────────────────
@@ -91,6 +105,11 @@ export const DEFAULT_SAFETY: SafetyConfig = {
   max_failure_rate: 0.3,           // per R3 失败率阈值
   consecutive_guard_threshold: 3,  // per §2
   auto_regress_warmup: true,       // per §16.3.3
+}
+
+/** E-1b 默认 notifier 节点 (无 webhookUrl = 用 consoleNotifier fallback) */
+export const DEFAULT_NOTIFIER: NotifierConfig = {
+  // webhookUrl 不设 = console
 }
 
 /** zod 主 schema (测试用 export) */

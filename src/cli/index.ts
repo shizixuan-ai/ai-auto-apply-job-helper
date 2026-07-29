@@ -30,6 +30,7 @@ import { handleChromeCommand } from './handlers/chrome-handler.js'
 import { runAutoInitConfig } from './handlers/auto-config-init-handler.js'
 import {
   buildDefaultDeps,
+  mergeWebhookFromEnv,
   runDailyLoop,
 } from './handlers/auto-handler.js'
 import {
@@ -929,10 +930,12 @@ program
         quotaOverride,
         dryRun: options.dryRun,
       })
-      // D-3 §17.12 修正 1+2: 把 CLI flags (dryRun/phase) 合并进 config
-      // 让 buildDefaultDeps 一次性拿到 schema 字段 (safety) + CLI 字段 (dryRun)
+      // D-3 §17.12 修正 1+2 + E-1b 架构师 review: 把 CLI flags (dryRun/phase) 合并 + env 探测
+      // 让 buildDefaultDeps 一次性拿到 schema 字段 (safety + notifier) + CLI 字段 (dryRun/phase)
+      // E-1b env merge (FEISHU_WEBHOOK_URL 覆盖 yaml):
+      const withEnv = mergeWebhookFromEnv(result.config, process.env.FEISHU_WEBHOOK_URL)
       config = {
-        ...result.config,
+        ...withEnv,
         dryRun: options.dryRun ?? false,
         phase,
       }

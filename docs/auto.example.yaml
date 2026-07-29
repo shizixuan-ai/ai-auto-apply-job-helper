@@ -72,3 +72,24 @@ safety:
   max_failure_rate: 0.3
   consecutive_guard_threshold: 3
   auto_regress_warmup: true
+
+# ─── Notifier (E-1b: 飞书 webhook 配置, 替代 consoleNotifier) ─
+# webhookUrl 有 → 用飞书自定义机器人 (推荐生产环境)
+# webhookUrl 无 → fallback consoleNotifier
+#
+# 推荐: 通过环境变量 FEISHU_WEBHOOK_URL 注入 (12-Factor, 不写入 yaml)
+#   export FEISHU_WEBHOOK_URL=https://open.feishu.cn/hook/XXXXXXX
+#   bapply auto --phase morning
+#
+# 在 yaml 里写 webhookUrl, 优先级 = CLI env > 此 yaml (env 覆盖)
+# 字段 (per src/auto/feishu-notifier.ts FeishuNotifierOpts):
+#   webhookUrl      : 飞书机器人 webhook URL (有 = 启用, 无 = console)
+#   maxRetries      : 重试次数 (默认 3: 1 初次 + 2 重试)
+#   initialBackoffMs: 初始退避 ms (默认 1000, 退避 = initial × 2^attempt)
+#   timeoutMs       : 单次请求超时 ms (默认 5000)
+notifier:
+  # webhookUrl: "https://open.feishu.cn/hook/XXXXXXX"
+  # maxRetries: 3
+  # initialBackoffMs: 1000
+  # timeoutMs: 5000
+  # (默认全部 omitted, 走 feishu-notifier.ts 内部默认; 仅当 webhookUrl 显式提供才启用飞书)

@@ -2063,6 +2063,394 @@ D-3 不引入新错误类, 仅扩展 `RunResult.exitCode` 类型 (0|1|2|3). 错�
 
 ---
 
+## 17.13 Sprint E-1 收尾 (2026-07-29, 飞书 webhook notifier)
+
+> **目标**: 实现 `feishu-notifier.ts` 替代 `consoleNotifier`, 头 cron 跑时风控/失败率/降档事件实时推到飞书群, 避免遗漏 single-account 红线保护事件. **本 sprint 不动** buildDefaultDeps 默认值 + cli/index.ts wiring(留给 Sprint E-1b, 符合 §4.3 sprint 限制).
+> **纪律**: §3.13 错误分层 (warnLogger [FEISHU] prefix); §3.9 不变量 (notify 永不 throw, 与 consoleNotifier 同契约); §3.10 refactor (新模块, 0 caller 改动); §3.12 probe (7/7 PASS, Node http mock webhook 真网络栈验证).
+
+### 17.13.1 任务总览 (1 commit)
+
+| Commit | 范围 | 文件 |
+|--------|------|------|
+| `6004964` | E-1 feishu notifier + 14 it() + probe 7/7 | `src/auto/feishu-notifier.ts` (NEW) / `tests/unit/auto/feishu-notifier.test.ts` (NEW) / `scripts/probe-feishu-notifier.mjs` (NEW) |
+
+### 17.13.2 4 类图 (§3.5 硬性 → 已在 E-1.1 阶段画 + 用户飞书拍板)
+
+#### 17.13.2.1 架构图 (实现版 — 架构师 review 修正后)
+
+```
+                    ┌────────────────────────────────────────┐
+                    │  src/auto/ (新增 1 文件, 不动现文件)   │
+                    │  ┌──────────────────────────────────┐  │
+                    │  │ feishu-notifier.ts (NEW, ~190 行)│  │
+                    │  │  - FeishuNotifierOpts (interface)│  │
+                    │  │  - createFeishuNotifier(opts)    │  │
+                    │  │    → AutoNotifier               │  │
+                    │  │  - formatFeishuText(level, msg)  │  │
+                    │  │    [架构师 review 强烈建议]      │  │
+                    │  │    msg > 19000 → 截断 + 后缀     │  │
+                    │  └──────────────┬───────────────────┘  │
+                    │                 │ implements            │
+                    │  ┌──────────────▼───────────────────┐  │
+                    │  │ src/cli/handlers/auto-handler.ts │  │
+                    │  │  (本 sprint 不改)                 │  │
+                    │  │  interface AutoNotifier {         │  │
+                    │  │    notify(level, msg): Promise    │  │
+                    │  │  }                                │  │
+                    │  └──────────────────────────────────┘  │
+                    └────────────────────────────────────────┘
+                                       │
+                                       │ 调用 (留给 E-1b)
+                                       ▼
+                    ┌────────────────────────────────────────┐
+                    │  External: 飞书自定义机器人 webhook    │
+                    │  POST <webhook_url>                    │
+                    │  Body: {                              │
+                    │    "msg_type": "text",                │
+                    │    "content": { "text": "<formatted>" }│
+                    │  }                                    │
+                    │  ← 总是返 HTTP 200, body code 0=ok     │  [架构师 review 必修正]
+                    │       code 19001=invalid url          │
+                    │       code 230001=msg too long        │
+                    └────────────────────────────────────────┘
+```
+
+#### 17.13.2.2 时序图 (happy + retry + 业务失败 + 4xx)
+
+```
+[caller]               [feishu-notifier]         [Feishu Webhook]
+   │ notify(level, msg)    │                         │
+   ├──────────────────────>│                         │
+   │                       │ formatFeishuText(...)   │
+   │                       │ body = JSON(...)        │
+   │                       │                         │
+   │                       │ fetch POST              │
+   │                       ├────────────────────────>│
+   │                       │                         │
+   │ [架构师 review 必修正] │ ← 200 OK + body {code:0}│
+   │                       ├─ parse JSON             │
+   │                       │  code === 0 → return    │
+   │<─ resolve() ──────────┤                         │
+
+RETRY 路径 (5xx):
+   │ 1st attempt → 503     │
+   │<───────────────────────┤
+   │ sleep(1000)           │
+   │ 2nd attempt → 200+code:0│
+   │<───────────────────────┤
+   │<─ resolve() ──────────┤
+
+ALL FAIL 路径 (5xx all attempts):
+   3× 503 → warnLogger("[FEISHU] 3/3 attempts failed")
+           NOT throw (§3.9 不变量)
+
+4xx NO RETRY (per 架构师 review):
+   ← 400 → break loop → warnLogger, NO sleep
+   (per 架构师: 客户端错误不应重发)
+
+BUSINESS FAIL (200 + code != 0) — 架构师 review 必修正:
+   ← 200 + {code:19001, msg:'invalid webhook url'}
+   → break loop → warnLogger containing code=19001
+   (URL 无效重试也无效, 不重试)
+
+MSG TRUNCATION (强烈建议):
+   msg = 25000 chars
+   → formatFeishuText: slice(0, 19000) + '...(truncated)'
+   → fetch body.content.text = 19200 chars total
+```
+
+#### 17.13.2.3 关系图 (接口契约 + 类型)
+
+```
+src/auto/feishu-notifier.ts (~190 行 NEW)
+
+  export interface FeishuNotifierOpts {
+    webhookUrl: string                                    // 必填
+    maxRetries?: number                                   // 默认 3
+    initialBackoffMs?: number                              // 默认 1000
+    timeoutMs?: number                                     // 默认 5000
+    fetch?: typeof fetch                                   // 测试注入
+    sleep?: (ms: number) => Promise<void>                 // 测试注入
+    warnLogger?: (msg: string) => void                    // 测试注入 (默认 console.warn with [FEISHU] prefix)
+  }
+
+  export function createFeishuNotifier(opts): AutoNotifier
+        │
+        ├─ throws Error('[FEISHU] webhookUrl is required')
+        │  if !opts.webhookUrl
+        ├─ 内部闭包: webhookUrl / fetchImpl / sleepImpl / warnLoggerImpl /
+        │            maxRetries / initialBackoffMs / timeoutMs
+        └─ return {
+              async notify(level, msg) {
+                const body = JSON.stringify({
+                  msg_type: 'text',
+                  content: { text: formatFeishuText(level, msg) },
+                })
+                await retryNotify(body)   // 不抛, 不 throw (§3.9)
+              }
+            }
+
+  export function formatFeishuText(level, msg): string
+        │
+        ├─ msg.length > 19000 → msg.slice(0, 19000) + '...(truncated)'
+        ├─ level === 'critical' → "🔴 [CRITICAL] ${text}"
+        └─ level === 'warn'     → "🟡 [WARN] ${text}"
+
+  interface AutoNotifier (现有, src/cli/handlers/auto-handler.ts:39)
+    notify(level: 'warn' | 'critical', msg: string): Promise<void>
+
+  // §3.13: 不引入新 error class, 失败通过 warnLogger("[FEISHU] <msg>")
+  // §3.9 : notify 永不 throw (与 consoleNotifier 同契约)
+```
+
+#### 17.13.2.4 流程图 (retry 决策 — 含架构师 review 修正)
+
+```
+┌─ notify(level, msg) ─┐
+│                       │
+│ body = JSON({          │
+│   msg_type:'text',     │
+│   content:{text:       │
+│     formatFeishuText(  │
+│       level, msg       │
+│     )}                 │
+│ })                     │
+│                       │
+│ attempts = 0           │
+│ lastError = null       │
+└───────────┬───────────┘
+            │
+            ▼
+    ┌──────────────────────┐
+    │ attempts<maxRetries? │
+    └──┬───────────────┬──┘
+    yes│               │no (5xx exhausted)
+       ▼               ▼
+  ┌──────────────────┐ ┌──────────────────┐
+  │ fetch POST       │ │ warnLogger(      │
+  │ AbortSignal      │ │  "3/3 failed:    │
+  │  .timeout(       │ │   ${lastError}") │
+  │   timeoutMs)     │ │ return           │
+  └──────┬───────────┘ │ (NO THROW) ✅   │
+         │             └──────────────────┘
+   ┌─────┴──────────────────┐
+   │                        │
+   ▼                        ▼
+resp.ok (2xx)          4xx (400/404)
+/ non-2xx             / 5xx / network
+   │                  / timeout
+   ▼                  │
+   ▼                    │
+┌─────────────────┐  ┌──┴──────────────────────────┐
+│ resp.json()     │  │ resp.status in [400,500)?   │
+│ code === 0?     │  └──┬──────────────────────┬──┘
+└────┬───────┬───┘   yes│                   no (5xx)
+     │       │          ▼                   ▼
+     ▼       ▼       break loop     lastError = e
+   return    break   warnLogger     sleep(initial
+   (ok ✅)   loop    (no retry)     × 2^attempts)
+             │            │              │
+             │            ▼              ▼
+             ▼       sleep 0次      attempts++
+        lastError =        │           (loop)
+        "feishu           ▼
+         business        return
+         error:         (4xx ok
+         code=19001"    no retry)
+              │
+              ▼ (业务失败不重试)
+        return (no retry, warnLogger)
+              │
+              ▼
+        attempts++ (loop)
+
+[架构师 review 必修正]
+HTTP 200 + body code !== 0 = 业务失败, 不重试 (URL 失效重试无效)
+[架构师 review 强烈建议]
+msg > 19000 字符 = formatFeishuText 截断 + 后缀
+```
+
+### 17.13.3 §3.12 probe 验证结果 (per 硬性 / 7/7 PASS)
+
+`scripts/probe-feishu-notifier.mjs` 用 Node http 起 mock webhook server 真网络栈, 验证 §13.5 实现假设:
+
+| # | 场景 | 期望 | 实测 |
+|---|------|------|------|
+| A1 | 200+code:0 happy path | 1 call / 0 sleep / 0 warn | ✅ |
+| A2 | 500 → 200+code:0 retry success | 2 calls / 1 sleep=1000ms / 0 warn | ✅ |
+| A3 | 3×503 all fail | 3 calls / 2 sleeps=[1000,2000] / 1 warn / 不抛 | ✅ |
+| A4 | backoff timing 显式验证 (initialBackoffMs=100) | sleeps=[100, 200] | ✅ |
+| A5 | HTTP 400 不重试 | 1 call / 0 sleep / 1 warn | ✅ |
+| A6 [架构师必修正] | 200+code:19001 业务失败 | 1 call / 0 sleep / 1 warn containing '19001' | ✅ |
+| A7 [架构师强烈建议] | 25000-char msg 截断 | len ≤ 19200 + 后缀存在 | ✅ |
+
+**关键发现**:
+- **F1 [架构师]** 飞书 webhook protocol = "HTTP 200 + body code" RPC-like, 不遵循标准 HTTP 2xx/4xx/5xx 语义
+- **F2 [架构师]** 4xx 也不该重试 (curl `-X POST` to invalid webhook 返 400, 重试无效)
+- **F3** warnLogger 默认 `[FEISHU]` prefix 与 §3.13 一致, 不与内部 msg 双重 prefix
+- **F4** JSON 解析失败 (非 JSON body) 在 try/catch 内 → lastError + 重试 (可接受 best effort)
+
+**单账号红线守住**: 0 触碰 BOSS (feishu webhook ≠ BOSS, mock 完全 inject).
+
+### 17.13.4 RED 测试矩阵 (14 it() PASS)
+
+| ID | 范围 | it() 数 | 覆盖 |
+|----|------|--------|------|
+| T34 | formatFeishuText 4 场景 | 4 | warn/critical prefix + msg>19000 截断 + short 不截断 |
+| T35 | 基础 POST 成功 | 1 | 1 call + body shape + 无 warn |
+| T36 | 5xx retry success | 2 | 主路径 + maxRetries=2 边界 |
+| T37 | 5xx all fail | 2 | 3 attempts + 自定义 initial backoff |
+| T38 | 4xx no retry | 2 | HTTP 400 + HTTP 404 |
+| T39 | 飞书业务失败 (code!=0) | 2 | code=19001 + code=230001 |
+| T40 | 端到端 msg 截断 | 1 | mock fetch 验证 body length |
+| **总计** | | **14** | **14/14 PASS** |
+
+### 17.13.5 实现细节 (架构师 review 必修正 1 + 强烈建议 2)
+
+**[架构师 review 必修正] HTTP 200 + body code 校验** (`src/auto/feishu-notifier.ts:107-114`):
+
+```typescript
+if (resp.ok) {
+  // 飞书 webhook 总是 HTTP 200, 业务结果在 body code
+  // 仅信 HTTP 2xx = 静默成功 (URL 失效或消息错时)
+  const json = await resp.json() as { code?: number; msg?: string }
+  if (json.code === 0) {
+    return  // 业务成功
+  }
+  // 业务失败 — 不重试 (URL/格式无效, 重试无效)
+  lastError = new Error(
+    `feishu business error: code=${json.code} msg=${json.msg}`,
+  )
+  break
+}
+
+// 4xx 不重试 (per 架构师 review: 客户端错误不应重发)
+if (resp.status >= 400 && resp.status < 500) {
+  lastError = new Error(`HTTP ${resp.status} (no retry)`)
+  break
+}
+```
+
+**[架构师 review 强烈建议] msg 长度截断** (`src/auto/feishu-notifier.ts:62-66`):
+
+```typescript
+export function formatFeishuText(level, msg): string {
+  const tag = level === 'critical' ? '🔴 [CRITICAL]' : '🟡 [WARN]'
+  const text = msg.length > FEISHU_MAX_MSG_LEN  // 19000
+    ? msg.slice(0, FEISHU_MAX_MSG_LEN) + FEISHU_TRUNCATED_SUFFIX  // '...(truncated)'
+    : msg
+  return `${tag} ${text}`
+}
+```
+
+**§3.9 不变量 (notify 永不 throw)** (`src/auto/feishu-notifier.ts:147-150`):
+
+```typescript
+// 第 3.9 不变量: 不抛, 仅 warnLogger
+warnLogger(
+  `${maxRetries}/${maxRetries} attempts failed: ${errorMessage(lastError)}`,
+)
+```
+
+### 17.13.6 §3.9 错误传播图 (E-1 关键不变量)
+
+```
+[AutoNotifier.notify 入口]
+        │
+        ├─ 业务成功路径 → resolve() (无 throw)
+        │
+        └─ 失败路径 (任意 catch + retry exhausted)
+              │
+              ├─ 4xx: lastError + break → warnLogger
+              ├─ 5xx all exhausted: lastError + warnLogger after 3 attempts
+              ├─ 200+code!=0: lastError + break → warnLogger
+              ├─ network/timeout: lastError + retry → warnLogger after 3 attempts
+              └─ json parse 错: lastError + retry → warnLogger
+
+每一分支 → warnLogger("[FEISHU] 3/3 attempts failed: <reason>")
+         → resolve() (无 throw) §3.9 不变量
+
+[buildDefaultDeps.guard.onBlock] 调用 notify
+   ├─ notify resolve (ok 或 warn): 不感知
+   └─ notify throw (理论上不会): 不会发生
+
+[runDailyLoop.runDailyLoop] 调用 deps.guard.onBlock
+   └─ onBlock 永不感知 notify 失败 (per §17.4 错误传播图)
+```
+
+**关键不变量**:`AutoNotifier.notify` 契约 = resolve 或 warn, **永不 reject**。consoleNotifier (默认) 也满足此契约, feishuNotifier (新增) 同契约, 未来 silentNotifier 等任何实现都应满足。
+
+### 17.13.7 §3.10 refactor 盘点 (E-1)
+
+```bash
+$ git grep 'createFeishuNotifier\|formatFeishuText' src/ tests/
+src/auto/feishu-notifier.ts:export function createFeishuNotifier(...)
+src/auto/feishu-notifier.ts:export function formatFeishuText(...)
+tests/unit/auto/feishu-notifier.test.ts:import { ... } from '...feishu-notifier'
+```
+
+| Caller | 影响 |
+|--------|------|
+| `src/cli/handlers/auto-handler.ts` `notifier` 接口 | 0 改 (本 sprint E-1 不动) |
+| `tests/unit/auto/feishu-notifier.test.ts` | 新增 caller, 14 it() 全部新写 |
+| `scripts/probe-feishu-notifier.mjs` | 新增, probe 7/7 PASS |
+
+**3 问**: ① 下游成立 ✅ ② 无副作用依赖 ✅ ③ 错误边界仍有效 ✅ (notify 永不 throw 与 consoleNotifier 一致).
+
+**结论**: 0 现有 caller 改动. Sprint E-1b wiring (buildDefaultDeps 默认值替换) 是另一 sprint 范围, 本 sprint 完全 additive.
+
+### 17.13.8 §3.13 错误分层 (E-1 新增 0 error class, 复用 §3.9 warnLogger)
+
+E-1 不引入新 error class (失败属运维告警, 不属程序错误). 错误分层现状:
+
+- CONFIG (AutoConfigError, layer='CONFIG') — D-1a
+- META (AccountMetaError, layer='META') — D-1b
+- GUARD (GuardError, layer='GUARD') — C-2b
+- THROTTLE (ThrottleError, layer='THROTTLE') — Sprint B
+- SEND (SessionExpiredError, layer='SEND') — Sprint B
+- STUB (BOSSStubError, layer='STUB') — D-2
+- AUTO.runner / AUTO.guard / AUTO.stub — D-2
+- **FEISHU (warnLogger prefix only)** — E-1 ⭐
+
+FEISHU 不引入 error class 的原因: 失败意味"告警没送达", 属可观察事件不是异常路径. 用 warnLogger prefix 标识 layer 已足够 (per `feedback_log_layer_origin.md`).
+
+### 17.13.9 自检 Checklist (E-1 收尾)
+
+- [x] **§3.5 4 类图**: 架构 / 时序 / 关系 / 流程 全画 (含架构师 review 修正后版本)
+- [x] **§3.12 probe**: `scripts/probe-feishu-notifier.mjs` 7/7 PASS (Node http mock webhook 真网络栈)
+- [x] **§4.1 TDD 6 步**: RED (module 找不到 fail) → GREEN (14/14 PASS) → REFACTOR (helper 抽离) → 自验证 (5 项) → 交付 (commit `6004964`)
+- [x] **架构师 review 必跑**: 1 必须修正 (body code 校验) + 2 强烈建议 (4xx no retry / msg 截断) 全部落地
+- [x] **架构师 review 反馈落地 7 步** (per memory `feedback_architect_review_required.md`): review → 立即开 E-1 (sub-task #47) → 4 类图重画 → 错误传播图 → refactor 盘点 → ADR §17.13 收尾 (本节) → 自验证 5 项
+- [x] **§3.9 不变量**: notify 永不 throw (T35 验证) + warnLogger 含 lastError msg
+- [x] **§3.10 refactor**: 新模块, 0 caller 改动 (Sprint E-1b 留给 E-1b sprint)
+- [x] **§3.13 错误分层**: 不引入新 error class, [FEISHU] warnLogger prefix
+- [x] **§4.4 自验证 5 项**: 单测 (14/14) / 集成 (probe 7/7) / 类型 (tsc 0 新错) / N/A live (feishu 非 BOSS, mock 替代) / N/A 浏览器 (后端模块)
+- [x] **单账号红线**: 0 触碰 BOSS (feishu webhook ≠ BOSS, mock 完全 inject)
+- [x] **9 commit 累计未推送**: 待 user 显式 "推" 命令 (含 E-1 `6004964`)
+
+### 17.13.10 §10 重写流程在本节的兑现
+
+E-1 非 bug 修复而是新模块, §10 不直接适用. 但相关 ADR §3 假设 + §4 反例需要复核:
+
+| 假设/反例 | E-1 修订 | 状态 |
+|-----------|----------|------|
+| §17.9 E-1 规划 "飞书 notifier webhook + 重试 (3 次指数退避) + AutoNotifier 接口实现" | E-1 全部兑现 | ✅ |
+| §17.9 E-1 规划 "替换 consoleNotifier 默认值" | **未兑现** — 留给 Sprint E-1b (本 sprint 不动 buildDefaultDeps 默认值, per §4.3 sprint 限制) | ⏳ E-1b |
+| 架构师 review 必修正: 飞书 webhook body code 校验 | E-1 落地 | ✅ |
+| 架构师 review 强烈建议: msg 截断 + 4xx no retry | E-1 落地 | ✅ |
+
+**新增记忆点 (不写 memory, 仅在本 ADR §17.13.11 留档)**:
+
+### 17.13.11 关键经验 (架构师 review 后沉淀)
+
+| 经验 | 来源 | 决策 |
+|------|------|------|
+| **协议假设查公开资料** | 我假设"HTTP 2xx=成功"是错;飞书 protocol 实际"HTTP 200 + body code" | 改 mock 假设 = 不能凭印象, 改 protocol 必查官方文档 |
+| **架构师 review 5 项清单新增 "协议语义"** | 原 5 项 = 配置语义 / 运维边界 / 类型扩展 / 单账号红线 / 文档完整;E-1 后 + 第 6 项 "外部协议语义" (飞书/Slack/微信 各有特殊, 必须 mock 真接口验证) | E-1b 启动前再请架构师 review |
+| **mock 完全 inject ≠ 真实行为** | 我 mock fetch 返回 200+body OK 与真飞书 protocol 差异 = 业务失败 code!=0 | T39 + probe A6 真实捕获 |
+
+---
+
 ## Debug Gate 5 项（按 §3.8）
 
 ⚠️ **本 ADR 不是 bug 修复类决策，Debug Gate N/A**。如后续 live 跑发现撞墙，按 §3.8 重新走症状 / 多假设 / 修复 / 自验证 / 未证明 5 项。

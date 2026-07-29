@@ -16,6 +16,7 @@ import * as yaml from 'yaml'
 import {
   AutoConfigSchema,
   DEFAULT_SAFETY,
+  DEFAULT_NOTIFIER,
   type AutoConfig,
 } from './config-schema'
 
@@ -148,10 +149,11 @@ export async function loadAutoConfig(
     throw new AutoConfigError('schema_invalid', { cause: result.error })
   }
 
-  // 4. safety 默认值合并 (缺口 2 暴露)
+  // 4. safety + notifier 默认值合并 (缺口 2 暴露 + E-1b wiring)
   const configWithDefaults: AutoConfig = {
     ...result.data,
     safety: result.data.safety ?? DEFAULT_SAFETY,
+    notifier: result.data.notifier ?? DEFAULT_NOTIFIER,
   }
 
   // 5. --quota 比例拆 (缺口 3 修订)

@@ -562,3 +562,187 @@ describe('T33: config.phase 透传到 throttle (D-3 建议 1)', () => {
     expect(deps.config.phase).toBe('afternoon')
   })
 })
+
+// ─── T41: config-schema notifier 字段 (E-1b schema 扩展) ──────
+
+import {
+  NotifierConfigSchema,
+  DEFAULT_NOTIFIER,
+} from '../../../../src/auto/config-schema'
+
+describe('T41: NotifierConfigSchema (E-1b 配置层)', () => {
+  it('T41a: 完整 4 字段 → parse ok, 字段值保持', () => {
+    const parsed = NotifierConfigSchema.safeParse({
+      webhookUrl: 'https://open.feishu.cn/hook/xxx',
+      maxRetries: 5,
+      initialBackoffMs: 500,
+      timeoutMs: 8000,
+    })
+    expect(parsed.success).toBe(true)
+    if (parsed.success) {
+      expect(parsed.data.webhookUrl).toBe('https://open.feishu.cn/hook/xxx')
+      expect(parsed.data.maxRetries).toBe(5)
+      expect(parsed.data.initialBackoffMs).toBe(500)
+      expect(parsed.data.timeoutMs).toBe(8000)
+    }
+  })
+
+  it('T41b: 空对象 → parse ok (webhookUrl=undefined 等价 console)', () => {
+    const parsed = NotifierConfigSchema.safeParse({})
+    expect(parsed.success).toBe(true)
+    expect(parsed.data).toEqual({})
+  })
+
+  it('T41c: webhookUrl 不是 URL → parse fail', () => {
+    const parsed = NotifierConfigSchema.safeParse({ webhookUrl: 'not-a-url' })
+    expect(parsed.success).toBe(false)
+  })
+
+  it('T41d: 未知字段 (e.g. enabled) → parse fail (.strict)', () => {
+    const parsed = NotifierConfigSchema.safeParse({
+      webhookUrl: 'https://x.com',
+      enabled: true,  // 显式删除字段
+    })
+    expect(parsed.success).toBe(false)
+  })
+
+  it('T41e: maxRetries 非正整数 → parse fail', () => {
+    const parsed = NotifierConfigSchema.safeParse({ maxRetries: 0 })
+    expect(parsed.success).toBe(false)
+  })
+
+  it('T41f: DEFAULT_NOTIFIER = {} (空对象; webhookUrl 不设 = console)', () => {
+    expect(DEFAULT_NOTIFIER).toEqual({})
+  })
+})
+
+// ─── T42: buildDefaultDeps notifier 探测 (per 架构师 review) ──
+
+describe('T42: buildDefaultDeps notifier 探测 (E-1b wiring)', () => {
+  it('T42a: opts.notifier 显式注入 → 优先级最高, 不调 notifierFactory', async () => {
+    const injected = { notify: vi.fn(async () => {}) }
+    const factorySpy = vi.fn(() => injected as any)
+    const deps = await buildDefaultDeps(baseOpts({
+      config: {
+        ...baseConfig,
+        notifier: { webhookUrl: 'https://open.feishu.cn/hook/yaml' },
+      },
+      notifier: injected as any,  // 1. 显式注入
+      notifierFactory: factorySpy as any,  // 2. 不会被调
+    }))
+    expect(deps.notifier).toBe(injected)
+    expect(factorySpy).not.toHaveBeenCalled()
+  })
+
+  it('T42b: config.notifier.webhookUrl set + 无注入 → 调 notifierFactory 4 字段全透传', async () => {
+    const factorySpy = vi.fn(() => ({
+      notify: vi.fn(async () => {}),
+    }) as any)
+    await buildDefaultDeps(baseOpts({
+      config: {
+        ...baseConfig,
+        notifier: {
+          webhookUrl: 'https://open.feishu.cn/hook/yaml',
+          maxRetries: 5,
+          initialBackoffMs: 500,
+          timeoutMs: 8000,
+        },
+      },
+      notifierFactory: factorySpy as any,
+    }))
+    expect(factorySpy).toHaveBeenCalledTimes(1)
+    const args = factorySpy.mock.calls[0][0]
+    expect(args.webhookUrl).toBe('https://open.feishu.cn/hook/yaml')
+    expect(args.maxRetries).toBe(5)        // 显式透传 (per 架构师必修正)
+    expect(args.initialBackoffMs).toBe(500)
+    expect(args.timeoutMs).toBe(8000)
+  })
+
+  it('T42c: config.notifier.webhookUrl 缺失 → consoleNotifier fallback', async () => {
+    const factorySpy = vi.fn(() => ({
+      notify: vi.fn(async () => {}),
+    }) as any)
+    const deps = await buildDefaultDeps(baseOpts({
+      config: {
+        ...baseConfig,
+        notifier: {},  // 无 webhookUrl
+      },
+      notifierFactory: factorySpy as any,
+    }))
+    expect(factorySpy).not.toHaveBeenCalled()
+    // 验证 consoleNotifier (用 reference 等价 + notify spy check)
+    expect(typeof deps.notifier.notify).toBe('function')
+  })
+
+  it('T42d: config.notifier 部分字段 (webhookUrl 存在, maxRetries undefined) → 字段 undefined 透传 (feishu 内部默认)', async () => {
+    const factorySpy = vi.fn(() => ({
+      notify: vi.fn(async () => {}),
+    }) as any)
+    await buildDefaultDeps(baseOpts({
+      config: {
+        ...baseConfig,
+        notifier: {
+          webhookUrl: 'https://open.feishu.cn/hook/partial',
+          // maxRetries/initialBackoffMs/timeoutMs undefined
+        },
+      },
+      notifierFactory: factorySpy as any,
+    }))
+    const args = factorySpy.mock.calls[0][0]
+    expect(args.webhookUrl).toBe('https://open.feishu.cn/hook/partial')
+    expect(args.maxRetries).toBeUndefined()
+    expect(args.initialBackoffMs).toBeUndefined()
+    expect(args.timeoutMs).toBeUndefined()
+  })
+})
+
+// ─── T43: mergeWebhookFromEnv (CLI 层 env 探测) ───────────────
+
+import { mergeWebhookFromEnv } from '../../../../src/cli/handlers/auto-handler'
+
+describe('T43: mergeWebhookFromEnv (CLI 层 env 探测, per 架构师 review)', () => {
+  it('T43a: envUrl=undefined → config 原样返回', () => {
+    const config: AutoConfig = {
+      ...baseConfig,
+      notifier: { webhookUrl: 'https://from-yaml.com' },
+    }
+    const result = mergeWebhookFromEnv(config, undefined)
+    expect(result).toBe(config)  // 同一引用 (不变异)
+  })
+
+  it('T43b: envUrl 设了 + config.notifier 已存在 → env 覆盖 webhookUrl', () => {
+    const config: AutoConfig = {
+      ...baseConfig,
+      notifier: {
+        webhookUrl: 'https://from-yaml.com',
+        maxRetries: 5,
+        initialBackoffMs: 500,
+        timeoutMs: 8000,
+      },
+    }
+    const result = mergeWebhookFromEnv(config, 'https://from-env.com')
+    expect(result.notifier?.webhookUrl).toBe('https://from-env.com')  // env 覆盖
+    expect(result.notifier?.maxRetries).toBe(5)         // 其他字段保留
+    expect(result.notifier?.initialBackoffMs).toBe(500)
+    expect(result.notifier?.timeoutMs).toBe(8000)
+  })
+
+  it('T43c: envUrl 设了 + config.notifier 缺失 → 创建 notifier with webhookUrl', () => {
+    const config: AutoConfig = {
+      ...baseConfig,
+      notifier: {},  // 空
+    }
+    const result = mergeWebhookFromEnv(config, 'https://from-env.com')
+    expect(result.notifier?.webhookUrl).toBe('https://from-env.com')
+    expect(result.notifier?.maxRetries).toBeUndefined()
+  })
+
+  it('T43d: envUrl 空字符串 → 视为未设 (不变)', () => {
+    const config: AutoConfig = {
+      ...baseConfig,
+      notifier: { webhookUrl: 'https://from-yaml.com' },
+    }
+    const result = mergeWebhookFromEnv(config, '')
+    expect(result).toBe(config)  // 同引用
+  })
+})

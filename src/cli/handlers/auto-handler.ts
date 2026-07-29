@@ -34,6 +34,10 @@ import {
 import { GuardError, isGuardError, type GuardReason } from '../../auto/guard'
 import { type SafetyConfig, type AutoConfig as SchemaAutoConfig } from '../../auto/config-schema'
 import { createInMemoryCounterStore } from '../../auto/counter-store'
+import {
+  createFeishuNotifier,
+  type FeishuNotifierOpts,
+} from '../../auto/feishu-notifier'
 
 /** Notifier 接口 (R2+C-2b 由 guard.ts 实现, 此处仅 interface) */
 export interface AutoNotifier {
@@ -351,12 +355,13 @@ export interface BuildDefaultDepsOpts {
   configDir: string
   /**
    * loadAutoConfig 返回的 config (D-3 扩展: SchemaAutoConfig + dryRun/phase).
-   * 含 schema 字段 (version/searches/quota/throttle/safety) + CLI 合并字段 (dryRun/phase).
+   * 含 schema 字段 (version/searches/quota/throttle/safety/notifier) + CLI 合并字段 (dryRun/phase).
+   * notifier 已被 CLI 层 mergeWebhookFromEnv 处理过 (env var 优先覆盖 yaml).
    */
   config: SchemaAutoConfig & { dryRun: boolean; phase: 'morning' | 'afternoon' }
   /** accountMetaStore.load() 返回的 meta (作为 AutoHandlerDeps.accountMeta 注入) */
   accountMeta: AccountMeta
-  /** 自定义 notifier (默认 console) */
+  /** 显式注入 notifier (测试 / 手动 override; 优先级最高) */
   notifier?: AutoNotifier
   /** 自定义 accountMetaStore factory (默认 createFsAccountMetaStore(configDir + '/account-meta.json')) */
   accountMetaStoreFactory?: (configDir: string) => AccountMetaStore
@@ -364,6 +369,8 @@ export interface BuildDefaultDepsOpts {
   counterStoreFactory?: (configDir: string) => CounterStore
   /** 自定义 guard (默认 buildDefaultGuard, T26/T27 测试可注) */
   guard?: GuardCallback
+  /** 自定义 notifier factory (E-1b 测试可注; 默认 createFeishuNotifier) */
+  notifierFactory?: (opts: FeishuNotifierOpts) => AutoNotifier
   /** 自定义 now() (默认 () => Date.now()) */
   now?: () => number
   /** 自定义 rand() (默认 () => Math.random()) */
@@ -373,13 +380,44 @@ export interface BuildDefaultDepsOpts {
 }
 
 /**
+ * E-1b: CLI 层 env 合并工具. 把 process.env.FEISHU_WEBHOOK_URL (如设)
+ * 覆盖到 config.notifier.webhookUrl, 其余 4 字段保留 YAML.
+ * 返回新 config (不变异) — 简化 buildDefaultDeps 探测为 2 层.
+ *
+ * @param config    loadAutoConfig 返回的 config
+ * @param envUrl    process.env.FEISHU_WEBHOOK_URL (CLI 探测后传入)
+ * @returns         新 config (env 设了 → notifier.webhookUrl 覆盖; env 没设 → 原 config)
+ */
+export function mergeWebhookFromEnv(
+  config: SchemaAutoConfig,
+  envUrl: string | undefined,
+): SchemaAutoConfig {
+  if (!envUrl) return config
+  return {
+    ...config,
+    notifier: {
+      ...config.notifier,
+      webhookUrl: envUrl,
+    },
+  }
+}
+
+/**
  * buildDefaultDeps: 拼装 AutoHandlerDeps (per §16.3.1 架构图).
  * 默认全用 fs factory + console notifier + 默认 guard + 3 STUB.
  *
+ * **E-1b 简化探测** (per 架构师 review): 仅 2 层 source —
+ *   1. opts.notifier 显式注入 (测试 / manual override, 优先级最高)
+ *   2. config.notifier.webhookUrl 存在 → factory (默认 createFeishuNotifier) 4 字段全透传
+ *   3. fallback → consoleNotifier
+ *
+ * CLI 层应在调用前用 mergeWebhookFromEnv 把 env var 合并进 config.notifier.webhookUrl.
+ *
  * @example
+ *   const configWithEnv = mergeWebhookFromEnv(config, process.env.FEISHU_WEBHOOK_URL)
  *   const deps = await buildDefaultDeps({
  *     configDir: '~/.bapply',
- *     config,
+ *     config: { ...configWithEnv, dryRun: false, phase: 'morning' },
  *     accountMeta,
  *   })
  *   const result = await runDailyLoop(deps, '2026-07-29')
@@ -397,7 +435,9 @@ export async function buildDefaultDeps(
     : opts.counterStoreFactory
       ? opts.counterStoreFactory(configDir)
       : createFsCounterStore(path.join(configDir, 'counter.json'))
-  const notifier = opts.notifier ?? consoleNotifier
+  // E-1b 简化探测 (per 架构师 review): 2 层 source + fallback
+  // 探测顺序: opts.notifier (1, test/manual 显式) > factory with 4 字段透传 (2) > consoleNotifier (3)
+  const notifier = resolveNotifier(opts)
   // D-3 §17.12 修正 1: 透传 config.safety 给 guard (用户 YAML 优先级最高)
   const guard = opts.guard ?? buildDefaultGuard({
     accountMetaStore,
@@ -429,4 +469,32 @@ export async function buildDefaultDeps(
     guard,
     strictExitCode: opts.strictExitCode ?? false,
   }
+}
+
+/**
+ * E-1b: notifier 探测 (2 层 + fallback).
+ * 4 字段显式透传 (per 架构师 review 必修正): webhookUrl / maxRetries / initialBackoffMs / timeoutMs.
+ *
+ * 类型收敛: `cfg` 在 truthy `cfg?.webhookUrl` 后窄化为 NonNullable,
+ * 让 cfg.maxRetries 等字段访问无需再 ! / ?.
+ */
+function resolveNotifier(opts: BuildDefaultDepsOpts): AutoNotifier {
+  // 1. opts.notifier 显式注入 (test/manual override, 优先级最高)
+  if (opts.notifier) return opts.notifier
+
+  // 2. config.notifier.webhookUrl 存在 → factory 4 字段全透传
+  const cfg = opts.config.notifier
+  const webhookUrl = cfg?.webhookUrl
+  if (webhookUrl) {
+    const factory = opts.notifierFactory ?? createFeishuNotifier
+    return factory({
+      webhookUrl,
+      maxRetries: cfg.maxRetries,           // cfg 已窄化为 NotifierConfig
+      initialBackoffMs: cfg.initialBackoffMs,
+      timeoutMs: cfg.timeoutMs,
+    })
+  }
+
+  // 3. fallback
+  return consoleNotifier
 }
