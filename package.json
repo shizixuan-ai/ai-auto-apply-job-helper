@@ -20,6 +20,7 @@
     "build:poc": "node scripts/build-poc-bundle.mjs",
     "verify:feishu": "tsx scripts/verify-feishu-schema.mjs",
     "smoke:cli": "tsx scripts/cli-smoke.mjs",
+    "smoke:commands": "node scripts/cli-commands-smoke.mjs",
     "smoke": "tsx scripts/git-hooks/pre-commit",
     "prepare": "git config core.hooksPath scripts/git-hooks"
   },
