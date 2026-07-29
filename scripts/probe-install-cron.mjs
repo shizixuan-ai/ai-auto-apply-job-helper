@@ -21,6 +21,8 @@
 //   C6 --phase morning only      → plist 只 1 个 StartCalendarInterval
 //   C7 --hour-morning 10         → plist Hour=10
 //   C8 重复跑 --install          → idempotent (第二次 stdout 包含 "覆盖" 字样)
+//   C9 (E-2.5b) 项目 .env 路径   → plist EnvironmentVariables 含 url
+//   C10 (E-2.5b) .env 优先        → dotenv 覆盖 shell env
 // ================================================================
 
 import { execFileSync } from 'node:child_process'
@@ -32,7 +34,7 @@ const SCRIPT_PATH = new URL('./install-cron.sh', import.meta.url).pathname
 const IS_DARWIN = process.platform === 'darwin'
 
 // 创建一个临时 sandbox HOME, 避免污染真实 ~/.bapply/
-function makeSandbox() {
+function makeSandbox(opts = {}) {
   const sandbox = mkdtempSync(join(tmpdir(), 'probe-install-cron-'))
   const configDir = join(sandbox, '.bapply')
   mkdirSync(configDir, { recursive: true })
@@ -53,13 +55,19 @@ function makeSandbox() {
     '  auto_regress_warmup: true',
     '',
   ].join('\n'))
+  // 写项目 .env (per E-2.5b: 敏感配置走 .env)
+  if (opts.envFile !== false) {
+    const envPath = join(sandbox, '.env')
+    const envContent = opts.envContent ?? `# 飞书 webhook url (E-2.5b: 项目 .env 优先于 shell env)\nFEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/sandbox-env-url-token\n`
+    writeFileSync(envPath, envContent)
+  }
   // fake bapply bin
   const binDir = join(sandbox, 'fake-bin')
   mkdirSync(binDir, { recursive: true })
   const fakeBapply = join(binDir, 'bapply')
   writeFileSync(fakeBapply, '#!/bin/bash\necho "[fake bapply] $@"\nexit 0\n')
   execFileSync('chmod', ['+x', fakeBapply])
-  return { sandbox, configDir, binDir, fakeBapply }
+  return { sandbox, configDir, binDir, fakeBapply, envPath: join(sandbox, '.env') }
 }
 
 function runScript(args, opts = {}) {
@@ -75,6 +83,7 @@ function runScript(args, opts = {}) {
       env,
       timeout: 15000,
       stdio: 'pipe',
+      cwd: opts.cwd,  // 让脚本把 PROJECT_ROOT 指向 sandbox (覆盖真实项目根)
     })
     return { stdout, stderr: '', code: 0 }
   } catch (e) {
@@ -110,7 +119,7 @@ function assertPlistField(stdout, field, value, label) {
 }
 
 // ================ 场景 ================
-console.log('--- 8 场景验证 (sandbox HOME 隔离) ---')
+console.log('--- 10 场景验证 (sandbox HOME 隔离) ---')
 
 // C1 macOS --install --dry-run → plist XML
 {
@@ -200,15 +209,17 @@ console.log('--- 8 场景验证 (sandbox HOME 隔离) ---')
   if (!IS_DARWIN) {
     check('C5 feishu env plist (skip non-darwin)', true, 'platform != darwin, skipped')
   } else {
-    const sb = makeSandbox()
+    const sb = makeSandbox({ envFile: false })  // 不写 .env, 强制 shell env 路径
     const r = runScript(['--dry-run'], {
       sandbox: sb.sandbox,
       binDir: sb.binDir,
-      env: { FEISHU_WEBHOOK_URL: 'https://example.com/hook' },
+      cwd: sb.sandbox,
+      env: { FEISHU_WEBHOOK_URL: 'https://shell-env-token-abc' },
     })
     const okEnv = r.stdout.includes('<key>EnvironmentVariables</key>') &&
-                  r.stdout.includes('<key>FEISHU_WEBHOOK_URL</key>')
-    check('C5 feishu env → plist EnvironmentVariables',
+                  r.stdout.includes('<key>FEISHU_WEBHOOK_URL</key>') &&
+                  r.stdout.includes('<string>https://shell-env-token-abc</string>')
+    check('C5 shell env → plist EnvironmentVariables',
           okEnv, `env=${okEnv}`)
     rmSync(sb.sandbox, { recursive: true, force: true })
   }
@@ -261,15 +272,17 @@ console.log('--- 8 场景验证 (sandbox HOME 隔离) ---')
   if (!IS_DARWIN) {
     check('C8 idempotent (skip non-darwin)', true, 'platform != darwin, skipped')
   } else {
-    const sb = makeSandbox()
+    const sb = makeSandbox({ envFile: false })  // 不写 .env, 用 shell env
     const r1 = runScript(['--dry-run'], {
       sandbox: sb.sandbox,
       binDir: sb.binDir,
+      cwd: sb.sandbox,
       env: { FEISHU_WEBHOOK_URL: 'https://example.com/hook' },
     })
     const r2 = runScript(['--dry-run'], {
       sandbox: sb.sandbox,
       binDir: sb.binDir,
+      cwd: sb.sandbox,
       env: { FEISHU_WEBHOOK_URL: 'https://example.com/hook' },
     })
     // 两次 stdout 内容应一致 (idempotent) 且 r2 应有 "已存在" / "覆盖" / "overwrite" 之类字样
@@ -278,6 +291,52 @@ console.log('--- 8 场景验证 (sandbox HOME 隔离) ---')
     check('C8 idempotent re-run',
           okConsistent && okIdempotentHint,
           `consistent=${okConsistent} hint=${okIdempotentHint}`)
+    rmSync(sb.sandbox, { recursive: true, force: true })
+  }
+}
+
+// C9 (E-2.5b) 项目 .env 路径 → plist EnvironmentVariables 含 url
+{
+  if (!IS_DARWIN) {
+    check('C9 .env 路径 (skip non-darwin)', true, 'platform != darwin, skipped')
+  } else {
+    const sb = makeSandbox({
+      envContent: '# 飞书 webhook url (E-2.5b 验证)\nFEISHU_WEBHOOK_URL=https://dotenv-token-xyz\n',
+    })
+    const r = runScript(['--dry-run'], {
+      sandbox: sb.sandbox,
+      binDir: sb.binDir,
+      cwd: sb.sandbox,  // cwd = sandbox, 脚本读 cwd/.env
+      env: { FEISHU_WEBHOOK_URL: '' },  // 故意清空 shell env, 强制走 .env 路径
+    })
+    const okEnv = r.stdout.includes('<key>EnvironmentVariables</key>') &&
+                  r.stdout.includes('<key>FEISHU_WEBHOOK_URL</key>') &&
+                  r.stdout.includes('<string>https://dotenv-token-xyz</string>')
+    const okHint = r.stdout.includes('INSTALL.env') || r.stderr.includes('INSTALL.env')
+    check('C9 .env 路径 → plist EnvironmentVariables',
+          okEnv, `env=${okEnv} hint=${okHint} | stdout-bytes=${r.stdout.length}`)
+    rmSync(sb.sandbox, { recursive: true, force: true })
+  }
+}
+
+// C10 (E-2.5b) .env 优先于 shell env (per 当前实现: 1. cwd/.env 先读到 → 直接覆盖)
+{
+  if (!IS_DARWIN) {
+    check('C10 .env 优先 (skip non-darwin)', true, 'platform != darwin, skipped')
+  } else {
+    const sb = makeSandbox({
+      envContent: 'FEISHU_WEBHOOK_URL=https://dotenv-wins\n',
+    })
+    const r = runScript(['--dry-run'], {
+      sandbox: sb.sandbox,
+      binDir: sb.binDir,
+      cwd: sb.sandbox,
+      env: { FEISHU_WEBHOOK_URL: 'https://shellenv-loses' },
+    })
+    const okDotenvWin = r.stdout.includes('<string>https://dotenv-wins</string>') &&
+                        !r.stdout.includes('<string>https://shellenv-loses</string>')
+    check('C10 .env 优先于 shell env',
+          okDotenvWin, `dotenv-wins=${okDotenvWin}`)
     rmSync(sb.sandbox, { recursive: true, force: true })
   }
 }

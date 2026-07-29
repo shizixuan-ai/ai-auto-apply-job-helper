@@ -118,7 +118,23 @@ fi
 ok "bapply: $BAPPLY_PATH"
 
 # ============== 探测 FEISHU_WEBHOOK_URL (缺省 warn 不阻断) ==============
-FEISHU_URL="${FEISHU_WEBHOOK_URL:-}"
+# 优先级: 1. cwd/.env (per user 决策 "敏感配置走 .env")
+#         2. shell process.env (zshrc export)
+#         3. 空 → warn 不阻断
+# 注: ENV_FILE env var 允许测试覆盖 (probe-install-cron.mjs 用)
+ENV_FILE="${ENV_FILE:-.env}"
+if [[ -f "$ENV_FILE" ]]; then
+  # 复用 init-feishu.sh:53-60 get_env_var 模式 (skip 注释行 + 去引号)
+  ENV_FEISHU=$(grep -v '^[[:space:]]*#' "$ENV_FILE" \
+    | grep -E "^FEISHU_WEBHOOK_URL=" \
+    | head -1 \
+    | sed -E 's/^FEISHU_WEBHOOK_URL=//; s/^["\x27]//; s/["\x27]$//')
+  if [[ -n "$ENV_FEISHU" ]]; then
+    FEISHU_URL="$ENV_FEISHU"
+    info "[INSTALL.env] 从 $ENV_FILE 读 FEISHU_WEBHOOK_URL"
+  fi
+fi
+FEISHU_URL="${FEISHU_URL:-${FEISHU_WEBHOOK_URL:-}}"
 if [[ -z "$FEISHU_URL" ]]; then
   warn "[INSTALL.env] FEISHU_WEBHOOK_URL 未设置 — 风控事件仅 console 通知, 不会推飞书"
   echo "  后续可设: export FEISHU_WEBHOOK_URL=https://open.feishu.cn/... 然后重跑本脚本" >&2
