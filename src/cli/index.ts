@@ -898,7 +898,7 @@ interface RunAutoCommandOpts {
   strictExitCode?: boolean
 }
 
-program
+const autoCmd = program
   .command('auto')
   .description('单账号反爬投递策略主入口（per ADR-0016 §16 — 时段配额 + warmup + 节流 + 容错）')
   .option('--config <path>', 'auto.yaml 路径 (默认 ~/.bapply/auto.yaml)')
@@ -990,8 +990,8 @@ program
 // auto init-config (Sprint D-1c §16.5 — 生成配置模板)
 // ============================================================
 
-program
-  .command('auto init-config')
+autoCmd
+  .command('init-config')
   .description('在 ~/.bapply/ 生成 auto.yaml + account-meta.json 2 个模板文件 (atomic write)')
   .option('--config-dir <path>', '配置目录 (默认 ~/.bapply/)')
   .option('--force', '强制覆盖已存在文件 (默认 false, 保护用户数据)', false)
