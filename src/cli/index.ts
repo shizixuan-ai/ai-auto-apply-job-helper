@@ -15,6 +15,8 @@
 //   同模块导入顺序见 src/config/index.ts:1
 import 'dotenv/config'
 
+import * as path from 'node:path'
+
 import { Command } from 'commander'
 import chalk from 'chalk'
 import readline from 'node:readline/promises'
@@ -26,6 +28,15 @@ import { buildGreetingSystemPrompt, buildGreetingPrompt, buildResumeSummary } fr
 import { listRecords, createRecord, updateRecord } from '../feishu/index.js'
 import { handleChromeCommand } from './handlers/chrome-handler.js'
 import { runAutoInitConfig } from './handlers/auto-config-init-handler.js'
+import {
+  buildDefaultDeps,
+  runDailyLoop,
+} from './handlers/auto-handler.js'
+import {
+  createFsAccountMetaStore,
+  isAccountMetaError,
+} from '../auto/account-meta-store.js'
+import { isAutoConfigError, loadAutoConfig } from '../auto/config-loader.js'
 import { runSendCommand, type SendCommandResult } from './handlers/send-handler.js'
 import { runListCommand, type ListResult } from './handlers/list-handler.js'
 import { runSyncCommand, type SyncResult } from './handlers/sync-handler.js'
@@ -896,15 +907,76 @@ program
   .option('--date <YYYY-MM-DD>', '任务日期 (默认今天)')
   .option('--strict-exit-code', '全 reject 但 counter 走完 → exit 2 (致命软错误)', false)
   .action(async (options: RunAutoCommandOpts) => {
-    console.log(chalk.cyan('🚀 bapply auto (Sprint D-1c §16) — 单账号反爬投递'))
-    console.log(chalk.yellow(`   config: ${options.config ?? '~/.bapply/auto.yaml'}`))
-    console.log(chalk.yellow(`   phase: ${options.phase ?? '(未指定)'}, date: ${options.date ?? '今天'}`))
-    console.log(chalk.yellow(`   quota: ${options.quota ?? '默认'}, dry-run: ${options.dryRun ?? false}, strict: ${options.strictExitCode ?? false}`))
+    const start = Date.now()
+    const configPath = options.config ?? '~/.bapply/auto.yaml'
+    const configDir = '~/.bapply/'  // fs store 用 (counter + account-meta 都在这里)
+    const date = options.date ?? new Date().toISOString().slice(0, 10)
+    const phase = options.phase ?? 'morning'
+    const quotaOverride = typeof options.quota === 'string' ? Number(options.quota) : options.quota
+
+    console.log(chalk.cyan(`🚀 bapply auto (Sprint D-2 §16) — ${phase} ${date}`))
+    console.log(chalk.yellow(`   config: ${configPath}`))
+    console.log(chalk.yellow(`   dry-run: ${options.dryRun ?? false}, strict: ${options.strictExitCode ?? false}`))
     console.log()
-    console.log(chalk.red('⚠️  auto runDailyLoop 主流程将在 Sprint D-2 实施'))
-    console.log(chalk.cyan('   当前可用: bapply auto init-config 生成配置模板'))
-    console.log(chalk.cyan('   详细: docs/adr/0016-anti-bot-delivery-strategy.md §16'))
-    process.exit(0)
+
+    // ── 1. loadAutoConfig (per §16.3.4 流程图 D1.4.v2) ─────
+    let config: import('../auto/throttle.js').AutoConfig
+    try {
+      const result = await loadAutoConfig({
+        configPath,
+        phase,
+        date,
+        quotaOverride,
+        dryRun: options.dryRun,
+      })
+      // D-1a AutoConfig (zod) 字段比 throttle.ts AutoConfig 多 safety/warmup
+      // runDailyLoop 只用 throttle/quota/phase/dryRun, 多余字段被丢弃
+      config = result.config as unknown as import('../auto/throttle.js').AutoConfig
+    } catch (e) {
+      if (isAutoConfigError(e)) {
+        const err = e as import('../auto/config-loader.js').AutoConfigError
+        console.error(chalk.red(`\n❌ [CONFIG.${err.code}] ${err.message}`))
+        if (err.code === 'not_found') {
+          console.error(chalk.yellow(`   提示: 跑 \`bapply auto init-config\` 生成模板`))
+        }
+        process.exit(2)
+      }
+      throw e  // 其他错误由 parseAsync().catch (§3.9) 兜底
+    }
+
+    // ── 2. accountMetaStore.load (per §16.3.2 时序图) ────────
+    const expandedDir = configDir.replace('~', process.env.HOME ?? '/tmp')
+    const metaPath = path.join(expandedDir, 'account-meta.json')
+    let accountMeta: import('../auto/throttle.js').AccountMeta
+    try {
+      accountMeta = await createFsAccountMetaStore(metaPath).load()
+    } catch (e) {
+      if (isAccountMetaError(e)) {
+        const err = e as import('../auto/account-meta-store.js').AccountMetaError
+        console.error(chalk.red(`\n❌ [META.${err.code}] ${err.message}`))
+        process.exit(2)
+      }
+      throw e
+    }
+
+    // ── 3. buildDefaultDeps (per §16.3.2 时序图) ─────────────
+    const deps = await buildDefaultDeps({
+      configDir: expandedDir,
+      config,
+      accountMeta,
+      strictExitCode: options.strictExitCode ?? false,
+    })
+
+    // ── 4. runDailyLoop + 5. process.exit (per §14.6 R6) ─────
+    const result = await runDailyLoop(deps, date)
+    const elapsed = Date.now() - start
+
+    console.log()
+    console.log(chalk.cyan(`📊 Run finished: exit=${result.exitCode} state=${result.state} (${elapsed}ms)`))
+    console.log(`   sent: ${result.stats.sent}, ok: ${result.stats.ok}, failed: ${result.stats.failed}`)
+    console.log(`   effective_successes: ${result.stats.effective_successes}, guardTriggers: ${result.stats.guardTriggers}`)
+    console.log(`   blocked: ${result.stats.blocked}`)
+    process.exit(result.exitCode)
   })
 
 // ============================================================
