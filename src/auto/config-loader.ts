@@ -65,7 +65,7 @@ export interface LoadAutoConfigOpts {
 
 // ─── 默认 config 路径 ────────────────────────────────────────
 
-const DEFAULT_CONFIG_PATH = '~/.bapply/auto.yaml'
+const DEFAULT_CONFIG_PATH = './auto.yaml'  // Q5 A: cwd 相对 (与 简历.yml 模式一致)
 
 /** 展开 ~ 为 home dir */
 function expandHome(p: string): string {

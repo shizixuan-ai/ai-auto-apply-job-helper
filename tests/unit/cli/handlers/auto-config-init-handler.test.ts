@@ -168,3 +168,34 @@ describe('T24: init-config 同时生成 auto.yaml + account-meta.json', () => {
     }
   })
 })
+
+// ============================================================
+// T12: Sprint E-3.x — runAutoInitConfig 不传 configDir → 写项目根 (Q11 A 决策)
+// ============================================================
+// 行为契约 (per grill-me Q11 A):
+//   - 不传 configDir → 内部用 './.bapply-state/' (cwd 相对)
+//   - configPath = './auto.yaml' (Q5 A 决策)
+//   - metaPath = './.bapply-state/account-meta.json' (Q3b A + Q11 A 合并)
+//
+// TDD 状态: RED (src 未改, DEFAULT_CONFIG_DIR 仍 '~/.bapply/', metaPath 会是 '/Users/.../.bapply/account-meta.json')
+
+describe('T12: runAutoInitConfig 不传 configDir → 写项目根 (Q11 A)', () => {
+  it('T12: configPath = "./auto.yaml" + metaPath = "./.bapply-state/account-meta.json"', async () => {
+    // Arrange: chdir 到临时目录 (避免污染真实项目根)
+    const tmpDir = await makeTmpDir()
+    const originalCwd = process.cwd()
+    process.chdir(tmpDir)
+    try {
+      // Act: 不传 configDir 走 default
+      const result = await runAutoInitConfig()
+
+      // Assert: 写项目根路径 (Q11 A 决策)
+      // 注: metaPath 路径不强制 './' 前缀 (path.join 自然正确, 避免绝对路径双斜杠)
+      expect(result.configPath).toBe('./auto.yaml')
+      expect(result.metaPath).toBe('.bapply-state/account-meta.json')
+    } finally {
+      process.chdir(originalCwd)
+      await rm(tmpDir, { recursive: true, force: true })
+    }
+  })
+})

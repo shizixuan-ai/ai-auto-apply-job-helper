@@ -530,6 +530,71 @@ describe('T32: 风控触发 blocked → exitCode = 3 (D-3 修正 3, 架构师 re
     expect(result.state).toBe('aborted')
   })
 
+  // ----------------------------------------------------------
+  // T13: Sprint E-3.x — counterStore 路径改 .bapply-state/counter.json (Q3b A 决策)
+  // ----------------------------------------------------------
+  // 行为契约 (per grill-me Q3b A):
+  //   - buildDefaultDeps 不传 configDir → counterStore 写 "./.bapply-state/counter.json" (cwd 相对)
+  //   - 与 T11 (config-loader cwd 相对 ./auto.yaml) + T12 (init-config cwd 相对) 模式一致
+  //   - 验证: chdir 临时目录 + 写 counter → 文件在 .bapply-state/ 下
+  //
+  // 回归历史: 实测 bapply auto 真发 → counter.json 写 home (~/.bapply/) 与项目根脱同步
+
+  it('T13: counterStore 写 "./.bapply-state/counter.json" (Q3b A)', async () => {
+    // Arrange: chdir 临时目录 (避免污染真实项目根)
+    const tmpDir = await makeTmpDir()
+    const originalCwd = process.cwd()
+    process.chdir(tmpDir)
+    try {
+      // Act: buildDefaultDeps 不传 configDir (走 default)
+      const deps = await buildDefaultDeps(baseOpts({
+        config: { ...baseConfig, dryRun: false },  // dryRun=false → 走 fs counter (非 in-memory)
+      }))
+
+      // [T13 v2 final] override configDir = undefined 让 src default 生效
+      //   + 用 vi.spyOn 拦截 createFsCounterStore 看实际 filepath
+      const counterStoreMod = await import('../../../../src/auto/counter-store')
+      const spy = vi.spyOn(counterStoreMod, 'createFsCounterStore')
+      // 重新跑 buildDefaultDeps, configDir: undefined 触发 src default
+      const deps2 = await buildDefaultDeps({
+        configDir: undefined as any,  // 显式传 undefined 触发 default
+        config: { ...baseConfig, dryRun: false },
+        configDir_: tmpDir,  // 占位, buildDefaultDeps 不用
+        accountMeta: baseMeta,
+      } as any)
+      const spyCall = spy.mock.calls[0]
+      // 断言: createFsCounterStore 传 cwd 相对 '.bapply-state/counter.json'
+      expect(spyCall?.[0]).toBe('.bapply-state/counter.json')
+    } finally {
+      process.chdir(originalCwd)
+      await rm(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  // ----------------------------------------------------------
+  // T14: Sprint E-3.x — accountMetaStore 路径改 .bapply-state/account-meta.json (Q3b A 决策)
+  // ----------------------------------------------------------
+  // 行为契约 (per grill-me Q3b A):
+  //   - buildDefaultDeps 不传 configDir → accountMetaStore 写 "./.bapply-state/account-meta.json" (cwd 相对)
+  //   - 与 T13 (counter-store 路径) 模式一致
+  //
+  // 回归历史: 实测 bapply auto 真发 → account-meta.json 写 home (~/.bapply/) 与项目根脱同步
+
+  it('T14: accountMetaStore 写 "./.bapply-state/account-meta.json" (Q3b A)', async () => {
+    // [T14] spy createFsAccountMetaStore 看参数 (同 T13 模式)
+    const accountMetaMod = await import('../../../../src/auto/account-meta-store')
+    const spy = vi.spyOn(accountMetaMod, 'createFsAccountMetaStore')
+    // override configDir = undefined 触发 src default
+    await buildDefaultDeps({
+      configDir: undefined as any,  // 显式传 undefined 触发 default
+      config: { ...baseConfig, dryRun: false },
+      accountMeta: baseMeta,
+    } as any)
+    const spyCall = spy.mock.calls[0]
+    // 断言: createFsAccountMetaStore 传 cwd 相对 '.bapply-state/account-meta.json'
+    expect(spyCall?.[0]).toBe('.bapply-state/account-meta.json')
+  })
+
   it('T32c: R3 高失败率 (每 10 次失败率 > 30%) 触发 blocked → exitCode=3', async () => {
     // R3 失败率超阈也走 blocked → exit 3
     const accountMetaStore = createInMemoryAccountMetaStore()

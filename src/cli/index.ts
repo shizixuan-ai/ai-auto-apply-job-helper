@@ -910,7 +910,7 @@ const autoCmd = program
   .action(async (options: RunAutoCommandOpts) => {
     const start = Date.now()
     const configPath = options.config ?? '~/.bapply/auto.yaml'
-    const configDir = '~/.bapply/'  // fs store 用 (counter + account-meta 都在这里)
+    const configDir = './.bapply-state/'  // Q3b A: cwd 相对 (项目根, 与简历.yml 模式一致)
     const date = options.date ?? new Date().toISOString().slice(0, 10)
     const phase = options.phase ?? 'morning'
     const quotaOverride = typeof options.quota === 'string' ? Number(options.quota) : options.quota

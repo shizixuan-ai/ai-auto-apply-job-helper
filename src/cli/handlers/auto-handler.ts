@@ -511,7 +511,8 @@ export function mergeWebhookFromEnv(
 export async function buildDefaultDeps(
   opts: BuildDefaultDepsOpts,
 ): Promise<AutoHandlerDeps> {
-  const configDir = opts.configDir
+  // Q3b A: configDir 不传 → 走默认 './.bapply-state/' (cwd 相对, 与简历.yml 模式一致)
+  const configDir = opts.configDir ?? './.bapply-state/'
   const accountMetaStore = opts.accountMetaStoreFactory
     ? opts.accountMetaStoreFactory(configDir)
     : createFsAccountMetaStore(path.join(configDir, 'account-meta.json'))

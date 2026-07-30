@@ -89,7 +89,7 @@ safety:
 
 // ─── 默认路径常量 ────────────────────────────────────────────
 
-const DEFAULT_CONFIG_DIR = '~/.bapply/'
+const DEFAULT_CONFIG_DIR = './.bapply-state/'  // Q11 A: cwd 相对 (项目根, 与 简历.yml 模式一致)
 
 /** 展开 ~ 为 home dir (与 config-loader 保持一致) */
 function expandHome(p: string): string {
@@ -149,7 +149,13 @@ export async function runAutoInitConfig(
   opts: InitConfigOpts = {},
 ): Promise<InitConfigResult> {
   const configDir = expandHome(opts.configDir ?? DEFAULT_CONFIG_DIR)
-  const configPath = path.join(configDir, 'auto.yaml')
+  // Q11 细化 v2 A1: 传 configDir → 写 configDir/auto.yaml (保留 T24 行为)
+  //                  不传 configDir → 写 ./auto.yaml (项目根顶层, 与 Q5 A 兼容, 与 简历.yml 模式一致)
+  const configPath = opts.configDir
+    ? path.join(configDir, 'auto.yaml')
+    : './auto.yaml'
+  // Q3b A + Q11 A: account-meta.json 写 state 子目录
+  // 注: 不加 './' 前缀 (path.join 自然正确, 避免绝对路径变成 './/var/...' 双斜杠)
   const metaPath = path.join(configDir, 'account-meta.json')
   const force = opts.force ?? false
 

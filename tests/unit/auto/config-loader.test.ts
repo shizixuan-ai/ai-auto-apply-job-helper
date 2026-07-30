@@ -140,6 +140,41 @@ safety:
   })
 })
 
+// ============================================================
+// T11: Sprint E-3.x — DEFAULT_CONFIG_PATH 改 cwd 相对 './auto.yaml' (Q5 A 决策)
+// ============================================================
+// 行为契约 (per grill-me Q5 A + Q6 A):
+//   - 不传 configPath → loadAutoConfig 内部用 './auto.yaml' (cwd 相对)
+//   - cwd 必须是 projectRoot 才能找到 auto.yaml
+//   - expandHome('./auto.yaml') pass through (Q6 A 不动)
+//   - 与 简历.yml 模式一致 (yaml-parser.ts:35)
+//
+// TDD 状态: RED (src 未改, default 仍 '~/.bapply/auto.yaml', 跑此测试应失败)
+
+describe('T11: DEFAULT_CONFIG_PATH = "./auto.yaml" (cwd 相对, Q5 A)', () => {
+  it('T11a: 不传 configPath → cwd=projectRoot 时找到 ./auto.yaml (unique keyword 防假绿)', async () => {
+    // Arrange: 临时目录 + auto.yaml fixture (unique keyword 防 home 软链误中)
+    const tmpDir = await makeTmpDir()
+    const fixturePath = path.join(tmpDir, 'auto.yaml')
+    const uniqueYAML = validYAML.replace('"Java 后端"', '"Q5A_UNIQUE_KEYWORD"')
+    await writeFile(fixturePath, uniqueYAML, 'utf8')
+
+    const originalCwd = process.cwd()
+    process.chdir(tmpDir)
+    try {
+      // Act: 不传 configPath 触发 default
+      const result = await loadAutoConfig({})
+
+      // Assert: unique keyword 匹配 (说明 default 走 cwd 相对 './auto.yaml' 找到 fixture,
+      //        不是 home 软链的 user 真实 auto.yaml)
+      expect(result.config.searches[0].keyword).toBe('Q5A_UNIQUE_KEYWORD')
+    } finally {
+      process.chdir(originalCwd)
+      await rm(tmpDir, { recursive: true, force: true })
+    }
+  })
+})
+
 // ─── T22: schema 校验失败 → AutoConfigError (layer='CONFIG') ─
 
 describe('T22: zod 校验失败 → AutoConfigError', () => {
