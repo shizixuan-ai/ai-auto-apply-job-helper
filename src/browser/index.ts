@@ -28,7 +28,11 @@ import { robustEvaluate } from './robust-evaluate.js'
 // ============================================================
 
 const BOSS_URL = 'https://www.zhipin.com'
-const COOKIE_PATH = path.join(os.homedir(), '.bapply', 'cookies.json')
+// Q3a B: cookies.json 路径改 cwd 相对 (项目根 .bapply-state/, 与简历.yml 模式一致)
+// 改为函数 (而非 const) 让单测可断言 (T15 闭环)
+export function getCookiePath(): string {
+  return path.join(process.cwd(), '.bapply-state', 'cookies.json')
+}
 
 /** 风控监控默认选择器（§5.2.5 + review 后整合 — BOSS 前端变更时需更新） */
 const RISK_SELECTORS: Pick<
@@ -145,19 +149,19 @@ const CITY_CODES: Record<string, number> = {
 // ============================================================
 
 function getCookieDir(): string {
-  const dir = path.dirname(COOKIE_PATH)
+  const dir = path.dirname(getCookiePath())
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
   return dir
 }
 
 async function saveCookies(cookies: any[]) {
   getCookieDir()
-  fs.writeFileSync(COOKIE_PATH, JSON.stringify(cookies, null, 2))
+  fs.writeFileSync(getCookiePath(), JSON.stringify(cookies, null, 2))
 }
 
 async function loadCookies(): Promise<any[]> {
-  if (!fs.existsSync(COOKIE_PATH)) return []
-  return JSON.parse(fs.readFileSync(COOKIE_PATH, 'utf-8'))
+  if (!fs.existsSync(getCookiePath())) return []
+  return JSON.parse(fs.readFileSync(getCookiePath(), 'utf-8'))
 }
 
 // ============================================================
