@@ -39,6 +39,29 @@ import {
   type FeishuNotifierOpts,
 } from '../../auto/feishu-notifier'
 
+// ============================================================
+// Sprint E-3.1+E-3.2 真接 — 加真模块 import
+// ============================================================
+// 注意: browser module 顶层会 import config/index.ts (loadConfig -> dotenv),
+// 必须 dotenv 已 inject (bapply.js 顶层 import 'dotenv/config' 锁住).
+// ============================================================
+import {
+  hasAuthToken,
+  loginByQR as browserLoginByQR,
+  createBrowserSession,
+  createCDPSession,
+  closeBrowserSession,
+  searchJobs as browserSearchJobs,
+  fetchJobDetail as browserFetchJobDetail,
+} from '../../browser/index.js'
+import { runSearchAndWrite, type PassingJob } from './search-and-write.js'
+import { runSendCommand, type SendCommandOptions, type SendCommandDeps, type SendCommandResult } from './send-handler.js'
+import { resolveResume } from '../../resume/resolver.js'
+import { scoreJob } from '../../scoring/index.js'
+import { createRecord as feishuCreateRecord, updateRecord as feishuUpdateRecord } from '../../feishu/index.js'
+import { createLLM } from '../../llm/index.js'
+import { loadConfig } from '../../config/index.js'
+
 /** Notifier 接口 (R2+C-2b 由 guard.ts 实现, 此处仅 interface) */
 export interface AutoNotifier {
   notify(level: 'warn' | 'critical', msg: string): Promise<void>
@@ -79,6 +102,21 @@ export interface AutoHandlerDeps {
   guard?: GuardCallback
   /** D-1b 缺口 6: 严格退出码 (effective_successes=0 → exit 2 视为致命软错误) */
   strictExitCode?: boolean
+}
+
+/**
+ * Sprint E-3.3: extend Job 类型加 recordId (bossSearch 写飞书后注入).
+ *   - 用 intersection 替代 cast (per memory feedback_type_cast_design_gap.md)
+ *   - 类型上: AutoJob = Job & { recordId?: string; lid?: string; securityId?: string }
+ *   - 单 sendGreeting 用 AutoJob 即可 (throttle 路径不读 recordId, 只用 id)
+ */
+export type AutoJob = Job & {
+  /** 写飞书后注入; sendGreeting 用它更新飞书状态 */
+  recordId?: string
+  /** BOSS list-context lid (来自 SearchResult, send 必传) */
+  lid?: string
+  /** BOSS 风控 token securityId (来自 SearchResult, send 必传) */
+  securityId?: string
 }
 
 /** 状态机 (per §14.2.4 流程图): idle / login / running / paused / blocked / done / aborted */
@@ -144,7 +182,19 @@ export async function runDailyLoop(
   }
 
   // ── 2. 拉取 jobs (单账号红线守住: bossSearch 由 caller 注入) ──
-  const jobs = await deps.bossSearch(date)
+  // Sprint E-3.x 回归修复: dryRun STUB throw BOSSStubError → R1 退出码 2 (aborted)
+  //  duck-type 识别 BOSSStubError (class 未 export per §3.10/§3.13)
+  let jobs: Job[] = []
+  try {
+    jobs = await deps.bossSearch(date)
+  } catch (e) {
+    const err = e as Error & { name?: string; layer?: string }
+    if (err?.name === 'BOSSStubError' && err?.layer === 'STUB') {
+      await deps.notifier.notify('critical', `[AUTO.runner] bossSearch stub: ${err.message}`)
+      return { exitCode: 2, stats, state: 'aborted' }
+    }
+    throw e
+  }
 
   // ── 3. 构造 throttleSend 用的 deps (从 AutoHandlerDeps 收窄) ──
   const throttleDeps: ThrottleDeps = {
@@ -377,6 +427,42 @@ export interface BuildDefaultDepsOpts {
   rand?: () => number
   /** D-1b 缺口 6: 严格退出码 (透传给 deps.strictExitCode) */
   strictExitCode?: boolean
+  /** E-3.1: CDP 开关 (默认 false = stealth launch); CLI 层透传 program.opts().cdp */
+  cdp?: boolean
+  /**
+   * E-3.2/E-3.3: 注入完整 deps 给真模块链.
+   * test/manual 可提供 mock; 默认走生产实现 (load config + createLLM + 真 feishu).
+   *
+   * 字段:
+   *   - autoConfig: AutoConfig + dryRun/phase (同 opts.config)
+   *   - appToken / tableId: 飞书多维表格 appToken/tableId; dryRun 时可空
+   *   - feishu.createRecord / updateRecord: 飞书写入的工厂 (默认 = 真 feishu)
+   *   - llm: LLM 实例 (默认 createLLM(loadConfig())); dryRun 时可 noop
+   *   - scoreThreshold: 评分阈值 (默认 SCORE_THRESHOLD env → 60); noThreshold=true 时忽略
+   *   - noThreshold: 不阈值过滤 (所有 scored 都算 passed)
+   */
+  autoDeps?: AutoDeps
+}
+
+/**
+ * E-3.2/E-3.3 注入式依赖 (test 可换, 默认走真实现).
+ * 把这些抽出来避免 buildDefaultDeps opts 字段爆炸.
+ */
+export interface AutoDeps {
+  /** AppToken/tableId: 缺一 → bossSearch/sendGreeting 降级 noop (单账号红线 dry-run) */
+  appToken?: string
+  tableId?: string
+  /** 飞书写入 (createRecord / updateRecord). 默认 = 真 feishu.createRecord/updateRecord */
+  createRecord?: (fields: any) => Promise<{ record_id: string }>
+  updateRecord?: (recordId: string, fields: any) => Promise<any>
+  /** LLM 实例 (默认 createLLM(loadConfig())) */
+  llm?: unknown
+  /** 评分阈值 (默认 SCORE_THRESHOLD env → 60) */
+  scoreThreshold?: number
+  /** 是否忽略阈值 (默认 false) */
+  noThreshold?: boolean
+  /** CDP 开关 (单 cron 场景默认 false) */
+  cdp?: boolean
 }
 
 /**
@@ -445,20 +531,32 @@ export async function buildDefaultDeps(
     safety: opts.config.safety,  // 用户配的 safety 优先, 缺字段 fallback DEFAULT_SAFETY
   })
 
+  // ============================================================
+  // Sprint E-3.1/E-3.2/E-3.3: 构造真模块注入
+  // dryRun 模式: 3 STUB 全 throw (per §17.12.3 单账号红线 dry-run 不触碰 BOSS)
+  // 真发模式: 走 defaultLoginByQR / defaultBossSearch / defaultSendGreeting
+  // ============================================================
+  const isDryRun = opts.config.dryRun
+  const cdp = opts.cdp ?? opts.autoDeps?.cdp ?? false
+
   return {
     // 必填 (per C-2a AutoHandlerDeps)
     now: opts.now ?? (() => Date.now()),
     rand: opts.rand ?? (() => Math.random()),
-    bossSearch: async (_date: string) => {
-      throw new BOSSStubError('bossSearch')
-    },
+    bossSearch: isDryRun
+      ? async (_date: string) => { throw new BOSSStubError('bossSearch') }
+      : await defaultBossSearch(opts),
     counterStore,
-    sendGreeting: async (_job: Job) => {
-      throw new BOSSStubError('sendGreeting')
-    },
-    loginByQR: async () => {
-      throw new BOSSStubError('loginByQR')
-    },
+    sendGreeting: isDryRun
+      ? async (_job: Job) => { throw new BOSSStubError('sendGreeting') }
+      : await defaultSendGreeting(opts),
+    // E-3.1: 真接 loginByQR — cookies 兜底 (per user 决策: 每次 auto 启动打开浏览器一次)
+    //   - dryRun: noop
+    //   - 真发: createSession → hasAuthToken → loginByQR(page) → closeSession
+    //   - 错误 throw → runDailyLoop:138 接住 → notifier.critical + state=aborted
+    loginByQR: isDryRun
+      ? async () => { /* dryRun noop, runDailyLoop 不会真调到这里 */ }
+      : async () => { await defaultLoginByQR(cdp) },
     notifier,
     accountMeta: opts.accountMeta,
     // D-3 §17.12: SchemaAutoConfig + dryRun/phase → throttle AutoConfig (throttle 不读 safety)
@@ -468,6 +566,203 @@ export async function buildDefaultDeps(
     accountMetaStore,
     guard,
     strictExitCode: opts.strictExitCode ?? false,
+  }
+}
+
+// ============================================================
+// Sprint E-3.1: defaultLoginByQR — cookies 兜底
+// ============================================================
+
+/**
+ * 默认 loginByQR 实现 (per user 决策).
+ * 时序: createSession → hasAuthToken?(是)→return / (否)→loginByQR(page) → closeSession.
+ * 错误 throw 上层 runDailyLoop (auto-handler:138-143) 接住 → notifier.critical + state=aborted.
+ */
+async function defaultLoginByQR(cdp: boolean): Promise<void> {
+  // §3.13 错误 origin 必须带 layer
+  const createSession = cdp
+    ? () => createCDPSession()
+    : () => createBrowserSession(false)
+  const session = await createSession()
+  try {
+    // 1. 探测 cookies 是否仍有效 (49h 探测已确认 VALID)
+    if (await hasAuthToken(session.page)) {
+      console.log('ℹ️  [AUTO.login] cookies 仍有效，跳过扫码')
+      return
+    }
+    // 2. cookies 失效 → 真扫码 (cron 触发场景下 user 必须在终端)
+    await browserLoginByQR(session.page)
+    console.log('✅ [AUTO.login] 扫码登录完成')
+  } finally {
+    // 3. finally 兜底 Chrome 泄漏 (per send-handler.ts:161-168 同模式)
+    try {
+      await closeBrowserSession(session)
+    } catch (closeErr) {
+      const msg = closeErr instanceof Error ? closeErr.message : String(closeErr)
+      console.warn(`[AUTO.login] closeSession 失败（已忽略）: ${msg}`)
+    }
+  }
+}
+
+// ============================================================
+// Sprint E-3.2: defaultBossSearch — search + LLM 评分 + 写飞书
+// ============================================================
+
+/**
+ * 默认 bossSearch: 调 runSearchAndWrite 拿 passingJobs → 返 AutoJob[] (带 recordId).
+ *
+ * 复用 search-and-write.ts 的搜索+评分+写飞书完整流程 (已 GREEN 单测).
+ * 不为 dryRun 提供 (buildDefaultDeps 在 dryRun=true 时返 STUB).
+ */
+async function defaultBossSearch(
+  opts: BuildDefaultDepsOpts,
+): Promise<(date: string) => Promise<AutoJob[]>> {
+  // 1. 准备搜索循环 (config.searches[] 单 query, 跑第 1 个)
+  const search = opts.config.searches[0]
+  if (!search) {
+    throw new Error('[AUTO.bossSearch] config.searches[] 空, 无法搜索')
+  }
+  const keyword = search.keyword
+  const city = search.city
+  const limit = search.limit ?? 15
+
+  // 2. 准备 deps (test 注入优先, 默认走真实现)
+  const noThreshold = opts.autoDeps?.noThreshold ?? false
+  // 阈值优先级: opts.autoDeps.scoreThreshold > env SCORE_THRESHOLD > 0.85 (与 bapply search .env 默认一致)
+  const scoreThreshold = opts.autoDeps?.scoreThreshold
+    ?? (process.env.SCORE_THRESHOLD ? Number(process.env.SCORE_THRESHOLD) : 0.85)
+
+  // appToken/tableId: opts.autoDeps 提供或自动从 loadConfig + env 读
+  let appToken = opts.autoDeps?.appToken
+  let tableId = opts.autoDeps?.tableId
+  if (!appToken || !tableId) {
+    try {
+      const cfg = loadConfig()
+      appToken = appToken ?? cfg.feishu.appToken ?? ''
+      tableId = tableId ?? cfg.feishu.tableId ?? ''
+    } catch {
+      // loadConfig 失败 → dryRun 模式也可继续 (createRecord 走 noop)
+    }
+  }
+
+  // LLM: test 注入优先, 默认 createLLM(loadConfig())
+  let llm: unknown = opts.autoDeps?.llm
+  if (!llm) {
+    try {
+      llm = createLLM(loadConfig())
+    } catch {
+      llm = undefined
+    }
+  }
+
+  // createRecord: test 注入 → appToken/tableId 都有 → 真 feishu → noop
+  const createRecordFn: (fields: any) => Promise<{ record_id: string }> =
+    opts.autoDeps?.createRecord
+    ?? (appToken && tableId
+        ? (fields: any) => feishuCreateRecord(appToken!, tableId!, fields)
+        : async (_fields: any) => ({ record_id: 'dry-run-noop' }))
+
+  const cdp = opts.cdp ?? opts.autoDeps?.cdp ?? false
+
+  return async (_date: string): Promise<AutoJob[]> => {
+    const session = await (cdp ? createCDPSession() : createBrowserSession(false))
+    let jobs: AutoJob[] = []
+    try {
+      // 构造 deps 调 runSearchAndWrite (与 cli/index.ts:283-295 同模式)
+      const swDeps = {
+        searchJobs: async (_k: string, _c?: string) => {
+          return browserSearchJobs(session.page, keyword, city, undefined, { maxResults: limit })
+        },
+        fetchJobDetail: (jobId: string, ctx?: { lid?: string; securityId?: string }) =>
+          browserFetchJobDetail(session.page, jobId, { lid: ctx?.lid, securityId: ctx?.securityId }),
+        scoreJob: (jd: string, summary: any, _llm: unknown) => scoreJob(jd, summary, llm as any),
+        createRecord: createRecordFn,
+        resolveResume,
+        llm,
+        threshold: scoreThreshold,
+      }
+      const swOpts = {
+        keyword,
+        city,
+        write: !opts.config.dryRun,
+        dryRun: opts.config.dryRun,
+        noThreshold,
+        limit,
+      }
+      const result = await runSearchAndWrite(swOpts, swDeps)
+      if (result.action === 'error') {
+        throw new Error(`[AUTO.bossSearch] runSearchAndWrite error: ${result.error}`)
+      }
+      // passingJobs → AutoJob[]
+      jobs = result.passingJobs.map((pj: PassingJob): AutoJob => ({
+        id: pj.jobId,
+        lid: pj.lid,
+        securityId: pj.securityId,
+        recordId: pj.recordId,
+      }))
+    } finally {
+      try {
+        await closeBrowserSession(session)
+      } catch (closeErr) {
+        const msg = closeErr instanceof Error ? closeErr.message : String(closeErr)
+        console.warn(`[AUTO.bossSearch] closeSession 失败（已忽略）: ${msg}`)
+      }
+    }
+    return jobs
+  }
+}
+
+// ============================================================
+// Sprint E-3.3: defaultSendGreeting — runSendCommand + writeGreetingStatus 写飞书
+// ============================================================
+
+/**
+ * 默认 sendGreeting: 调 send-handler.runSendCommand (已 GREEN 含 5 状态 action).
+ * 复用: runSendCommand 内部 close session + GuardError 透传.
+ * 招呼语: 不调 LLM, 用 BOSS 默认招呼语 (per user 决策).
+ */
+async function defaultSendGreeting(
+  opts: BuildDefaultDepsOpts,
+): Promise<(job: AutoJob) => Promise<void>> {
+  let appToken = opts.autoDeps?.appToken
+  let tableId = opts.autoDeps?.tableId
+  if (!appToken || !tableId) {
+    try {
+      const cfg = loadConfig()
+      appToken = appToken ?? cfg.feishu.appToken ?? ''
+      tableId = tableId ?? cfg.feishu.tableId ?? ''
+    } catch { /* dryRun noop */ }
+  }
+  const cdp = opts.cdp ?? opts.autoDeps?.cdp ?? false
+  const updateRecordFn = opts.autoDeps?.updateRecord
+    ?? (appToken && tableId
+        ? (recordId: string, fields: any) => feishuUpdateRecord(appToken!, tableId!, recordId, fields)
+        : undefined)
+
+  return async (job: AutoJob): Promise<void> => {
+    const cmdOpts: SendCommandOptions = {
+      jobId: job.id,
+      lid: job.lid ?? '',
+      securityId: job.securityId ?? '',
+      recordId: job.recordId,
+      cdp,
+    }
+    const cmdDeps: SendCommandDeps = {
+      writeGreetingStatus: updateRecordFn
+        ? async (recordId: string, status: string, greetedAt: number) => {
+            return updateRecordFn(recordId, {
+              打招呼状态: status,
+              打招呼时间: greetedAt,
+            })
+          }
+        : undefined,  // undefined = 跳飞书写入 (send-handler 已 graceful handle)
+    }
+    const result: SendCommandResult = await runSendCommand(cmdOpts, cmdDeps)
+    // map result → throw (给 throttleSend 计入 stats.failed) 或 noop
+    if (result.action === 'failed' || result.action === 'invalid_args') {
+      throw new Error(`[AUTO.sendGreeting] ${result.action}: ${result.reason}`)
+    }
+    // ok/abort/abort_today: 不抛
   }
 }
 

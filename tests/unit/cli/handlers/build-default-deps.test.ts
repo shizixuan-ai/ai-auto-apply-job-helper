@@ -506,6 +506,30 @@ describe('T32: 风控触发 blocked → exitCode = 3 (D-3 修正 3, 架构师 re
     expect(result.state).toBe('aborted')
   })
 
+  // ----------------------------------------------------------
+  // TEST 10b: Sprint E-3.x 回归修复 — bossSearch throw BOSSStubError → exit 2
+  // ----------------------------------------------------------
+  // 行为契约 (per §3.9 错误传播图 + §3.10 refactor checklist):
+  //   - dryRun=true → bossSearch 抛 BOSSStubError
+  //   - runDailyLoop 应该接住 → notifier.critical → exit 2 + state=aborted
+  //   - 与 loginByQR throw (R1) 同模式, 但触发点不同
+  //
+  // 回归历史: 实测 bapply auto --dry-run → exit 1 (没人接 BOSSStubError)
+  //   → 违反 ADR §16.3.1 R1 设计意图
+
+  it('TEST 10b: dryRun bossSearch throw BOSSStubError → exit 2 + state=aborted (E-3.x 回归修复)', async () => {
+    // dryRun=true 让 bossSearch STUB throw (loginByQR 走 noop, 不会 R1 catch 抢走)
+    const deps = await buildDefaultDeps(baseOpts({
+      config: { ...baseConfig, dryRun: true },
+    }))
+
+    const result = await runDailyLoop(deps, '2026-07-29')
+
+    // 关键断言: 跟 R1 loginByQR throw 同模式 (T32b)
+    expect(result.exitCode).toBe(2)  // fatal (R1 同模式)
+    expect(result.state).toBe('aborted')
+  })
+
   it('T32c: R3 高失败率 (每 10 次失败率 > 30%) 触发 blocked → exitCode=3', async () => {
     // R3 失败率超阈也走 blocked → exit 3
     const accountMetaStore = createInMemoryAccountMetaStore()
