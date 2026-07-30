@@ -247,6 +247,8 @@ $(build_calendar_intervals_macos | sed 's/^/    /')
     <key>FEISHU_WEBHOOK_URL</key>
     <string>${FEISHU_URL:-}</string>
   </dict>
+  <key>WorkingDirectory</key>
+  <string>${PROJECT_ROOT}</string>
   <key>StandardOutPath</key>
   <string>$LOGS_OUT</string>
   <key>StandardErrorPath</key>
@@ -262,15 +264,18 @@ EOF
 
 # ============== Linux crontab 生成 ==============
 build_crontab_linux() {
+  # P0 fix: 引号包裹 $PROJECT_ROOT (路径含空格时 break)
   if [[ "$PHASE" == "morning" || "$PHASE" == "both" ]]; then
-    echo "$MINUTE_MORNING $HOUR_MORNING * * 1-5 $BAPPLY_PATH auto --phase morning"
+    # Q1 A + Q10 A: crontab 启动时 cwd = projectRoot (auto 找 ./auto.yaml 找到)
+    echo "$MINUTE_MORNING $HOUR_MORNING * * 1-5 cd \"$PROJECT_ROOT\" && $BAPPLY_PATH auto --phase morning"
   fi
   if [[ "$PHASE" == "afternoon" || "$PHASE" == "both" ]]; then
-    echo "$MINUTE_AFTERNOON $HOUR_AFTERNOON * * 1-5 $BAPPLY_PATH auto --phase afternoon"
+    echo "$MINUTE_AFTERNOON $HOUR_AFTERNOON * * 1-5 cd \"$PROJECT_ROOT\" && $BAPPLY_PATH auto --phase afternoon"
   fi
 }
 
-# ============== 主流程 ==============
+# ============== 主流程 (仅当脚本直接执行, source 时不跑) ==============
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 step "install-cron: phase=$PHASE morning=$(printf '%02d:%02d' "$HOUR_MORNING" "$MINUTE_MORNING") afternoon=$(printf '%02d:%02d' "$HOUR_AFTERNOON" "$MINUTE_AFTERNOON") uninstall=$DO_UNINSTALL dryRun=$DO_DRY_RUN"
 
 if [[ "$DO_UNINSTALL" -eq 1 ]]; then
@@ -385,3 +390,4 @@ else
   fi
   info "🗑️  卸载: bash scripts/install-cron.sh --uninstall"
 fi
+fi  # Q10 A: 关闭 main flow guard (line 274 if BASH_SOURCE[0] == $0)
