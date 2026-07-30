@@ -26,7 +26,7 @@ version: 1
 #   limit    : 可选, 该 keyword 最多取 N (默认 15)
 searches:
   - keyword: "Java 后端"
-    city: "北京"
+    city: "杭州"
     limit: 15
   # - keyword: "Python 后端"
   #   city: "上海"
