@@ -15,6 +15,8 @@
 //   同模块导入顺序见 src/config/index.ts:1
 import 'dotenv/config'
 
+import * as path from 'node:path'
+
 import { Command } from 'commander'
 import chalk from 'chalk'
 import readline from 'node:readline/promises'
@@ -25,6 +27,17 @@ import { createLLM } from '../llm/index.js'
 import { buildGreetingSystemPrompt, buildGreetingPrompt, buildResumeSummary } from '../template/index.js'
 import { listRecords, createRecord, updateRecord } from '../feishu/index.js'
 import { handleChromeCommand } from './handlers/chrome-handler.js'
+import { runAutoInitConfig } from './handlers/auto-config-init-handler.js'
+import {
+  buildDefaultDeps,
+  mergeWebhookFromEnv,
+  runDailyLoop,
+} from './handlers/auto-handler.js'
+import {
+  createFsAccountMetaStore,
+  isAccountMetaError,
+} from '../auto/account-meta-store.js'
+import { isAutoConfigError, loadAutoConfig } from '../auto/config-loader.js'
 import { runSendCommand, type SendCommandResult } from './handlers/send-handler.js'
 import { runListCommand, type ListResult } from './handlers/list-handler.js'
 import { runSyncCommand, type SyncResult } from './handlers/sync-handler.js'
@@ -869,6 +882,153 @@ program
     const portNum = options.port ? Number(options.port) : undefined
     const out = handleChromeCommand({ port: portNum })
     console.log(chalk.cyan(out))
+  })
+
+// ============================================================
+// auto (Sprint D-1c §16.5 — 单账号反爬投递策略)
+// ============================================================
+
+/** RunAutoCommandOpts: 7 flags per §16.3.1 架构图 */
+interface RunAutoCommandOpts {
+  config?: string
+  dryRun?: boolean
+  quota?: string
+  phase?: 'morning' | 'afternoon'
+  date?: string
+  strictExitCode?: boolean
+}
+
+const autoCmd = program
+  .command('auto')
+  .description('单账号反爬投递策略主入口（per ADR-0016 §16 — 时段配额 + warmup + 节流 + 容错）')
+  .option('--config <path>', 'auto.yaml 路径 (默认 ~/.bapply/auto.yaml)')
+  .option('--dry-run', '不真投递, 走完整流程验证')
+  .option('--quota <n>', '今日总配额 (按 morning:afternoon 比例拆, 缺省值 40:60)', (v) => Number(v))
+  .option('--phase <phase>', 'morning | afternoon (cron 调用必填)')
+  .option('--date <YYYY-MM-DD>', '任务日期 (默认今天)')
+  .option('--strict-exit-code', '全 reject 但 counter 走完 → exit 2 (致命软错误)', false)
+  .action(async (options: RunAutoCommandOpts) => {
+    const start = Date.now()
+    const configPath = options.config ?? './.bapply-state/auto.yaml'  // Q11 v3 A: 4 文件统一 .bapply-state/
+    const configDir = './.bapply-state/'  // Q3b A: cwd 相对 (项目根, 与简历.yml 模式一致)
+    const date = options.date ?? new Date().toISOString().slice(0, 10)
+    const phase = options.phase ?? 'morning'
+    const quotaOverride = typeof options.quota === 'string' ? Number(options.quota) : options.quota
+
+    console.log(chalk.cyan(`🚀 bapply auto (Sprint D-2 §16) — ${phase} ${date}`))
+    console.log(chalk.yellow(`   config: ${configPath}`))
+    console.log(chalk.yellow(`   dry-run: ${options.dryRun ?? false}, strict: ${options.strictExitCode ?? false}`))
+    console.log()
+
+    // ── 1. loadAutoConfig (per §16.3.4 流程图 D1.4.v2) ─────
+    let config: import('../auto/config-schema.js').AutoConfig & { dryRun: boolean; phase: 'morning' | 'afternoon' }
+    try {
+      const result = await loadAutoConfig({
+        configPath,
+        phase,
+        date,
+        quotaOverride,
+        dryRun: options.dryRun,
+      })
+      // D-3 §17.12 修正 1+2 + E-1b 架构师 review: 把 CLI flags (dryRun/phase) 合并 + env 探测
+      // 让 buildDefaultDeps 一次性拿到 schema 字段 (safety + notifier) + CLI 字段 (dryRun/phase)
+      // E-1b env merge (FEISHU_WEBHOOK_URL 覆盖 yaml):
+      const withEnv = mergeWebhookFromEnv(result.config, process.env.FEISHU_WEBHOOK_URL)
+      config = {
+        ...withEnv,
+        dryRun: options.dryRun ?? false,
+        phase,
+      }
+    } catch (e) {
+      if (isAutoConfigError(e)) {
+        const err = e as import('../auto/config-loader.js').AutoConfigError
+        console.error(chalk.red(`\n❌ [CONFIG.${err.code}] ${err.message}`))
+        if (err.code === 'not_found') {
+          console.error(chalk.yellow(`   提示: 跑 \`bapply auto init-config\` 生成模板`))
+        }
+        process.exit(2)
+      }
+      throw e  // 其他错误由 parseAsync().catch (§3.9) 兜底
+    }
+
+    // ── 2. accountMetaStore.load (per §16.3.2 时序图) ────────
+    const expandedDir = configDir.replace('~', process.env.HOME ?? '/tmp')
+    const metaPath = path.join(expandedDir, 'account-meta.json')
+    let accountMeta: import('../auto/throttle.js').AccountMeta
+    try {
+      accountMeta = await createFsAccountMetaStore(metaPath).load()
+    } catch (e) {
+      if (isAccountMetaError(e)) {
+        const err = e as import('../auto/account-meta-store.js').AccountMetaError
+        console.error(chalk.red(`\n❌ [META.${err.code}] ${err.message}`))
+        process.exit(2)
+      }
+      throw e
+    }
+
+    // ── 3. buildDefaultDeps (per §16.3.2 时序图) ─────────────
+    const deps = await buildDefaultDeps({
+      configDir: expandedDir,
+      config,
+      accountMeta,
+      strictExitCode: options.strictExitCode ?? false,
+    })
+
+    // ── 4. runDailyLoop + 5. process.exit (per §14.6 R6) ─────
+    const result = await runDailyLoop(deps, date)
+    const elapsed = Date.now() - start
+
+    console.log()
+    console.log(chalk.cyan(`📊 Run finished: exit=${result.exitCode} state=${result.state} (${elapsed}ms)`))
+    console.log(`   sent: ${result.stats.sent}, ok: ${result.stats.ok}, failed: ${result.stats.failed}`)
+    console.log(`   effective_successes: ${result.stats.effective_successes}, guardTriggers: ${result.stats.guardTriggers}`)
+    console.log(`   blocked: ${result.stats.blocked}`)
+    process.exit(result.exitCode)
+  })
+
+// ============================================================
+// auto init-config (Sprint D-1c §16.5 — 生成配置模板)
+// ============================================================
+
+autoCmd
+  .command('init-config')
+  .description('在 ~/.bapply/ 生成 auto.yaml + account-meta.json 2 个模板文件 (atomic write)')
+  .option('--config-dir <path>', '配置目录 (默认 ~/.bapply/)')
+  .option('--force', '强制覆盖已存在文件 (默认 false, 保护用户数据)', false)
+  .action(async (options: { configDir?: string; force?: boolean }) => {
+    const start = Date.now()
+    const configDir = options.configDir ?? './.bapply-state/'  // Q3b A: cwd 相对
+
+    try {
+      const result = await runAutoInitConfig({
+        configDir,
+        force: options.force ?? false,
+      })
+
+      if (result.skipped === 'exists') {
+        console.log(chalk.yellow(`\n⚠️  配置已存在, 跳过 (加 --force 覆盖):`))
+        console.log(`   ${result.configPath}`)
+        console.log(`   ${result.metaPath}`)
+        process.exit(0)
+      }
+
+      console.log(chalk.green('\n✅ 已生成配置模板:'))
+      console.log(`   📄 ${result.configPath}`)
+      console.log(`   📊 ${result.metaPath}`)
+      console.log()
+      console.log(chalk.cyan('💡 下一步:'))
+      console.log(chalk.cyan(`   1. 编辑 ${result.configPath} 调整 searches / quota`))
+      console.log(chalk.cyan(`   2. 跑 bapply auto --dry-run --phase morning 验证配置`))
+      console.log(chalk.cyan(`   3. cron: 0 9 * * 1-5 bapply auto --phase morning`))
+      console.log(chalk.cyan(`            0 14 * * 1-5 bapply auto --phase afternoon`))
+      process.exit(0)
+    } catch (err: any) {
+      console.error(chalk.red(`\n❌ 生成配置失败: ${err?.message ?? err}`))
+      process.exit(1)
+    } finally {
+      const elapsed = Date.now() - start
+      console.log(chalk.dim(`\n   耗时: ${elapsed}ms`))
+    }
   })
 
 // §3.9 顶层错误兜底（2026-07-23 Debug Gate）：

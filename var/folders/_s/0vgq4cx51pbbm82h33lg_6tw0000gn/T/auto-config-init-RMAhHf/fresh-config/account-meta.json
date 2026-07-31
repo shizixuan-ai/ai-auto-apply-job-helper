@@ -1,0 +1,23 @@
+{
+  "registeredAt": 1785411645710,
+  "accountAgeDays": 0,
+  "baseDailyCap": 30,
+  "targetDailyCap": 100,
+  "weeklyCap": 500,
+  "warmupSchedule": [
+    {
+      "dayStart": 1,
+      "cap": 50
+    },
+    {
+      "dayStart": 8,
+      "cap": 70
+    },
+    {
+      "dayStart": 15,
+      "cap": 100
+    }
+  ],
+  "currentTier": "new",
+  "blockedHistory": []
+}

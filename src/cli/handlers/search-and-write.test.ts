@@ -252,4 +252,103 @@ describe('runSearchAndWrite', () => {
     expect('LID' in jobBCall[0]).toBe(false)
     expect('SECURITY_ID' in jobBCall[0]).toBe(false)
   })
+
+  // ----------------------------------------------------------
+  // TEST 9: Sprint E-3.2a — passingJobs[] 返回值 (auto-handler.bossSearch 直接消费)
+  // ----------------------------------------------------------
+  // 行为契约 (Sprint E-3.2a §17.17.1):
+  //   - 通过阈值 (≥ threshold) 且 createRecord 成功的 job → passingJobs[] 元素
+  //   - 每个元素: { jobId, lid?, securityId?, title, recordId, score }
+  //   - dryRun=true → recordId = 'dry-run-noop'
+  //   - createRecord 抛错时 → 该 job 跳过 (failed++, 但不污染 passingJobs)
+
+  it('TEST 9: passingJobs[] 含 recordId/lid/securityId/title/score（auto bossSearch 透传）', async () => {
+    // Arrange: 1 job 全字段, createRecord 返真 record_id
+    const FULL_JOB = {
+      ...JOB_A,
+      lid: 'Lxaxb11B6S.search.2',
+      securityId: 'esknqGib9UMBo-O2E14211s0Gf2Ocd_Z...',
+    } as unknown as Job
+    const deps = {
+      searchJobs: vi.fn(async () => [FULL_JOB]),
+      fetchJobDetail: vi.fn(async () => 'JD for full'),
+      scoreJob: vi.fn(async () => makeMockScoreResult(0.92)),
+      createRecord: vi.fn(async () => ({ record_id: 'rec_real_001' })),
+      resolveResume: vi.fn(async () => ({ summary: SAMPLE_RESUME, source: 'yaml' as const, warnings: [] })),
+      llm: {} as unknown,
+      threshold: 0.85,
+    }
+
+    // Act (write mode = 真写飞书)
+    const result = await runSearchAndWrite(
+      { keyword: '前端', city: '杭州', write: true, dryRun: false, noThreshold: false, limit: 10 },
+      deps,
+    )
+
+    // Assert
+    expect(result.action).toBe('ok')
+    if (result.action !== 'ok') throw new Error('result is not ok')
+
+    expect(result.passingJobs).toHaveLength(1)
+    expect(result.passingJobs[0]).toEqual({
+      jobId: 'jobA_encryptedId',
+      lid: 'Lxaxb11B6S.search.2',
+      securityId: 'esknqGib9UMBo-O2E14211s0Gf2Ocd_Z...',
+      title: '高级前端工程师',
+      recordId: 'rec_real_001',
+      score: 0.92,
+    })
+  })
+
+  it('TEST 9-b: dryRun=true 时 recordId = "dry-run-noop"（per cli/index.ts:289 一致）', async () => {
+    const deps = {
+      searchJobs: vi.fn(async () => [JOB_A]),
+      fetchJobDetail: vi.fn(async () => 'JD for A'),
+      scoreJob: vi.fn(async () => makeMockScoreResult(0.92)),
+      createRecord: vi.fn(async () => ({ record_id: 'should-not-be-called' })),
+      resolveResume: vi.fn(async () => ({ summary: SAMPLE_RESUME, source: 'yaml' as const, warnings: [] })),
+      llm: {} as unknown,
+      threshold: 0.85,
+    }
+
+    // Act (write:false + dryRun:true → runSearchAndWrite 走 noop createRecord)
+    // 关键: passingJobs 仍要收集 (auto-handler 即使 dryRun 也会收到 jobs 列表)
+    const result = await runSearchAndWrite(
+      { keyword: '前端', city: '杭州', write: false, dryRun: true, noThreshold: false, limit: 10 },
+      deps,
+    )
+
+    // Assert: createRecord 不调 (write:false)
+    expect(deps.createRecord).not.toHaveBeenCalled()
+
+    // passingJobs 仍 1 个, 但 recordId='dry-run-noop'
+    expect(result.action).toBe('ok')
+    if (result.action !== 'ok') throw new Error('result is not ok')
+    expect(result.passingJobs).toHaveLength(1)
+    expect(result.passingJobs[0].recordId).toBe('dry-run-noop')
+    expect(result.passingJobs[0].score).toBe(0.92)
+  })
+
+  it('TEST 9-c: 没通过阈值的 job → 不出现在 passingJobs（threshold 过滤）', async () => {
+    const deps = {
+      searchJobs: vi.fn(async () => [JOB_A, JOB_B]),
+      fetchJobDetail: vi.fn(async () => 'JD'),
+      scoreJob: vi.fn(async () => makeMockScoreResult(0.5)),  // 低于 0.85 阈值
+      createRecord: vi.fn(async () => ({ record_id: 'never' })),
+      resolveResume: vi.fn(async () => ({ summary: SAMPLE_RESUME, source: 'yaml' as const, warnings: [] })),
+      llm: {} as unknown,
+      threshold: 0.85,
+    }
+
+    const result = await runSearchAndWrite(
+      { keyword: '前端', city: '杭州', write: true, dryRun: false, noThreshold: false, limit: 10 },
+      deps,
+    )
+
+    expect(result.action).toBe('ok')
+    if (result.action !== 'ok') throw new Error('result is not ok')
+    expect(result.passed).toBe(0)
+    expect(result.passingJobs).toHaveLength(0)
+    expect(deps.createRecord).not.toHaveBeenCalled()
+  })
 })

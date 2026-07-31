@@ -55,3 +55,7 @@ npm-debug.log*
 
 # CDP 抓包临时文件（含敏感 network trace, 不入库）
 tests/fixtures/cdp-trace-*.jsonl
+
+# bapply state (per Q13a B, single-account red-line refactor 2026-07-30)
+.bapply-state/
+auto.yaml

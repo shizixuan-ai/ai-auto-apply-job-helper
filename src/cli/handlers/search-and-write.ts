@@ -108,6 +108,21 @@ export interface SearchWriteDeps {
   threshold: number
 }
 
+/**
+ * Sprint E-3.2a (Step A)：通过阈值 + 写完飞书的 job 详情.
+ * auto-handler.bossSearch 直接消费此数组喂给 sendGreeting (避免 auto 重新拼评分逻辑)
+ *
+ * dryRun 时 recordId = 'dry-run-noop' (与 cli/index.ts:289 dryRun noop 行为一致)
+ */
+export interface PassingJob {
+  jobId: string
+  lid?: string
+  securityId?: string
+  title: string
+  recordId: string
+  score: number
+}
+
 /** 任务结果 */
 export type SearchWriteResult =
   | {
@@ -120,6 +135,8 @@ export type SearchWriteResult =
       dryRun: boolean
       resumeSource: 'yaml'
       resumeWarnings: string[]
+      /** Sprint E-3.2a：通过阈值 (≥ threshold || noThreshold) 的 job, 已写入飞书 */
+      passingJobs: PassingJob[]
     }
   | {
       action: 'error'
@@ -166,6 +183,8 @@ export async function runSearchAndWrite(
   let passed = 0
   let written = 0
   let failed = 0
+  // Sprint E-3.2a (Step A)：收集通过阈值的 job 详情 (bossSearch 需返)
+  const passingJobs: PassingJob[] = []
 
   // 3) 逐个处理
   for (const job of jobs) {
@@ -179,41 +198,54 @@ export async function runSearchAndWrite(
 
       passed++
 
-      // dryRun 或 --no-write 都不调 createRecord
-      if (!opts.write) continue
-
-      const reason = `score=${result.totalScore.toFixed(2)}`
-      const fields: FeishuJobFields = {
-        职位: job.title,
-        公司: job.company,
-        BOSS_ID: job.id,
-        薪资: job.salary ?? '',
-        城市: job.city ?? '',
-        分数: result.totalScore,
-        匹配原因: reason.slice(0, REASON_MAX),
-        // Sprint 1C：6 维详情塞 JSON 字符串进飞书长文本字段
-        六维详情: formatDimensionsForFeishu(result),
-        JD摘要: jd.slice(0, JD_SNIPPET_MAX),
-        // 飞书日期字段要毫秒时间戳（不是 ISO 字符串）
-        匹配时间: Date.now(),
+      // Sprint E-3.2a: 即使 --no-write 模式也收集 passingJobs (bossSearch 可用)
+      //  auto-handler 用 passingJobs 来决定 sendGreeting 目标
+      // dryRun 时 createRecord 返 {record_id:'dry-run-noop'}, 写成 noop marker
+      let recordId = 'dry-run-noop'
+      if (opts.write) {
+        const reason = `score=${result.totalScore.toFixed(2)}`
+        const fields: FeishuJobFields = {
+          职位: job.title,
+          公司: job.company,
+          BOSS_ID: job.id,
+          薪资: job.salary ?? '',
+          城市: job.city ?? '',
+          分数: result.totalScore,
+          匹配原因: reason.slice(0, REASON_MAX),
+          // Sprint 1C：6 维详情塞 JSON 字符串进飞书长文本字段
+          六维详情: formatDimensionsForFeishu(result),
+          JD摘要: jd.slice(0, JD_SNIPPET_MAX),
+          // 飞书日期字段要毫秒时间戳（不是 ISO 字符串）
+          匹配时间: Date.now(),
+        }
+        // Sprint 2B：HR 加密 uid（sync-handler 后续读取用）
+        // 仅在 truthy 时设置，避免飞书表出现 HR_UID: undefined
+        if (job.hrUid) {
+          fields.HR_UID = job.hrUid
+        }
+        // Sprint C (ADR-0008)：LID + SECURITY_ID 透传（解锁 auto-greet mode）
+        //   - 仅在 truthy 时设置，避免飞书表出现 undefined
+        //   - sync-handler 读取这 2 个字段后调 sendGreeting（friend/add URL query）
+        //   - SECURITY_ID 是明文（飞书 Bitable 1.0 不支持字段加密，见 ADR-0008 §9 后续）
+        if (job.lid) {
+          fields.LID = job.lid
+        }
+        if (job.securityId) {
+          fields.SECURITY_ID = job.securityId
+        }
+        const created = await deps.createRecord(fields)
+        recordId = created.record_id
+        written++
       }
-      // Sprint 2B：HR 加密 uid（sync-handler 后续读取用）
-      // 仅在 truthy 时设置，避免飞书表出现 HR_UID: undefined
-      if (job.hrUid) {
-        fields.HR_UID = job.hrUid
-      }
-      // Sprint C (ADR-0008)：LID + SECURITY_ID 透传（解锁 auto-greet mode）
-      //   - 仅在 truthy 时设置，避免飞书表出现 undefined
-      //   - sync-handler 读取这 2 个字段后调 sendGreeting（friend/add URL query）
-      //   - SECURITY_ID 是明文（飞书 Bitable 1.0 不支持字段加密，见 ADR-0008 §9 后续）
-      if (job.lid) {
-        fields.LID = job.lid
-      }
-      if (job.securityId) {
-        fields.SECURITY_ID = job.securityId
-      }
-      await deps.createRecord(fields)
-      written++
+      // Sprint E-3.2a：push 到 passingJobs (auto-handler 直接消费)
+      passingJobs.push({
+        jobId: job.id,
+        lid: job.lid,
+        securityId: job.securityId,
+        title: job.title,
+        recordId,
+        score: result.totalScore,
+      })
     } catch (err) {
       failed++
       // Sprint 1A 修复 P0：不能静默吞错（用户报"全部失败看不到原因"）
@@ -233,5 +265,6 @@ export async function runSearchAndWrite(
     dryRun: !opts.write,
     resumeSource: resume.source,
     resumeWarnings: resume.warnings,
+    passingJobs,  // Sprint E-3.2a：auto-handler.bossSearch 直接消费
   }
 }

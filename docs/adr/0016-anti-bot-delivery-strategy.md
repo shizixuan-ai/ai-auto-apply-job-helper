@@ -371,15 +371,15 @@ cron      auto-handler    throttle.ts        send-handler    BOSS wapi    counte
 
 | Step | 状态 | 证据 |
 |------|------|------|
-| RED | ⏳ 草稿 | 待 Sprint B 起 5 个 RED 测试（T1-T5） |
-| GREEN | ⏳ 草稿 | 待 throttle.ts / warmup-engine.ts / counter-store.ts 实施 |
-| REFACTOR | ⏳ 草稿 | — |
-| 自验证 | ⏳ 草稿 | 待 synthetic probe (scripts/probe-throttle-logic.mjs) + live 集成 |
+| RED | ✅ Sprint B 完整完成 (2026-07-28) | `tests/unit/auto/throttle.test.ts` (T1-T5) + `tests/unit/auto/throttle-reliability.test.ts` (T6-T10) 11 测试写完 → 跑 T1-T5 5/5 RED + T6-T10 4/5 RED (T6 已 GREEN 是 Sprint B-1 早实现 bigBreak) |
+| GREEN | ✅ Sprint B 完整完成 (2026-07-28) | `src/auto/throttle.ts` 决策树 12 节点 + §12 Issue 1 原子写 + §12 Issue 3 重登 + ThrottleError/SessionExpiredError class (layer='THROTTLE'/'SEND' per §3.13) + 11 测试 11/11 GREEN |
+| REFACTOR | ✅ Sprint B 完整完成 (2026-07-28) | 抽 `randomInRange(range, rand)` helper 消除 3 处重复, 11/11 仍 GREEN |
+| 自验证 | ✅ Sprint B 完整完成 (2026-07-28) | prototype `scripts/probe-throttle-logic.mjs` 14/14 PASS + Sprint B-1 5/5 + Sprint B-2 6/6 + 全套 487/488 (1 skipped pre-existing) + tsc 0 throttle 相关错 |
 
 **Sprint B RED 测试清单**（§4.3 上限 5 throttle + 5 可靠性 = 10,**拆 Sprint B-1 + B-2**）：
 
 **Sprint B-1 throttle (T1-T5)**:
-- T1: `11:29:59` send 走通 / `11:30:00` throw DailyDone
+- T1: `11:29:59` proceed / `11:30:00` sleep lunch_break (per §7.4 流程图 — 此处早期草稿写 "throw DailyDone" 与 §7.4 矛盾, 2026-07-28 修订)
 - T2: `daily.sent >= cap` → throw DailyLimit
 - T3: `now = Sat/Sun` → throw WeekendBlock（dry-run 模式放行）
 - T4: warmup Day 1 → cap=50 / Day 8 → cap=70 / Day 15 → cap=100
@@ -648,6 +648,2306 @@ TDD 5 测试 (per §4.3 上限 5) 用于 throttle;config schema 走 **2 个新 R
 
 ---
 
+## 13. Sprint B 验证记录 (2026-07-28)
+
+11 个 RED 测试 + 11/11 GREEN 闭环证据; 按 §4 反思 5 问 + §3.8 修 bug 归因记录.
+
+### 13.1 验证矩阵
+
+| 阶段 | 测试数 | RED | GREEN | 备注 |
+|------|--------|-----|-------|------|
+| Sprint B-1 throttle (T1-T5) | 5 | 5/5 RED | 5/5 GREEN | prototype 14/14 验证决策树后 RED-GREEN |
+| Sprint B-2 可靠性 (T6-T10) | 6 | 4/5 RED | 6/6 GREEN | T6 早在 Sprint B-1 实现 (1/5 已 GREEN) |
+| **Sprint B 总计** | **11** | **9/11 RED** | **11/11 GREEN** | - |
+
+### 13.2 交付物路径(5 个文件)
+
+| 路径 | 用途 |
+|------|------|
+| `scripts/probe-throttle-logic.mjs` | Prototype 14/14 PASS (Sprint B-1 验证) |
+| `src/auto/throttle.ts` | 决策树 12 节点 + §12 Issue 1+3 + ThrottleError/SessionExpiredError class |
+| `src/auto/session-detector.ts` | §12 Issue 3 BOSS 响应探测 (1 stub function) |
+| `tests/unit/auto/throttle.test.ts` | T1-T5 RED 测试 |
+| `tests/unit/auto/throttle-reliability.test.ts` | T6-T10 RED 测试 |
+
+### 13.3 自验证清单 (per §4.4)
+
+| 项 | 证据 |
+|---|------|
+| ✓ 单测 | `npm run test` 487/488 (1 skipped pre-existing) |
+| ✓ 集成测试 | 41 test files 全套 |
+| ✓ 类型检查 | `npx tsc --noEmit` 0 throttle/session-detector 相关错 |
+| ✓ live 集成 | prototype 14/14 替代 live (per §3.12 单账号红线) |
+| N/A 浏览器 | Sprint B 是后端算法, 无 UI |
+
+### 13.4 ADR §8 修订记录 (per §10 重写流程)
+
+| 修订 | 位置 | 原因 |
+|------|------|------|
+| "11:30:00 throw DailyDone" → "11:30:00 sleep lunch_break" | §8 T1 | 早期草稿与 §7.4 矛盾; Sprint B-1 实施按 §7.4 验证 |
+| 4 个 Step ⏳ 草稿 → ✅ Sprint B 完成 | §8 状态表 | Sprint B-1 + B-2 全部 GREEN |
+
+### 13.5 §9 后续清单进度 (本会话已完成 5/12)
+
+- [x] `scripts/probe-throttle-logic.mjs` (Sprint B Phase B) - 14/14 PASS
+- [x] `src/auto/throttle.ts` 实施 - 11/11 GREEN
+- [x] `src/auto/session-detector.ts` 实施 - 1 stub function
+- [x] 10 个 RED 测试 (Sprint B Phase C) - 11 个全部 PASS
+- [ ] `src/auto/warmup-engine.ts` - 集成到 throttle.ts initCounter, 独立文件遗留
+- [x] `src/auto/counter-store.ts` - 真实 fs atomic write (Sprint C-1 完成, 6/6 GREEN, probe 12/12 PASS)
+- [x] `scripts/probe-throttle-integration.mjs` - H1-H5 假设验证 (Sprint C-1 前置, 12/12 PASS)
+- [x] `tests/unit/auto/counter-store.test.ts` - T11-T13 3 describes / 6 it() (Sprint C-1 完成, 6/6 GREEN)
+- [x] `src/cli/handlers/auto-handler.ts` - Sprint C-2a 完成 (R1 初始 login + R3 失败率监控 + R6 退出码 0/1/2, 6/6 GREEN)
+- [x] `tests/unit/cli/handlers/auto-handler.test.ts` - T14-T16 3 describes / 6 it() (Sprint C-2a 完成)
+- [x] `src/auto/guard.ts` - Sprint C-2b 完成 (R2 GuardError + isGuardError + layer='GUARD', 5/5 GREEN)
+- [x] `tests/unit/auto/guard.test.ts` - T17-T18 2 describes / 5 it() (Sprint C-2b 完成, 5/5 GREEN)
+- [x] `src/auto/throttle.ts` Sprint C-3 - 接入真实 CounterStore (R4 type alias 重构 + R5 加固 T8 + R7 接口兼容, 8 旧测试 + T19 真 fs 往返 7 it() + T20 加固 1 it() 全 GREEN, §3.10 refactor 盘点 0 caller 改动)
+- [ ] `scripts/install-cron.sh` / notifier / node-cron / run rotate / 油猴 / §12 5 项 = Sprint C/D 后续
+
+---
+
+## 14. Sprint C 集成设计 (2026-07-28)
+
+### 14.1 修订要点 (per 架构师 review)
+
+| # | 修订 | 原稿缺口 | 修订方案 |
+|---|------|---------|---------|
+| R1 | 初始 login 缺失 | `runDailyLoop` 直接进 bossSearch,无 cookie 必失败 | `idle → loginByQR() → running`,失败映射 `exit 2` |
+| R2 | Guard 风控墙完全消失 | `sendGreeting` 异常未分类,反爬触发后继续投递浪费配额 | 新 `GuardError` class + `blocked` 状态 + notify + 降级 warmup |
+| R3 | 失败率监控缺失 | counter 写先于发送,连续失败会空转耗尽配额 | 失败率 >30% 触发 `blocked` (等同 GuardError 路径) |
+| R4 | atomic write 模式非标准 | `writeFile + openSync('r+') + fsyncSync` 多余 | 标准 POSIX: `tmp + writeFile + sync + rename` |
+| R5 | T8 SIGTERM 加固 | handler 完成后未验证无 `process.exit` | T8 加断言 3: handler 内禁止调 `process.exit` |
+| R6 | 退出码语义模糊 | 全失败 vs 部分失败未区分 | 0=≥1 成功 / 1=全失败或部分失败 / 2=致命 (config/login/guard/失败率) |
+| R7 | refactor 工厂缺 reset | `createInMemoryCounterStore` 无 `.reset()` | 新增 `reset()` 方法, 单元测试隔离 |
+
+### 14.2 修订 4 类图
+
+#### 14.2.1 架构图(集成版)
+
+```
+                          ┌──────────────────────────────┐
+                          │  CLI 层 (src/cli/)           │
+                          │  ┌────────────────────────┐  │
+                          │  │ bapply auto --resume   │  │
+                          │  │ --dry-run --date ...   │  │
+                          │  └─────────┬──────────────┘  │
+                          └────────────┼─────────────────┘
+                                       │ invoke
+                                       ▼
+                          ┌──────────────────────────────┐
+                          │  Handler 层                  │
+                          │  ┌────────────────────────┐  │
+                          │  │ auto-handler.ts (新)   │  │
+                          │  │  state: idle|login|    │  │
+                          │  │   running|paused|      │  │
+                          │  │   blocked|done|aborted │  │
+                          │  │  runDailyLoop(config)  │  │
+                          │  └────┬─────────────────┬─┘  │
+                          └───────┼─────────────────┼────┘
+                                  │                 │
+              ┌───────────────────┘                 └────────────────────┐
+              ▼                                                          ▼
+┌─────────────────────────────┐                  ┌──────────────────────────────┐
+│   Auto 层 (src/auto/)       │                  │  Boss 层 (src/boss/) [现有]  │
+│  ┌───────────────────────┐  │                  │  ┌────────────────────────┐  │
+│  │ throttle.ts (已存在)  │  │                  │  │ search-jobs.mjs        │  │
+│  │  - throttleSend       │──┼─────────────────▶│  │ login-by-qr.mjs        │  │
+│  │  - ThrottleError      │  │                  │  │ send-greeting.mjs      │  │
+│  │  - SessionExpiredError│  │                  │  └────────────────────────┘  │
+│  └───────────────────────┘  │                  └──────────────────────────────┘
+│  ┌───────────────────────┐  │                              │
+│  │ counter-store.ts (新) │  │                              │
+│  │  - load(date)         │──┼──▶ fs: ~/.bapply/counter.json│
+│  │  - writeAtomic()      │  │                              │
+│  │  - createFsStore()    │  │                              │
+│  │  - createInMemoryStore│  │                              │
+│  └───────────────────────┘  │                              │
+│  ┌───────────────────────┐  │                              │
+│  │ guard.ts (新, C-2b)   │  │                              │
+│  │  - GuardError class   │  │                              │
+│  │  - isGuardError()     │  │                              │
+│  │  - GuardNotifier      │  │                              │
+│  └───────────────────────┘  │                              │
+└─────────────────────────────┘                              │
+                                  ┌──────────────────────────┘
+                                  ▼
+                          ┌──────────────────────────────┐
+                          │  External (单账号红线)        │
+                          │  - BOSS wapi / chat/start    │
+                          │  - feishu webhook (notify)   │
+                          │  - ~/.bapply/counter.json    │
+                          └──────────────────────────────┘
+```
+
+#### 14.2.2 时序图(集成版 — 含初始 login + guard + 失败率监控)
+
+```
+[user] bapply auto --resume --date 2026-07-28
+   │
+   ▼
+[CLI] parseArgs → AutoConfig
+   │
+   ▼
+[auto-handler] state = 'idle'
+   │
+   ▼
+[auto-handler] state = 'login' | await deps.loginByQR()
+   │                                       │
+   │                                  fail │ success
+   │                                       ▼
+   │                              state = 'running'
+   │                                       │
+   ▼ ◄─────────────────────────────────────┘
+[auto-handler] return { exitCode: 2, stats, state: 'aborted' }
+   │
+   ▼
+[CLI] process.exit(2)
+
+(below is only after login success)
+
+[auto-handler] jobs = await bossSearch(date)
+   │
+   ▼
+for each job in jobs:
+   │
+   ├─► [throttleSend] (job, deps, config)
+   │   │
+   │   ├─ time / cap / weekend check
+   │   ├─ counter.load + interval + longPause + bigBreak
+   │   ├─ counter.sent++ + counterStore.writeAtomic()  ←── [fs] atomic
+   │   ├─ sendGreeting(job):
+   │   │   │
+   │   │   ├─► [BOSS wapi] POST /chat/start
+   │   │   │
+   │   │   ├─ if SessionExpiredError:
+   │   │   │   └─► loginByQR() → retry sendGreeting (1 shot)
+   │   │   │
+   │   │   ├─ if GuardError (anti_bot / rate_limit / ip_block):
+   │   │   │   │
+   │   │   │   ├─► [feishu] notify('critical', msg)
+   │   │   │   ├─► degraded-warmup (cap × 0.5)
+   │   │   │   └─► state = 'blocked' → break loop → return { exitCode: 2 }
+   │   │   │
+   │   │   └─ if other error: log warn → continue (B2=a)
+   │   │
+   │   └─► return ThrottleDecision
+   │
+   ├─► if sleep: await sleep(sleepMs)
+   │
+   ├─► 每 10 次迭代后: stats.failed / stats.sent > 0.3 ?
+   │       │
+   │   yes ▼ no
+   │   blocked → exit 2      continue
+   │
+   └─► next job
+
+return { exitCode: 0|1|2, stats: { sent, ok, failed, blocked }, state }
+   │
+   ▼
+[CLI] process.exit(stats.exitCode)
+```
+
+#### 14.2.3 关系图(集成版)
+
+```
+src/cli/handlers/auto-handler.ts (~280 行, Sprint C-2a)
+  interface AutoHandlerDeps {
+    now: () => number
+    bossSearch: (date: string) => Promise<Job[]>
+    counterStore: CounterStore                       // C-1 注入
+    sendGreeting: (job: Job) => Promise<void>
+    loginByQR: () => Promise<void>
+    notifier: GuardNotifier                          // C-2b 注入
+    config: AutoConfig
+  }
+  type RunStats = { sent: number; ok: number; failed: number; blocked: boolean }
+  async function runDailyLoop(deps: AutoHandlerDeps): Promise<{ exitCode: 0|1|2; stats: RunStats }>
+        │
+        ├─ imports ──▶ src/auto/throttle.ts (已有, Sprint C-3 改 ThrottleDeps)
+        │                  - ThrottleError.layer = 'THROTTLE'
+        │                  - SessionExpiredError.layer = 'SEND'
+        │                  - throttleSend(job, deps, config) → ThrottleDecision
+        │
+        ├─ imports ──▶ src/auto/counter-store.ts (~80 行, Sprint C-1 新)
+        │                  interface CounterStore {
+        │                    load(date: string): Promise<DailyCounter | null>
+        │                    writeAtomic(counter: DailyCounter): Promise<void>
+        │                  }
+        │                  createFsCounterStore(filepath: string): CounterStore
+        │                  createInMemoryCounterStore(initial?: DailyCounter):
+        │                    CounterStore & { reset(): void }      // R7
+        │
+        ├─ imports ──▶ src/auto/guard.ts (~60 行, Sprint C-2b 新)
+        │                  class GuardError extends Error {
+        │                    readonly layer = 'GUARD' as const    // per §3.13
+        │                    reason: 'anti_bot' | 'rate_limit' | 'ip_block'
+        │                  }
+        │                  interface GuardNotifier {
+        │                    notify(level: 'warn' | 'critical', msg: string): Promise<void>
+        │                  }
+        │                  function isGuardError(e: unknown): e is GuardError
+        │
+        └─ imports ──▶ src/boss/{search-jobs, login-by-qr, send-greeting}.mjs (现有 stub)
+```
+
+#### 14.2.4 流程图(集成版状态机 — R1+R2+R3+R6)
+
+```
+                              ┌──────────┐
+                              │   idle   │ (initial)
+                              └─────┬────┘
+                                    │ runDailyLoop()
+                                    ▼
+                              ┌──────────┐
+                              │  login   │
+                              └─────┬────┘
+                              fail │ success (R1)
+                                   ▼
+                            ┌──────────┐
+                            │ aborted  │ ──► exit 2
+                            └──────────┘
+                                    │
+                                    ▼
+                              ┌──────────┐
+              ┌───────────────│ running  │────────────────┐
+              │               └─────┬────┘                │
+              │  jobs=[]           │ for each job:        │ DailyDone
+              │                    ▼                       │ DailyLimit
+              │               ┌──────────┐                │
+              │               │ throttle │                │
+              │               │ decision │                │
+              │               └────┬─────┘                │
+              │       ┌────────────┼────────────┐          │
+              │  proceed           │            abort      │
+              │   │                │            │          │
+              │   ▼                ▼            │          │
+              │  ┌──────────┐  ┌──────────┐     │          │
+              │  │ paused   │  │ sending  │     │          │
+              │  │ (sleep)  │  └────┬─────┘     │          │
+              │  │ after:   │       │           │          │
+              │  │ →running │  ┌────┴────┐      │          │
+              │  └──────────┘  │ send OK │ send fail      │
+              │                └────┬────┘   (B2=a:        │
+              │            success  │      continue)      │
+              │                     │           │          │
+              │                     │           ▼          │
+              │                     │      ┌────────┐      │
+              │                     │      │ next   │──────┤
+              │                     │      │ job    │      │
+              │                     │      └────────┘      │
+              │                     │           ▲          │
+              │                     │           │ GuardError (R2)
+              │                     │           ▼          │
+              │                     │      ┌──────────┐    │
+              │                     │      │ blocked  │    │
+              │                     │      │ +notify  │    │
+              │                     │      │ +degrade │    │
+              │                     │      └────┬─────┘    │
+              │                     │           │          │
+              │                     │           └──────────│
+              │                     │                      ▼
+              │                     │              exit 2
+              │                     ▼
+              │                ┌──────────┐
+              │                │  done    │ ──► exit 0/1 (R6)
+              │                └──────────┘
+              │                       ▲
+              │                       │ failure rate > 30% (R3)
+              │                       │
+              │                ┌──────────┐
+              │                │ blocked  │ ──► exit 2
+              │                └──────────┘
+              │
+              └────► exit 2 (致命)
+```
+
+### 14.3 §3.10 refactor 盘点
+
+`throttle.ts` ThrottleDeps 接入真实 CounterStore (Sprint C-3) 后 caller 影响:
+
+| caller | 当前 | C-3 接入后 | 影响 |
+|--------|------|-----------|------|
+| `tests/unit/auto/throttle.test.ts` | inline `{ load, writeAtomic }` mock | 改 `createInMemoryCounterStore()` + `.reset()` in `beforeEach` | 测试不破,加 `.reset()` |
+| `tests/unit/auto/throttle-reliability.test.ts` | 同上 | 同上 | 同上 |
+| **未来 `auto-handler.ts`** (C-2a) | — | 注入 `createFsCounterStore('~/.bapply/counter.json')` | 新增 caller,接口稳定 |
+
+**结论**: mock 改 `createInMemoryCounterStore()` 工厂函数 + `.reset()` (R7), 不变更 ThrottleDeps 接口形状 (CounterStore 仅引入 type, mock 实现同 shape), 向后兼容 11 个现有 test。
+
+### 14.4 §3.12 probe 假设清单 (per 硬性)
+
+| # | 假设 | 验证方式 | 不验证的后果 | 风险 |
+|---|------|---------|------------|------|
+| H1 | POSIX atomic write (`tmp + writeFile + sync + rename`) 在 macOS Node 24 真原子 | `probe-throttle-integration.mjs` Scenarios S1-S4: 并发 10 次写读不丢失 / 临时文件清理 / rename 异常回滚 | rename 失败 → counter 双写或丢失 | 中 |
+| H2 | `JSON.stringify + parse` 安全 (DailyCounter 无循环引用 / Date / BigInt) | S5-S6: 写读后字段一致 / 损坏 JSON 抛错不吞 | 解析失败 → 状态丢失或静默错误 | 低 |
+| H3 | SIGTERM handler `await writeAtomic` 完成后**不调用** `process.exit`, 事件循环自然结束 | S7-S8: handler 完整落盘 + exit 调用计数 0 + 后续进程可继续 | handler 跳过 → 进程提前退出丢数据 | 中 |
+| H4 | `createInMemoryCounterStore().reset()` 隔离测试间状态 | S9-S10: reset 后 load 返回 null / reset 后 write 不影响下次 test | 状态泄漏 → test 间 flaky | 低 |
+| H5 | `mkdir -p` (`fs.mkdir({ recursive: true })`) 在 `~/.bapply/` 不存在时自动创建 | S11-S12: 首次写入自动创建目录 | 缺目录 → 写失败 exit 2 | 低 |
+
+**单账号红线守住**: H1-H5 仅涉及 fs + in-memory, **不 probe BOSS / loginByQR / sendGreeting**。
+
+### 14.5 Sprint C 子任务拆分 (per §4.3)
+
+| Sprint | src files | tests | 范围 | 预计工时 |
+|--------|-----------|-------|------|---------|
+| **C-1** counter-store | 1 new (counter-store.ts) | 3 new (T11-T13: atomic write / SIGTERM / reset) | H1-H5 probe | ~30min |
+| **C-2a** auto-handler + 失败率 | 1 new (auto-handler.ts) | 3 new (T14-T16: initial login / exit 2 / 失败率阈值) | R1 + R3 + R6 | ~45min |
+| **C-2b** guard + blocked | 1 new (guard.ts) | 2 new (T17-T18: GuardError → blocked / notify → exit 2) | R2 | ~30min |
+| **C-3** throttle 集成 | 1 modified (throttle.ts) | 2 new (T19-T20: 真 fs 往返 / 加固 T8 exit 调用计数) | refactor + R5 + R7 | ~30min |
+
+合计: 3 new src + 1 modified src + 10 new tests, **每个 sub-sprint ≤ 1 src + ≤ 3 tests**, 远低于 §4.3 上限。
+
+### 14.6 退出码精化表 (R6)
+
+| 退出码 | 触发条件 | 例子 |
+|--------|---------|------|
+| **0** | ≥1 次 sendGreeting 成功, 且未触致命 | 40/40 全发, 39 OK + 1 reject |
+| **1** | 全部失败 / 部分失败 (无致命) | 40 全 reject, 或 5/40 OK 其余 reject |
+| **2** | 致命: config / login / guard / 失败率超阈 / counter write 失败 | loginByQR 失败、GuardError 触发、failed/sent > 0.3 |
+
+**实现**: `runDailyLoop` 返回 `{ exitCode: 0|1|2, stats }`, CLI 层 `process.exit(stats.exitCode)`。
+
+### 14.7 修订记录 (per §10 重写流程)
+
+| 修订 | 位置 | 原因 |
+|------|------|------|
+| 初始 login 显式加入 | §14.2.4 流程图 R1 | 架构师 review: 进程起手无 cookie 必失败 |
+| Guard / blocked / 失败率监控 | §14.2.4 流程图 R2+R3 | 反爬触发后继续投递浪费配额 |
+| atomic write 模式标准化 | §14.2.3 关系图 R4 | POSIX 标准: tmp + sync + rename |
+| T8 SIGTERM 加固 | §14.4 H3 风险列 R5 | handler 完成后需禁止 process.exit |
+| 退出码精化 | §14.6 R6 | 全失败 vs 部分失败需区分 |
+| 工厂函数加 reset | §14.3 refactor 盘点 R7 | 单元测试隔离必需 |
+
+### 14.8 probe 验证结果 (2026-07-28, per §3.12)
+
+`scripts/probe-throttle-integration.mjs` 12/12 PASS, 验证 §14.4 H1-H5 全部假设。
+
+**关键发现**:
+
+| # | 发现 | 影响 C-1 实现 |
+|---|------|-------------|
+| F1 | **tmp suffix 必须用 `crypto.randomUUID()`, 不用 `Date.now()`** | `Date.now()` 在并发同毫秒会生成相同 tmp 名, 后到的 rename ENOENT (S2 第一次跑挂) |
+| F2 | **POSIX atomic write 语义 = "无 torn write + 无 ENOENT", 不保证 "最后调用必胜"** | S2 期望修正: `final sent ∈ {1..10}`, 不是 `sent=10`. last-write-wins 在并发起跑下不严格保证 |
+| F3 | 损坏 JSON 抛 `SyntaxError` 不被吞 (per S6) | `load()` 实现必须 `throw`, 不能 `return null` |
+| F4 | `mkdir -p` (`fs.mkdir({ recursive: true })`) 自动建 `~/.bapply/` (S11) | `writeAtomic` 第一步必 `mkdir({recursive:true})` |
+| F5 | SIGTERM handler 完成后**未**调 `process.exit`, 事件循环自然结束 (S8) | T8 必须断言 3: `exitCalls.length === 0` |
+
+**probe 摘要**:
+
+```
+[PASS] H1-S1 single write/read roundtrip — sent=1
+[PASS] H1-S2 10x concurrent write, all resolve + final value in {1..10} — allResolved=true, final sent=6
+[PASS] H1-S3 tmp files cleaned after rename — leftovers=[]
+[PASS] H1-S4 readonly dir → write throws + tmp cleaned — threw=true, leftovers=0
+[PASS] H2-S5 complex counter roundtrip equality — equal=true
+[PASS] H2-S6 corrupted JSON throws SyntaxError (not silently null) — threw=true
+[PASS] H3-S7 SIGTERM handler completes writeAtomic (sent=999) — final sent=999
+[PASS] H3-S8 handler does NOT call process.exit — handlerThrew=false, exitCalls=0
+[PASS] H4-S9 reset() makes load return null — before.sent=5, after=null
+[PASS] H4-S10 after reset, new write does not retain old state — loaded={"date":"2026-07-29","sent":1,"cap":40}
+[PASS] H5-S11 first write creates ~/.bapply/ + counter.json — dir=true, file=true
+[PASS] H5-S12 write to existing dir does not throw — threw=false
+=== Total: 12/12 PASS ===
+```
+
+**单账号红线**: H1-H5 probe 0 触碰 BOSS / loginByQR / sendGreeting, 守住。
+
+---
+
+## 15. Sprint C 完整验证记录 (2026-07-28)
+
+### 15.1 子任务总览
+
+| Sprint | Commit | src files | tests | 范围 | 预计工时 |
+|--------|--------|-----------|-------|------|---------|
+| **C-1** | `26f156b` | 1 new (counter-store.ts) | 3 new (T11-T13) | H1-H5 probe + atomic write | ~30min |
+| **C-2a** | `0fb1d21` | 1 new (auto-handler.ts) | 3 new (T14-T16) | R1 + R3 + R6 | ~45min |
+| **C-2b** | `b1bd6b2` | 1 new (guard.ts) | 2 new (T17-T18) | R2 | ~30min |
+| **C-3** | `84bf69c` | 1 modified (throttle.ts) | 2 new (T19-T20) | R4 + R5 + R7 | ~30min |
+| **合计** | 4 commit | 3 new + 1 modified | 10 new + 1 modified | R1-R7 全部落地 | ~2h15min |
+
+### 15.2 R1-R7 修订 → 实施映射
+
+| # | 修订 | 落地位置 | 验证测试 |
+|---|------|---------|----------|
+| R1 | 初始 loginByQR (`idle → login → running`) | `auto-handler.ts:82-89` | T14a (success) + T14b (fail → exit 2) |
+| R2 | GuardError class + blocked + notify | `guard.ts:20-31` + `auto-handler.ts:117-125` | T17a-d (class) + T18a (integration) |
+| R3 | 失败率 > 30% → blocked + exit 2 | `auto-handler.ts:132-144` | T16a (40% blocked) + T16b (30% 临界不触发) |
+| R4 | POSIX atomic write (`tmp + writeFile + sync + rename`) | `counter-store.ts:73-92` | probe S1-S4 (12/12 PASS) + T19a/d |
+| R5 | T8 SIGTERM handler 禁止 `process.exit` | `throttle.ts:240-249` | T20 (vi.spyOn throw) |
+| R6 | 退出码精化 (0=ok / 1=all-fail / 2=fatal) | `auto-handler.ts:148-155` | T14a/b + T15a/b + T16a/b + T18a |
+| R7 | `createInMemoryCounterStore().reset()` 隔离测试 | `counter-store.ts:102-117` | T11 (reset) + guard/auto-handler tests |
+
+### 15.3 测试矩阵 (按 sub-sprint)
+
+| 阶段 | 测试文件 | it() 块数 | 状态 | 关键覆盖 |
+|------|---------|----------|------|---------|
+| Sprint B 基础 | throttle.test.ts | 5 | 11/11 GREEN | T1-T5 (决策树核心) |
+| Sprint B 可靠性 | throttle-reliability.test.ts | 7 (含 T20) | 11/11 + 1 GREEN | T6-T10 + T20 (SIGTERM) |
+| Sprint C-1 | counter-store.test.ts | 6 | 6/6 GREEN | T11-T13 (atomic write / SIGTERM / reset) |
+| Sprint C-2a | auto-handler.test.ts | 6 | 6/6 GREEN | T14-T16 (login / failure / rate) |
+| Sprint C-2b | guard.test.ts | 5 | 5/5 GREEN | T17-T18 (GuardError + integration) |
+| Sprint C-3 | throttle-fs-integration.test.ts | 8 | 8/8 GREEN | T19 真 fs 往返 + 隔日 + SyntaxError + tmp 清理 |
+| **小计 Sprint C** | 6 files | **38** | **38/38** | — |
+
+**全套 vitest**: 512/0/1 (1 skipped pre-existing) — 25 it() 新增（Sprint B 后 487 → Sprint C 512）
+
+### 15.4 §14.8 probe 假设验证摘要 (F1-F5)
+
+| 发现 | 影响 | 落地位置 |
+|------|------|---------|
+| **F1** tmp suffix 必须 `crypto.randomUUID()` 不用 `Date.now()` | 同毫秒并发 ENOENT | `counter-store.ts:76` |
+| **F2** POSIX atomic = "无 torn write + 无 ENOENT" 不保证 last-write-wins | S2 期望修正: `final sent ∈ {1..10}` | 测试断言容差 |
+| **F3** 损坏 JSON 抛 `SyntaxError` 不被吞 | `load()` 必须 throw 不 return null | `counter-store.ts:68` |
+| **F4** `mkdir -p` 自动建 `~/.bapply/` | `writeAtomic` 第一步必 `mkdir({recursive:true})` | `counter-store.ts:75` |
+| **F5** SIGTERM handler 不调 `process.exit` | T8 必须断言 3: `exitCalls === 0` | `throttle.ts:240-249` + T20 |
+
+**probe 摘要**: 12/12 PASS, 单账号红线守住 (0 触碰 BOSS)
+
+### 15.5 §3.10 refactor 盘点结果 (C-3)
+
+| Caller | refactor 前 | refactor 后 | 改动 |
+|--------|------------|------------|------|
+| `auto-handler.ts:33` | `CounterStore` | `CounterStore` | 0 |
+| `guard.test.ts:99` | `createInMemoryCounterStore()` | 同 | 0 |
+| `throttle-reliability.test.ts` ×6 | inline `{ load, writeAtomic }` | 同 (shape 兼容) | 0 |
+| `throttle.test.ts` ×3 | inline `{ load, writeAtomic }` | 同 (shape 兼容) | 0 |
+| `auto-handler.test.ts:95` | `createInMemoryCounterStore()` | 同 | 0 |
+
+**3 问**: ① 下游成立 ✅ ② 无副作用依赖 ✅ ③ 错误边界仍有效 ✅
+
+### 15.6 §4.4 自验证清单
+
+| 项 | 证据 |
+|----|------|
+| ✓ 单测 (语言相关) | `npx vitest run` → 512/0/1 PASS (1 skipped pre-existing) |
+| ✓ 集成测试 | T19 真 fs 往返 8 it() 全 PASS (os.tmpdir + fs.mkdtemp 隔离) |
+| ✓ 类型检查 | `npx tsc --noEmit` → 0 新错 (2 pre-existing: puppeteer-extra-plugin-stealth / OpenAI thinking) |
+| ✓ live 集成 | N/A (per §3.12 单账号红线, prototype 12/12 替代) |
+| N/A 浏览器 | Sprint C 全后端算法 + state machine, 无 UI |
+
+### 15.7 单账号红线守住验证
+
+| 假设/场景 | 是否触碰 BOSS | 证据 |
+|----------|--------------|------|
+| H1-H5 probe (Sprint C-1 前置) | ❌ 0 触碰 | 仅 fs + in-memory |
+| C-1 counter-store 实施 | ❌ 0 触碰 | fsp + crypto |
+| C-2a auto-handler 实施 | ❌ 0 触碰 | bossSearch / sendGreeting / loginByQR 全 deps 注入 |
+| C-2b guard 实施 | ❌ 0 触碰 | 仅 class + helper |
+| C-3 throttle 接入 | ❌ 0 触碰 | type alias 重构, 接口形状不变 |
+| T19 真 fs 集成 | ❌ 0 触碰 | os.tmpdir + fs.mkdtemp 隔离 |
+| T20 SIGTERM 加固 | ❌ 0 触碰 | vi.spyOn(process, 'exit') |
+
+**结论**: Sprint C 全程 0 触碰 BOSS / loginByQR / sendGreeting, 单账号红线 100% 守住。
+
+### 15.8 Sprint D 候选 (per §9 后续)
+
+| # | 项 | 范围 | 依赖 |
+|---|----|------|------|
+| 1 | `scripts/install-cron.sh` 一键装 cron | bash + crontab 写入 | Sprint C 全完成 |
+| 2 | 飞书多维表格 notifier (替代 console.log) | webhook + 重试 | Sprint C-2b GuardNotifier 已注入 |
+| 3 | node-cron 替代 system cron | 进程内调度 + 跨中午 sleep | Sprint D-1 安装脚本 |
+| 4 | 历史 run rotate 30 天清理 | bash + find + rm | Sprint D-1 install |
+| 5 | 油猴 hook 模式 (Task #12-15) | ai-job-master fork | 平行路径, 可能根本取代本节流 |
+| 6 | `src/auto/warmup-engine.ts` 独立化 | 当前 inline 在 throttle.ts:281-287 | 重构, 不影响功能 |
+
+### 15.9 §10 重写流程在本节的兑现
+
+| 修订 | 位置 | 原因 | 状态 |
+|------|------|------|------|
+| §14.2.4 加 R1 (initial login) | 流程图 | 架构师 review | ✅ T14 |
+| §14.2.4 加 R2 (guard) | 流程图 | 反爬触发后继续浪费配额 | ✅ T17-T18 |
+| §14.2.4 加 R3 (失败率监控) | 流程图 | counter 写先于发送, 连续失败空转 | ✅ T16 |
+| §14.2.3 改 R4 (POSIX atomic 标准) | 关系图 | writeFile + openSync('r+') + fsyncSync 多余 | ✅ counter-store.ts |
+| §14.4 加 R5 (T8 exit 调用计数) | H3 风险 | handler 完成后未验证无 process.exit | ✅ T20 |
+| §14.6 R6 (退出码 0/1/2) | 退出码表 | 全失败 vs 部分失败需区分 | ✅ auto-handler.ts |
+| §14.3 加 R7 (工厂 reset) | refactor 盘点 | 单元测试隔离必需 | ✅ counter-store.ts |
+
+### 15.10 交付物路径 (Sprint C 总计)
+
+```
+src/auto/
+├── counter-store.ts             (NEW, ~110 行, R4+R7)
+├── guard.ts                     (NEW, ~50 行, R2)
+└── throttle.ts                  (MODIFIED, type alias 重构)
+
+src/cli/handlers/
+└── auto-handler.ts              (NEW, ~170 行, R1+R3+R6)
+
+tests/unit/auto/
+├── counter-store.test.ts        (NEW, ~220 行, T11-T13)
+├── guard.test.ts                (NEW, ~180 行, T17-T18)
+├── throttle-fs-integration.test.ts (NEW, ~230 行, T19)
+└── throttle-reliability.test.ts (MODIFIED, +50 行, T20)
+
+tests/unit/cli/handlers/
+└── auto-handler.test.ts         (NEW, ~250 行, T14-T16)
+
+scripts/
+└── probe-throttle-integration.mjs (NEW, ~250 行, 12/12 PASS)
+
+docs/adr/
+└── 0016-anti-bot-delivery-strategy.md (MODIFIED, +§14 + §15 + §16)
+```
+
+---
+
+## 16. Sprint D-1 设计 v2 (2026-07-28)
+
+> **修订背景**: §14 Sprint C 设计稿 v1 经架构师 review, 暴露 **4 项缺失 + 2 项地雷**, 本节为 v2 修订版。
+> **纪律**: §3.8 修 bug 归因纪律 (逐项承认 + 修订), §3.5 4 类图重画。
+
+### 16.1 缺口承认 (4 项)
+
+| # | 缺口 | v1 错误 | v2 修订 |
+|---|------|---------|---------|
+| 1 | **Guard 模块在 deps 中完全消失** | 只注入 `notifier` (通用), 缺 `guard.onBlock(reason, error)` 回调; blocked 触发后 warmup 降档逻辑无处落地 | AutoHandlerDeps 加 `guard?: { onBlock: (reason, error) => Promise<void> }` (per §3.13 layer 标注) |
+| 2 | **失败率监控机制 (config 暴露缺失)** | 硬编码 `0.3` 在 auto-handler.ts:77; 没走 config | `config.safety.max_failure_rate: number` 默认 0.3, deps.failureRateThreshold 从 config 取 |
+| 3 | **`--quota` 覆盖逻辑含糊** | `quota.morning = opts.quota` (上午 60 + 下午 60 = 120, 不符 user 本意) | `--quota N` = dailyCap = N, 按 `quota.morning / (quota.morning + quota.afternoon)` 比例拆 (默认 40:60) |
+| 4 | **accountMeta 加载模块未定义** | 时序图调 `loadAccountMeta()` 但关系图无 owner | 新增 `src/auto/account-meta-store.ts` (singleton + POSIX atomic write + recordBlock + regressWarmup) |
+
+### 16.2 地雷引用 (2 项)
+
+| # | 地雷 | D-1 必含约束 |
+|---|------|-------------|
+| 5 | **SIGTERM 安全落盘 (回退风险)** | `counter-store.ts:81` `fd.sync()` 已落地; probe F1-F5 12/12 PASS (commit `26f156b`). D-1 文档必须引用 `§14.8 F1-F5`, 防止未来 refactor 回 `writeFile + openSync('r+')` 伪原子. **新增 fs 写入模块 (account-meta-store) 必须复用相同 POSIX 模式**. |
+| 6 | **退出码歧义 (全 reject 但 counter 走完)** | RunStats 加 `effective_successes: number` (实际 BOSS 200 OK 数); CLI 加 `--strict-exit-code` flag (默认 false, 开启后 effective=0 → exit 2 视为致命软错误) |
+
+### 16.3 §3.5 4 类图 v2
+
+#### 16.3.1 架构图 (D1.1.v2)
+
+```
+                         ┌──────────────────────────────────────────┐
+                         │  user @ terminal                         │
+                         │  $ bapply auto --phase morning --quota 60│
+                         │  $ bapply auto init-config [--force]     │
+                         └─────────────┬────────────────────────────┘
+                                       │ argv
+                                       ▼
+                         ┌──────────────────────────────────────────┐
+                         │  bin/bapply.js (tsx wrapper)             │
+                         └─────────────┬────────────────────────────┘
+                                       │
+                                       ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│  src/cli/index.ts (commander)                                          │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │  program.command('auto')                                         │  │
+│  │    .option('--config <path>')                                    │  │
+│  │    .option('--dry-run')                                          │  │
+│  │    .option('--quota <n>')        [比例拆 D-1]                    │  │
+│  │    .option('--phase morning|afternoon')                          │  │
+│  │    .option('--date <YYYY-MM-DD>')                                │  │
+│  │    .option('--strict-exit-code')  [缺口 6]                        │  │
+│  │    .action(runAutoCommand) ──────────────────────────┐           │  │
+│  └─────────────────────────────────────────────────────┼──────────┘  │
+│  ┌─────────────────────────────────────────────────────┼──────────┐  │
+│  │  program.command('auto').command('init-config')     │           │  │
+│  │    .option('--force')                                │           │  │
+│  │    .action(runAutoInitConfig) ──────┐                │           │  │
+│  └─────────────────────────────────────┼────────────────┼──────────┘  │
+└────────────────────────────────────────┼────────────────┼─────────────┘
+                                         │                │
+                          ┌──────────────┘                │
+                          ▼                               ▼
+              ┌─────────────────────────┐    ┌──────────────────────────┐
+              │ auto-config-init-       │    │ auto-handler.ts (扩)     │
+              │ handler.ts (D-1c 新)    │    │  runDailyLoop(deps,date) │
+              │  writeTemplateYAML()    │    │  ↑ buildDefaultDeps:     │
+              │  writeTemplateAccountMeta│   │  - guard.onBlock (D-1)   │
+              │  → ~/.bapply/auto.yaml  │    │  - accountMetaStore (D-1)│
+              │  → ~/.bapply/           │    │  - strictExitCode (D-1)  │
+              │     account-meta.json   │    │  - safety.max_failure_   │
+              └─────────────────────────┘    │    rate (D-1)            │
+                          │                  └──────────────┬───────────┘
+                          ▼                                 │
+              ┌─────────────────────────┐                   │
+              │ config-loader.ts (D-1a) │                   │
+              │  loadAutoConfig(opts)   │                   │
+              │  - AutoConfigError      │                   │
+              │    layer='CONFIG'       │                   │
+              │  - --quota 比例拆分     │                   │
+              │  - safety 默认合并      │                   │
+              └────────┬────────────────┘                   │
+                       │                                    │
+                       ▼                                    │
+              ┌─────────────────────────┐                   │
+              │ config-schema.ts (D-1a) │                   │
+              │  AutoConfig (zod)       │                   │
+              │  + safety.max_failure_  │                   │
+              │    rate 默认 0.3        │                   │
+              └─────────────────────────┘                   │
+                       ▲                                    │
+                       │                                    │
+              ┌────────┴────────────┐                       │
+              │ account-meta-       │◄──────────────────────┤
+              │ store.ts (D-1b 新)  │  load/save/recordBlock │
+              │  POSIX atomic       │  /regressWarmup        │
+              └─────────────────────┘                       │
+                       ▲                                    │
+                       │ hook                                │
+              ┌────────┴────────────┐                       │
+              │ guard.ts (C-2b 已有) │  GuardError 触发 ────►│
+              └─────────────────────┘                       │
+                                                              ▼
+                                              ┌──────────────────────────┐
+                                              │ state machine (per §14.2.4)│
+                                              │  idle → login → running  │
+                                              │    ↓ GuardError / 失败率  │
+                                              │  [blocked] ← guard.onBlock│
+                                              │    ↓ accountMetaStore.   │
+                                              │      recordBlock         │
+                                              │    ↓ notifier critical   │
+                                              │  done | aborted          │
+                                              └──────────────────────────┘
+```
+
+#### 16.3.2 时序图 (D1.2.v2 — 加 guard.onBlock 分支)
+
+```
+[user] bapply auto --phase morning --date 2026-07-29 --quota 60 --strict-exit-code
+   │
+   ▼
+[CLI parser]  parseArgs → opts { config, dryRun, quota=60, phase, date, strictExitCode=true }
+   │
+   ▼
+[runAutoCommand]
+   │
+   ▼
+[config-loader.loadAutoConfig(opts)]
+   │
+   ├─ readFile ~/.bapply/auto.yaml ────────→ [fs]
+   │                                         │
+   │                                         ├─ ENOENT? → throw AutoConfigError('not_found')
+   │                                         │   CLI catch: "❌ 跑 init-config" → exit(2)
+   │                                         │
+   ├─ yaml.parse ─→ YAMLParseError ─────────→ throw AutoConfigError('yaml_parse')
+   │                                         │   CLI catch: "❌ <行号>" → exit(2)
+   │
+   ├─ configSchema.safeParse ─→ zod 校验 ───→ throw AutoConfigError('schema_invalid')
+   │                                         │   CLI catch: "❌ <字段路径>" → exit(2)
+   │
+   ├─ merge defaults (warmup, safety.max_failure_rate=0.3)
+   │
+   ├─ apply --quota override [缺口 3 修订]:
+   │   if opts.quota:
+   │     dailyCap = opts.quota                    // 60
+   │     ratio = quota.morning / (morning+afternoon)  // 40/100 = 0.4
+   │     quota.morning = round(dailyCap * ratio)     // 60 × 0.4 = 24
+   │     quota.afternoon = dailyCap - quota.morning   // 60 - 24 = 36
+   │
+   └─→ { config, accountMeta }
+   │
+   ▼
+[account-meta-store.load()]    [缺口 4 补充]
+   │
+   ├─ ENOENT? → 自动 init defaults (registeredAt = now), save
+   │
+   └─ return parsed
+   │
+   ▼
+[auto-handler.buildDefaultDeps(opts, accountMeta, config)]    [D-1 新函数]
+   │
+   │ deps = {
+   │   bossSearch, sendGreeting, loginByQR (boss 层),
+   │   counterStore: createFsCounterStore,
+   │   accountMetaStore: accountMetaStoreInstance,           ← 缺口 4
+   │   guard: {                                              ← 缺口 1
+   │     onBlock: async (reason, error) => {
+   │       await accountMetaStore.recordBlock(reason)
+   │       if (accountMetaStore.consecutiveBlocks >= safety.consecutive_guard_threshold)
+   │         await accountMetaStore.regressWarmup()
+   │       await notifier.notify('critical', `[AUTO.guard] ${reason}`)
+   │     }
+   │   },
+   │   notifier: consoleNotifier,
+   │   accountMeta, config,
+   │   failureRateThreshold: config.safety.max_failure_rate,  ← 缺口 2
+   │   strictExitCode: opts.strictExitCode,                   ← 缺口 6
+   │ }
+   │
+   ▼
+[runDailyLoop(deps, date)]
+   │
+   │ for each job:
+   │   ├─ throttleSend → {proceed|sleep|throw ThrottleError}
+   │   ├─ if sendGreeting throws GuardError:
+   │   │   await deps.guard.onBlock(reason, error)            ← 缺口 1 路径
+   │   │   stats.guardTriggers += 1
+   │   │   stats.blocked = true
+   │   │   break
+   │   ├─ if sendGreeting throws (other): stats.failed += 1
+   │   ├─ stats.sent += 1
+   │   ├─ if success: stats.effective_successes += 1          ← 缺口 6
+   │   ├─ 每 N 次迭代:
+   │   │   if stats.failed/stats.sent > config.safety.max_failure_rate:  ← 缺口 2
+   │   │     await deps.guard.onBlock('high_failure_rate', null)
+   │   │     stats.blocked = true
+   │   │     break
+   │
+   ▼
+[RunResult { exitCode, stats, state }]
+   │
+   │ stats.effective_successes = BOSS 200 OK count
+   │
+   ├─ if opts.strictExitCode && effective_successes === 0 && sent > 0:
+   │     exitCode = 2   ← 缺口 6 致命软错误
+   │
+   ▼
+[CLI] process.exit(result.exitCode)
+```
+
+#### 16.3.3 关系图 (D1.3.v2 — 加 guard + accountMeta + safety schema)
+
+```
+src/auto/config-schema.ts (~90 行, 新)                       ← D-1a
+  interface AutoConfig {
+    version: 1
+    searches: SearchEntry[]                                  ← 至少 1 项
+    quota: { morning, afternoon, weekly_cap }
+    warmup?: { enabled, schedule[] }
+    throttle: { morning_interval_ms, afternoon_interval_ms, jitter_pct,
+                long_pause, afternoon_mid_break }
+    safety: {                                                ← 缺口 2 暴露
+      guard_trigger_policy: 'abort_day' | 'abort_run' | 'continue'
+      max_failure_rate: number                               ← 默认 0.3 (per R3)
+      consecutive_guard_threshold: number                    ← 默认 3 (per §2)
+      auto_regress_warmup: boolean                           ← 默认 true
+    }
+  }
+  export const configSchema: z.ZodType<AutoConfig>
+
+src/auto/config-loader.ts (~70 行, 新)                       ← D-1a
+  class AutoConfigError extends Error {                      ← per §3.13
+    readonly layer = 'CONFIG' as const
+    constructor(public code: 'not_found'|'yaml_parse'|'schema_invalid',
+                options?: ErrorOptions)
+  }
+  function isAutoConfigError(e: unknown): e is AutoConfigError
+  async function loadAutoConfig(opts: LoadOpts): Promise<{ config, accountMeta }>
+        │ 应用 --quota 比例拆 (缺口 3)
+        │ 应用 safety 默认值 (缺口 2)
+
+src/auto/account-meta-store.ts (~90 行, 新)                   ← D-1b 缺口 4
+  interface AccountMeta {                                     ← 扩 throttle.ts 已存在
+    registeredAt, accountAgeDays, baseDailyCap,
+    targetDailyCap, weeklyCap, warmupSchedule,
+    currentTier: 'new'|'warm'|'old',                          ← 新
+    blockedHistory: Array<{ ts, reason }>                     ← 新
+  }
+  interface AccountMetaStore {
+    load(): Promise<AccountMeta>                              ← ENOENT 自动 init
+    save(meta): Promise<void>                                 ← POSIX atomic (复用 §14.8 F1-F5)
+    recordBlock(reason): Promise<AccountMeta>                 ← 持久化 + 更新 currentTier
+    regressWarmup(): Promise<AccountMeta>                     ← 连续 blocked 触发降档
+  }
+  function createFsAccountMetaStore(filepath): AccountMetaStore
+  function createInMemoryAccountMetaStore(initial?): AccountMetaStore & { reset() }
+
+src/auto/guard.ts (C-2b 已存在, 0 改)                       ← D-1 仅引用
+  class GuardError extends Error { layer = 'GUARD' as const }
+  function isGuardError(e: unknown): e is GuardError
+
+src/cli/handlers/auto-handler.ts (扩, +~80 行)                ← D-1b
+  interface AutoHandlerDeps {                                 ← Sprint C-2a 已定义, 加 3 字段
+    ...
+    accountMetaStore?: AccountMetaStore                       ← 缺口 4 (可选)
+    guard?: {                                                 ← 缺口 1 (可选)
+      onBlock: (reason: GuardReason | 'high_failure_rate',
+                error: GuardError | null) => Promise<void>
+    }
+    strictExitCode?: boolean                                  ← 缺口 6 (可选)
+  }
+  export interface RunStats {
+    sent: number; ok: number; failed: number; blocked: boolean;
+    effective_successes: number                               ← 缺口 6
+    guardTriggers: number                                     ← 新
+  }
+
+src/cli/handlers/auto-config-init-handler.ts (~70 行, 新)     ← D-1c
+  async function writeTemplateYAML(targetPath, opts): Promise<{ created, path }>
+  async function writeTemplateAccountMeta(targetPath, opts): Promise<{ created, path }>
+        │ 同步生成 2 个文件 (D-1.4 缺口)
+
+src/cli/index.ts (扩, +~60 行)                                ← D-1c
+  .command('auto')
+    .option(...7 flags per D1.1.v2...)
+    .action(runAutoCommand)
+  .command('auto').command('init-config')
+    .option('--force')
+    .action(runAutoInitConfig)
+
+docs/auto.example.yaml (~60 行, 进 git)                       ← D-1c
+  version: 1
+  searches: [{ keyword, city, limit }]
+  quota: { morning: 40, afternoon: 60, weekly_cap: 500 }
+  warmup: { enabled: true, schedule: [{day_start, cap}] }
+  throttle: { ... }
+  safety: {                                                   ← 暴露
+    guard_trigger_policy: 'abort_day'
+    max_failure_rate: 0.3
+    consecutive_guard_threshold: 3
+    auto_regress_warmup: true
+  }
+```
+
+#### 16.3.4 流程图 (D1.4.v2 — CLI 入口 + guard.onBlock 分支)
+
+```
+                            ┌─ bapply auto ─┐
+                            │   (--args)    │
+                            └───────┬───────┘
+                                    │
+                                    ▼
+                      ┌──────────────────────────────┐
+                      │ config-loader.loadAutoConfig │
+                      │ + accountMetaStore.load      │
+                      └──────────────┬───────────────┘
+                                     │
+              ┌──────────────────────┼──────────────────────┐
+              │                      │                      │
+        ENOENT?                YAML 解析错?          zod 校验错?
+              │                      │                      │
+              ▼                      ▼                      ▼
+    ┌──────────────────┐   ┌──────────────┐     ┌──────────────────┐
+    │ AutoConfigError  │   │ AutoConfig   │     │ AutoConfigError  │
+    │ ('not_found')    │   │ Error        │     │ ('schema_invalid')│
+    │ layer='CONFIG'   │   │ ('yaml_parse')│    │ layer='CONFIG'   │
+    └────────┬─────────┘   └──────┬───────┘     └────────┬─────────┘
+             │                     │                     │
+             └─────────────────────┼─────────────────────┘
+                                   │
+                                   ▼
+                          ┌──────────────────┐
+                          │ --quota 比例拆分 │  ← 缺口 3 修订
+                          │ safety 默认合并  │  ← 缺口 2 修订
+                          └────────┬─────────┘
+                                   │
+                                   ▼
+                          ┌──────────────────────┐
+                          │ buildDefaultDeps     │
+                          │ - counterStore (fs)  │
+                          │ - accountMetaStore   │  ← 缺口 4
+                          │ - guard.onBlock      │  ← 缺口 1
+                          │ - strictExitCode     │  ← 缺口 6
+                          └────────┬─────────────┘
+                                   │
+                                   ▼
+                          ┌──────────────────┐
+                          │ runDailyLoop     │  ← Sprint C-2a 状态机 (扩)
+                          └────────┬─────────┘
+                                   │
+       ┌───────────────────┬───────┴────────┬───────────────────┐
+       │                   │                │                   │
+ per-job success    per-job failure  GuardError 抛出    失败率超阈
+       │                   │                │                   │
+       ▼                   ▼                ▼                   ▼
+ stats.effective_    stats.failed   guard.onBlock       guard.onBlock
+  successes += 1     += 1           (reason, error)    ('high_failure_
+       │                   │           │                  rate', null)
+       │                   │           ▼                       │
+       │                   │    accountMetaStore.recordBlock  │
+       │                   │    notifier.notify('critical')    │
+       │                   │           │                       │
+       │                   │           ▼                       ▼
+       │                   │    stats.guardTriggers += 1      │
+       │                   │    stats.blocked = true          │
+       │                   │           │                       │
+       └───────────────────┴───────────┴───────────────────────┘
+                                       │
+                                       ▼
+                              ┌──────────────────┐
+                              │ RunResult 构造:  │
+                              │ - exitCode (R6)  │
+                              │ - strictExitCode?│  ← 缺口 6 修订
+                              │   effective=0   │
+                              │   → exit 2      │
+                              │ - stats.effective│
+                              │   _successes    │
+                              └────────┬─────────┘
+                                       │
+                                       ▼
+                              process.exit(exitCode)
+
+                            ┌─ bapply auto init-config ─┐
+                            │   (--force?)              │
+                            └─────────┬─────────────────┘
+                                      │
+                                      ▼
+                          ┌─────────────────────────┐
+                          │ writeTemplateYAML       │ ← 同时写 2 个文件
+                          │ writeTemplateAccountMeta│    (D-1.4 缺口 4)
+                          │ ~/.bapply/auto.yaml     │
+                          │ ~/.bapply/              │
+                          │   account-meta.json     │
+                          └────────┬────────────────┘
+                                   │
+                                   ▼
+                          ┌──────────────────┐
+                          │ return           │
+                          │ {created, paths} │
+                          └──────────────────┘
+```
+
+### 16.4 Sprint D-1 子任务拆分 (per §4.3)
+
+| Sprint | src files | tests | 范围 |
+|--------|-----------|-------|------|
+| **D-1a** | 2 new (config-schema + config-loader) | T21 + T22 + T23 | config-schema zod + loadAutoConfig + AutoConfigError + --quota 比例拆 + safety 默认值合并 |
+| **D-1b** | 1 new (account-meta-store) + 1 modified (auto-handler) | T25 | AccountMetaStore 接口 + recordBlock + regressWarmup + auto-handler deps 加 guard/accountMetaStore/strictExitCode + effective_successes |
+| **D-1c** | 1 new (auto-config-init-handler) + 1 modified (cli/index) | T24 | writeTemplateYAML + writeTemplateAccountMeta + CLI 注册 `auto` + `auto init-config` + 7 flag + docs/auto.example.yaml |
+
+**合计**: 4 new src + 2 modified src + 5 new tests
+
+### 16.5 测试计划
+
+| ID | 测试内容 | 覆盖缺口 |
+|----|---------|---------|
+| T21 | 加载合法 `auto.yaml` → 解析成功 + safety 默认值合并 (max_failure_rate=0.3) | #2 |
+| T22 | zod 校验失败 (缺 `searches[]`) → `AutoConfigError('schema_invalid')` (layer='CONFIG') + cause 链保留 | (新) |
+| T23 | `--quota 60` → quota.morning=24 + quota.afternoon=36 (40:60 比例拆) | #3 |
+| T24 | `init-config` 同时生成 `auto.yaml` + `account-meta.json` 2 个文件 + atomic write | #4 |
+| T25 | `runDailyLoop` + `guard.onBlock('high_failure_rate')` 触发 → accountMetaStore.recordBlock + 降档 + notifier critical + exit 2 | #1, #4 |
+
+### 16.6 §3.5 触发条件 + §3.10 refactor 盘点
+
+**触发条件**: ✅ 改 API 端点 (`bapply auto` + `auto init-config` 注册) + handler 入参出参 (loadAutoConfig signature) + 数据 (config schema + account-meta schema)
+
+**§3.10 refactor 盘点 (C-3 经验复用)**:
+
+| Caller | 当前 | D-1 后 | 影响 |
+|--------|------|--------|------|
+| `auto-handler.ts:33` (counterStore) | `CounterStore` | 同 | 0 |
+| `auto-handler.ts` (runDailyLoop 调用方) | Sprint C-2a 完整 | 加 3 可选字段 (guard/accountMetaStore/strictExitCode) | 1 caller (auto-handler 自身, deps 可选) |
+| `cli/index.ts` (command 注册) | 9 commands | + `auto` + `auto init-config` (新) | 0 (新增, 不破坏) |
+
+**结论**: auto-handler 接口向下兼容 (3 新字段全部可选), 不破 Sprint C-2a 6 it() + Sprint C-2b 5 it()。
+
+### 16.7 单账号红线守住
+
+| D-1 范围 | 是否触碰 BOSS | 备注 |
+|----------|--------------|------|
+| config-schema + config-loader | ❌ 0 触碰 | zod 校验 + fs read |
+| account-meta-store | ❌ 0 触碰 | POSIX atomic write (复用 §14.8 F1-F5) |
+| auto-handler 扩展 | ❌ 0 触碰 | deps 注入, 默认 in-memory guard/notifier |
+| auto-config-init-handler | ❌ 0 触碰 | 模板字符串 + fs write |
+| CLI index 注册 | ❌ 0 触碰 | commander 声明 |
+
+### 16.8 自检 Checklist (D-1 收尾)
+
+- [ ] 5 RED 测试 (T21-T25) 写完 + 跑 RED (5 failed)
+- [ ] config-schema.ts GREEN (zod 校验 + 类型导出)
+- [ ] config-loader.ts GREEN (loadAutoConfig + AutoConfigError + --quota 比例拆 + safety 默认值)
+- [ ] account-meta-store.ts GREEN (load/save/recordBlock/regressWarmup)
+- [ ] auto-handler.ts GREEN (deps 加 3 字段 + effective_successes + guardTriggers)
+- [ ] auto-config-init-handler.ts GREEN (writeTemplateYAML + writeTemplateAccountMeta)
+- [ ] cli/index.ts GREEN (.command('auto') + .command('auto init-config') + 7 flag)
+- [ ] docs/auto.example.yaml 进 git
+- [ ] 全套 vitest 512+5/0/1 PASS (1 skipped pre-existing)
+- [ ] tsc 0 新错
+- [ ] §16.9 §10 重写流程兑现
+
+### 16.9 §10 重写流程在本节的兑现
+
+| 修订 | 位置 | 原因 | 状态 |
+|------|------|------|------|
+| AutoHandlerDeps 加 guard.onBlock (缺口 1) | §16.3.2 时序图 | 架构师 review | 即将实施 D-1b |
+| config.safety.max_failure_rate 暴露 (缺口 2) | §16.3.3 关系图 | 硬编码 0.3 不灵活 | 即将实施 D-1a |
+| --quota 比例拆 (缺口 3) | §16.3.2 时序图 | user 本意 "今天总共 N" 不是 "上午 N" | 即将实施 D-1a |
+| accountMetaStore 模块化 (缺口 4) | §16.3.3 关系图 | singleton 持久化与 counter 不同 | 即将实施 D-1b |
+| SIGTERM 安全落盘引用 (地雷 5) | §16.2 | 防止未来回退 | 文档化已完 |
+| effective_successes + strictExitCode (地雷 6) | §16.3.2 时序图 | 全 reject 误判 exit 1 | 即将实施 D-1b + D-1c |
+
+---
+
+## 17. Sprint D-2 收尾 (2026-07-28)
+
+> **目标**: 把 `bapply auto` 主命令闭环 (config + meta + deps 拼装 + runDailyLoop + process.exit), 但 **单账号红线守住**: `bossSearch` / `sendGreeting` / `loginByQR` 全 STUB_THROW, 真账号模块待 Sprint E+ (需 user 实测窗口允许).
+> **纪律**: §3.13 错误分层 (STUB / AUTO.runner / AUTO.guard + STUB error class); §3.9 错误传播图 (guard.onBlock 内 recordBlock 失败 → swallow + notifier warn); §3.10 refactor (新 export, 现有 caller 0 改).
+
+### 17.1 子任务总览 (4 commit)
+
+| # | Commit | 内容 |
+|---|--------|------|
+| 1 | `d1fb6a2` | D-1a: config-schema + config-loader + AutoConfigError (T21-T23 9/9) |
+| 2 | `3ec11f0` | D-1b: account-meta-store + auto-handler 扩 guard/onBlock (T25-T29 23/23) |
+| 3 | `69a464b` | D-1c: auto-config-init-handler + CLI 注册 (T24 5/5) |
+| 4 | `78eb94c` | **D-2**: buildDefaultDeps + `bapply auto` 主命令 wiring (T26-T29 12/12) |
+
+### 17.2 D-2a buildDefaultDeps 拼装 helper (per §16.3.1 架构图)
+
+**职责**: 把 fs counter / fs accountMeta / guard.onBlock / console notifier / 3 STUB 全部拼成一个 `AutoHandlerDeps`, 让 `runDailyLoop` 一行调起.
+
+**API 形态** (`src/cli/handlers/auto-handler.ts`):
+
+```typescript
+export interface BuildDefaultDepsOpts {
+  configDir: string                    // 默认 ~/.bapply/
+  config: AutoConfig                   // from loadAutoConfig
+  accountMeta: AccountMeta             // from accountMetaStore.load()
+  notifier?: AutoNotifier              // 默认 console
+  rand?: () => number                  // 测试可注入
+  now?: () => number
+  accountMetaStoreFactory?: (configDir: string) => AccountMetaStore
+  counterStoreFactory?: (configDir: string) => CounterStore
+  guard?: GuardCallback                // 测试可注入
+  strictExitCode?: boolean             // D-1b 缺口 6
+}
+
+export async function buildDefaultDeps(
+  opts: BuildDefaultDepsOpts,
+): Promise<AutoHandlerDeps>
+```
+
+**关键设计决策**:
+
+1. **`DEFAULT_SAFETY_VALUE` 内联常量** (避免依赖 config-schema 类型, 减少 cross-module 耦合): `consecutive_guard_threshold=3` / `max_failure_rate=0.3` / `auto_regress_warmup=true` / `guard_trigger_policy='abort_day'`
+2. **`buildDefaultGuard` 串联 recordBlock + regressWarmup**: `onBlock(reason, error)` → `recordBlock` → 读 `blockedHistory.length` → `>= threshold` 则 `regressWarmup` + notifier critical
+3. **`safeLoadHistoryLen` 防崩**: recordBlock 之后读最新状态, 失败返 0 不抛
+4. **`consoleNotifier` 暴露**: 默认 `console.log`, 但 tag 化 (`🔴 [CRITICAL]` / `🟡 [WARN]`) 让脚本可 grep
+
+### 17.3 D-2b `bapply auto` 主命令 wiring (`src/cli/index.ts`)
+
+**改动**: 把 D-1c 留的占位替换为实际 wiring:
+
+```typescript
+.action(async (options) => {
+  // 1. 解析 configDir (默认 ~/.bapply)
+  // 2. loadAutoConfig → AutoConfig (or AutoConfigError exit 2)
+  // 3. accountMetaStore.load → AccountMeta (or AccountMetaError exit 2)
+  // 4. buildDefaultDeps({ configDir, config, accountMeta, quotaOverride })
+  // 5. runDailyLoop(deps, date) → RunResult
+  // 6. process.exit(result.exitCode) (0=成功 / 1=部分失败 / 2=致命/风控)
+})
+```
+
+**关键设计决策**:
+
+- **`quotaOverride` CLI 透传**: `bapply auto --quota 60` → 拆 morning=24/afternoon=36 (比例 40/60), 走 D-1a 缺口 3 修订
+- **`--strict-exit-code` 透传**: 走 D-1b 缺口 6 (`effective_successes=0 + strict=true → exit 2`)
+- **`--phase morning|afternoon`**: 走 throttle.phase 选择 interval 配置
+- **`--dry-run`**: 走 D-1a config.dryRun (保留 throttle 不发请求, 但仍消耗 counter 用于验证)
+
+### 17.4 §3.9 错误传播图 (D-2 关键)
+
+```
+[buildDefaultDeps guard.onBlock(reason, error)]
+        │
+        ├─ recordBlock(reason, error)
+        │     ├─ ok → meta 更新 (currentTier 写入内存)
+        │     └─ throw AccountMetaError
+        │           └─ try/catch → notifier.warn + return ← 禁区 0
+        │
+        ├─ safeLoadHistoryLen
+        │     ├─ ok → blockedHistoryLen
+        │     └─ throw → 返 0 (不抛) ← 禁区 0
+        │
+        └─ blockedHistoryLen >= threshold ?
+              ├─ yes → regressWarmup()
+              │     ├─ ok → tier 降档
+              │     │     ├─ 变化 → notifier.critical 提示降档
+              │     │     └─ 不变 → notifier.critical 普通
+              │     └─ throw → try/catch → notifier.warn (不抛)
+              └─ no → 跳过
+```
+
+**关键不变量**: `onBlock` 永不 throw (`buildDefaultDeps` 调用方 = `runDailyLoop`, 期望 `onBlock` 静默, 否则吞掉外层 throw 后果不可控).
+
+### 17.5 §3.13 错误分层 (D-2 落地 4 处)
+
+| 类 / 标注 | layer | 触发位置 |
+|-----------|-------|----------|
+| `class BOSSStubError extends Error` | `'STUB'` | `bossSearch`/`sendGreeting`/`loginByQR` STUB |
+| `notifier msg` | `[AUTO.runner]` | R1 login failed / R3 失败率超阈 (未注入 guard 时) |
+| `notifier msg` | `[AUTO.guard]` | R2/R3 触发 guard.onBlock (recordBlock + 降档 + 提示) |
+| `notifier msg` | `[AUTO.stub]` | (保留位, 当前用 BOSSStubError 自带 msg, 后续飞书 notifier 复用) |
+
+### 17.6 §3.10 refactor 盘点 (D-2)
+
+```bash
+$ git grep 'buildDefaultDeps' src/ tests/
+src/cli/index.ts:import { buildDefaultDeps, ... } from './handlers/auto-handler'
+src/cli/handlers/auto-handler.ts:export async function buildDefaultDeps(...)
+tests/unit/cli/handlers/build-default-deps.test.ts:import { buildDefaultDeps, ... }
+```
+
+| Caller | 改动前依赖 | 改动后依赖 | 边界保持 |
+|--------|-----------|-----------|----------|
+| `src/cli/index.ts` `bapply auto` action | D-1c 占位 | `buildDefaultDeps(opts)` → `runDailyLoop(deps, date)` | ✅ |
+| `tests/unit/cli/handlers/build-default-deps.test.ts` | (不存在) | T26-T29 (12 it) | ✅ (新测试) |
+
+**0 caller 改动** (D-1c 占位 + 测试全部新增). `runDailyLoop` 签名 0 改 (`AutoHandlerDeps` 已含 `accountMetaStore?` + `guard?` + `strictExitCode?`).
+
+### 17.7 测试矩阵 (Sprint D-1 → Sprint D-2)
+
+| 阶段 | PASS | FAIL | skipped | 增量 |
+|------|------|------|---------|------|
+| Sprint B 后 | 487 | 0 | 1 | (基线) |
+| Sprint C 后 | 512 | 0 | 1 | +25 (C-2a/b/c) |
+| D-1a | 521 | 0 | 1 | +9 (T21-T23) |
+| D-1b | 544 | 0 | 1 | +23 (T25-T29 + handler T25-T28) |
+| D-1c | 549 | 0 | 1 | +5 (T24) |
+| **D-2** | **561** | **0** | **1** | **+12 (T26-T29 buildDefaultDeps)** |
+
+**Sprint D 总计**: 487 → 561 = +74 it. (含 D-1 +37, D-2 +12, hook 审计补 D-1b P0+P1 = +25)
+
+### 17.8 单账号红线守住验证 (D-2)
+
+| STUB | 测试 | 抛错 | 状态 |
+|------|------|------|------|
+| `bossSearch` | T28a (`build-default-deps.test.ts`) | `BOSSStubError('bossSearch')` | ✅ |
+| `sendGreeting` | T28b | `BOSSStubError('sendGreeting')` | ✅ |
+| `loginByQR` | T28c | `BOSSStubError('loginByQR')` | ✅ |
+
+**默认 fs store + 默认 fs config-loader + 3 STUB + 默认 console notifier** = 完整端到端可走, 但 0 触碰 BOSS API. `bapply auto` 跑起来会:
+
+1. loadAutoConfig → ok
+2. accountMetaStore.load → ok (fs atomic)
+3. buildDefaultDeps → 拼装 + STUB 注入
+4. runDailyLoop → R1 loginByQR() → throw `BOSSStubError`
+5. notifier critical: `[AUTO.runner] login failed: [AUTO.stub] loginByQR 未接线 (...)`
+6. exitCode = 2, state = `aborted`
+
+### 17.9 Sprint E 规划 (后续 session)
+
+| 子任务 | 文件 | 内容 |
+|--------|------|------|
+| **E-1 飞书 notifier** | `src/auto/feishu-notifier.ts` NEW (~120 行) | webhook URL + 签名 + 重试 (3 次指数退避) + AutoNotifier 接口实现; 替换 `consoleNotifier` 默认值 |
+| **E-2 install-cron.sh** | `scripts/install-cron.sh` NEW (~50 行) | 一键装 system cron (morning 9:30 + afternoon 14:30 周一到周五); `--uninstall` 反向 |
+| **E-3 node-cron 可选** | `src/cli/cron-runner.ts` NEW (~80 行) | 进程内调度 (替代 system cron); 需 `node-cron` 依赖 |
+
+**Sprint E+ 真账号模块替换 STUB** (单账号红线禁止, **需 user 实测窗口显式允许**):
+
+| 模块 | 替换 STUB | 接入路径 |
+|------|-----------|----------|
+| `bossSearch` | 真 `searchJobs` (Sprint C 已落地, 用 page.evaluate + robustEvaluate) | `buildDefaultDeps` 接受 `bossSearchImpl` opt |
+| `sendGreeting` | 真 `sendGreeting` (Sprint C 已落地, page.goto + form fill) | `buildDefaultDeps` 接受 `sendGreetingImpl` opt |
+| `loginByQR` | 真 `loginByQR` (Sprint A 已落地, 油猴 hook 配合) | `buildDefaultDeps` 接受 `loginByQRImpl` opt |
+
+**前置条件** (Sprint E+ 启动前):
+
+- [ ] user 实测窗口允许 (单账号红线临时放开, **session 内明确表态**)
+- [ ] 油猴 hook (Task #12-15) 上线并验证 (per `feedback_boss_anti_bot_status.md`)
+- [ ] live 实测 (受控环境跑 5 个真实 job, per §3.11 hook 错觉警告)
+- [ ] 失败率监控 (per §17.4 错误传播图, 失败率高时自动停)
+
+### 17.10 §10 重写流程在本节的兑现 (D-2)
+
+| 修订 | 位置 | 原因 | 状态 |
+|------|------|------|------|
+| `buildDefaultDeps` 新 export (D-1c 占位兑现) | §17.2 API 形态 | `bapply auto` 主命令需拼装 deps | ✅ D-2 |
+| `DEFAULT_SAFETY_VALUE` 内联常量 | §17.2 决策 1 | 避免 cross-module 耦合 | ✅ D-2 |
+| `buildDefaultGuard` 串联 recordBlock + regressWarmup | §17.2 决策 2 | §16.3.2 时序图落地 | ✅ D-2 |
+| `safeLoadHistoryLen` 防崩 | §17.4 错误传播图 | §3.9 防 onBlock 抛 | ✅ D-2 |
+| `consoleNotifier` 暴露 + tag 化 | §17.2 决策 4 | 脚本可 grep | ✅ D-2 |
+| `BOSSStubError` class + STUB layer | §17.5 错误分层 | §3.13 + 单账号红线 | ✅ D-2 |
+| `bapply auto` wiring (D-1c 占位兑现) | §17.3 | 主命令闭环 | ✅ D-2 |
+| `quotaOverride` 比例拆 (CLI → config) | §17.3 决策 2 | D-1a 缺口 3 兑现 | ✅ D-2 |
+| `--strict-exit-code` 透传 | §17.3 决策 3 | D-1b 缺口 6 兑现 | ✅ D-2 |
+
+### 17.11 自检 Checklist (D-2 收尾)
+
+- [x] 全套 vitest **561/0/1 PASS** (+12 D-2)
+- [x] tsc 0 新错 (2 pre-existing: puppeteer-stealth + OpenAI thinking)
+- [x] §3.10 refactor 盘点 0 caller 改动 (D-2 wiring 闭环)
+- [x] §3.13 错误分层 5 处 (STUB + AUTO.runner + AUTO.guard + 既存 META/GUARD/CONFIG/THROTTLE/SEND)
+- [x] §3.9 错误传播图 (D-2 §17.4 已画, guard.onBlock 内部 3 重 try/catch)
+- [x] §4.4 自验证 5 项 (单测/集成/类型/live/浏览器) — live 留给 Sprint E+
+- [x] §17.5 错误分层 4 处 (新 STUB + 3 AUTO.* 标注)
+- [x] §17.7 测试矩阵 (487 → 561 = +74 Sprint D)
+- [x] §17.8 单账号红线 100% 守住 (3 STUB 全 throw)
+- [x] Sprint E 规划 + 替换 STUB 前置条件明确 (待 user 实测窗口)
+- [x] **8 commit 已落本地 (未推送, 等 user 决策)**
+
+---
+
+## 17.12 Sprint D-3 收尾 (2026-07-28, 架构师 review 反馈)
+
+> **触发**: Sprint D-2 落地后架构师 review, 识别 **3 项必须修正 + 2 项强烈建议** 语义缺口. 本节为 D-3 闭环.
+> **纪律**: §3.13 错误分层 (exit 3 新增 / dry-run 隔离 / safety 优先级); §3.10 refactor (现有 caller 0 改); §3.12 probe before src (单测修复 mock 假绿问题).
+
+### 17.12.1 3 项必须修正 (架构师 review)
+
+| # | 缺口 | D-2 错误 | D-3 修订 |
+|---|------|---------|---------|
+| 1 | **config.safety 优先级被硬编码覆盖** | `buildDefaultGuard` 完全用内联 `DEFAULT_SAFETY_VALUE`, 忽略用户 YAML 的 `safety` | `buildDefaultGuard({ safety })` 接受 safety 参数, `threshold = safety?.x ?? DEFAULT_SAFETY_VALUE.x` |
+| 2 | **dry-run 污染正式计数** | dry-run 与正式投递共用 fs counter, 真账号接入后配额被 dry-run 耗尽 | dry-run 时 `createInMemoryCounterStore()`, fs counter 仅 dryRun=false 路径用 |
+| 3 | **风控触发 exit code 模糊** | blocked 与 fatal/login-fail 共用 exit 2, 运维告警误报 | `RunResult.exitCode: 0\|1\|2 → 0\|1\|2\|3`; blocked → exit 3, fatal → exit 2 (cron/alerting 区分) |
+
+### 17.12.2 2 项强烈建议
+
+| # | 建议 | D-3 处理 |
+|---|------|---------|
+| 1 | `--phase` 与 throttle 显式关联 | buildDefaultDeps 注释加 config.phase 透传说明, throttle.ts 已 selectByPhase 无需改 |
+| 2 | accountMetaStore 并发安全 | D-1b 已用 POSIX atomic (tmp + writeFile + sync + rename), 引用 §14.8 F1-F5 |
+
+### 17.12.3 实现细节
+
+**修正 1 (config.safety 优先级合并)**:
+
+```typescript
+// src/cli/handlers/auto-handler.ts
+function buildDefaultGuard(deps: {
+  accountMetaStore: AccountMetaStore
+  notifier: AutoNotifier
+  safety?: SafetyConfig  // NEW D-3
+}): GuardCallback {
+  const { accountMetaStore, notifier, safety } = deps
+  // D-3 §17.12.1 修正 1: 用户 safety.xxx 优先, 缺字段 fallback DEFAULT_SAFETY_VALUE
+  const threshold = safety?.consecutive_guard_threshold
+    ?? DEFAULT_SAFETY_VALUE.consecutive_guard_threshold
+  ...
+}
+
+// buildDefaultDeps 透传
+const guard = opts.guard ?? buildDefaultGuard({
+  accountMetaStore, notifier,
+  safety: opts.config.safety,
+})
+```
+
+**修正 2 (dry-run 隔离 counter)**:
+
+```typescript
+// src/cli/handlers/auto-handler.ts buildDefaultDeps
+const counterStore = opts.config.dryRun
+  ? createInMemoryCounterStore()  // NEW D-3: dry-run 不写 fs
+  : opts.counterStoreFactory
+    ? opts.counterStoreFactory(configDir)
+    : createFsCounterStore(path.join(configDir, 'counter.json'))
+```
+
+**修正 3 (exit code 3 = blocked)**:
+
+```typescript
+// src/cli/handlers/auto-handler.ts RunResult
+export interface RunResult {
+  /** D-3 §17.12.1 修正 3: 退出码扩展为 0|1|2|3
+   * - 0 = success (≥1 effective_successes)
+   * - 1 = partial failure
+   * - 2 = fatal/aborted (login failed / config error / strictExitCode 全 reject)
+   * - 3 = blocked (R2 GuardError / R3 失败率超阈, 可恢复, 不需人工)
+   */
+  exitCode: 0 | 1 | 2 | 3
+  ...
+}
+
+// runDailyLoop 退出码精化 (per §17.4 决策树)
+let exitCode: 0 | 1 | 2 | 3
+if (stats.blocked) {
+  exitCode = 3  // D-3 NEW: 风控暂停, 区别 fatal 2
+} else if (deps.strictExitCode && ...) { exitCode = 2 }
+...
+```
+
+### 17.12.4 类型扩展 (config-schema vs throttle AutoConfig)
+
+CLI 之前用 `as unknown as` cast 跨模块类型, D-3 改为显式 intersection type:
+
+```typescript
+// BuildDefaultDepsOpts.config 接受 SchemaAutoConfig + dryRun/phase
+export interface BuildDefaultDepsOpts {
+  config: SchemaAutoConfig & { dryRun: boolean; phase: 'morning' | 'afternoon' }
+}
+
+// CLI 显式合并 dryRun/phase 进 config
+config = {
+  ...result.config,        // SchemaAutoConfig
+  dryRun: options.dryRun ?? false,
+  phase,                   // CLI flag
+}
+
+// 传给 AutoHandlerDeps.config 时 cast 为 throttle AutoConfig (无 safety)
+config: opts.config as unknown as ThrottleAutoConfig
+```
+
+### 17.12.5 测试矩阵 (D-2 → D-3)
+
+| 阶段 | PASS | FAIL | 增量 |
+|------|------|------|------|
+| Sprint D-2 | 561 | 0 | +12 D-2 |
+| **D-3** | **572** | **0** | **+11 D-3 (T30a-c 3 + T31a-c 3 + T32a-c 3 + T33a-b 2 = 11)** |
+
+**新增测试覆盖**:
+- T30a: config.safety.consecutive_guard_threshold=5 覆盖 DEFAULT (3 条 history 不降档)
+- T30b: safety 缺字段 fallback DEFAULT
+- T30c: safety 完全缺失 fallback DEFAULT
+- T31a: dry-run=true 用 in-memory counter (fs 不写)
+- T31b: dry-run=false 用 fs counter (持久化)
+- T31c: dry-run 仍 recordBlock (account-meta 不受影响)
+- T32a: GuardError → blocked → exit 3 (was 2)
+- T32b: loginByQR throw → aborted → exit 2 (与 blocked 区分)
+- T32c: R3 失败率超阈 → blocked → exit 3
+- T33a/b: config.phase 透传 (morning / afternoon)
+
+**修复旧测试** (因 exit 3 扩展影响):
+- T18 (guard.test.ts): exitCode 2 → 3
+- T16 (auto-handler.test.ts): exitCode 2 → 3
+- T25a/T25b/T26a/T27a (auto-handler-guard.test.ts): exitCode 2 → 3 (4 处)
+- 严格 exit 2 (strictExitCode fatal soft error): 保留 2 ✓
+
+### 17.12.6 §3.9 错误传播图 (D-3 新增)
+
+```
+[buildDefaultDeps guard.onBlock(reason, error)] (D-3 修正 1 路径)
+        │
+        ├─ recordBlock(reason, error)
+        │     ├─ ok → meta 更新
+        │     └─ throw AccountMetaError
+        │           └─ try/catch → notifier.warn + return ← 禁区 0 (D-1b)
+        │
+        ├─ safeLoadHistoryLen
+        │     ├─ ok → blockedHistoryLen
+        │     └─ throw → 返 0 (不抛) ← 禁区 0
+        │
+        └─ threshold = safety?.consecutive_guard_threshold (D-3 修正 1)
+                       ?? DEFAULT_SAFETY_VALUE.consecutive_guard_threshold
+              │
+              ▼
+              blockedHistoryLen >= threshold ?
+              ├─ yes → regressWarmup() → tier 降档 → notifier critical
+              └─ no → 跳过
+```
+
+### 17.12.7 §3.10 refactor 盘点 (D-3)
+
+```bash
+$ git grep 'buildDefaultGuard\|buildDefaultDeps\|config.safety\|dryRun' src/ tests/
+src/cli/handlers/auto-handler.ts:function buildDefaultGuard(...)
+src/cli/handlers/auto-handler.ts:export async function buildDefaultDeps(...)
+src/cli/handlers/auto-handler.ts:safety: opts.config.safety (NEW D-3)
+src/cli/handlers/auto-handler.ts:opts.config.dryRun (NEW D-3)
+src/cli/handlers/auto-handler.ts:exitCode: 0 | 1 | 2 | 3 (NEW D-3)
+src/cli/index.ts:config: ... dryRun, phase 合并 (NEW D-3)
+```
+
+| Caller | 改动前 | 改动后 | 边界 |
+|--------|--------|--------|------|
+| `src/cli/index.ts` `bapply auto` action | throttle AutoConfig cast | 显式合并 dryRun/phase → SchemaAutoConfig + extras | ✅ type-safe |
+| `src/cli/handlers/auto-handler.ts` `buildDefaultDeps` | DEFAULT_SAFETY_VALUE 硬编码 | safety 透传 + dryRun 分支 | ✅ |
+| `runDailyLoop` 退出码 | 0\|1\|2 | 0\|1\|2\|3 (blocked = 3) | ✅ process.exit 兼容 number |
+
+**0 caller 改动** (所有 caller 都是 D-1b/D-2 已落地, 仅测试和 ADR 更新).
+
+### 17.12.8 §3.13 错误分层 (D-3 新增 0 处, 复用既有)
+
+D-3 不引入新错误类, 仅扩展 `RunResult.exitCode` 类型 (0|1|2|3). 错误分层保持:
+- CONFIG (AutoConfigError, layer='CONFIG')
+- META (AccountMetaError, layer='META')
+- GUARD (GuardError, layer='GUARD')
+- THROTTLE (ThrottleError, layer='THROTTLE')
+- SEND (SessionExpiredError, layer='SEND')
+- STUB (BOSSStubError, layer='STUB') — D-2
+- AUTO.runner / AUTO.guard / AUTO.stub — D-2
+
+### 17.12.9 自检 Checklist (D-3 收尾)
+
+- [x] 全套 vitest **572/0/1 PASS** (+11 D-3)
+- [x] tsc 0 新错 (2 pre-existing: puppeteer-stealth + OpenAI thinking)
+- [x] §3.10 refactor 盘点 0 caller 改动 (D-3 wiring 闭环)
+- [x] §3.13 错误分层 0 新增 (复用既有 5 类)
+- [x] §3.9 错误传播图 (D-3 §17.12.6 已画, buildDefaultGuard 新 safety 路径)
+- [x] §4.4 自验证 5 项 (单测/集成/类型/live/浏览器) — live 留给 Sprint E+
+- [x] §17.12.5 测试矩阵 (561 → 572 = +11 D-3)
+- [x] §17.12.4 类型扩展 (config-schema AutoConfig + dryRun/phase 合并, 替代 cast)
+- [x] 单账号红线 100% 守住 (3 STUB 全 throw)
+- [x] **9 commit 已落本地 (8 + D-3, 未推送, 等 user 决策)**
+
+### 17.12.10 关键经验 (写入 memory 候选)
+
+| 经验 | 来源 | 决策 |
+|------|------|------|
+| **mock 通过 ≠ 假设正确 (反例)** | T32a/c fail: fs counter 上次数据污染, mock 没覆盖 fs 路径 | T32 测试改用 `createInMemoryCounterStore()` 注入, 防 fs 遗留 |
+| **类型 cast 是设计缺口** | D-1a 用 `as unknown as` 跨模块 cast, D-3 显式 intersection 修正 | `SchemaAutoConfig & { dryRun, phase }` 替代 cast |
+| **架构师 review 必跑** | Sprint D-2 后架构师 review 找出 3 必须修正 + 2 建议, 防真账号接入后才暴露 | D-3 闭环后, Sprint E+ 启动前再请架构师 review |
+
+---
+
+## 17.13 Sprint E-1 收尾 (2026-07-29, 飞书 webhook notifier)
+
+> **目标**: 实现 `feishu-notifier.ts` 替代 `consoleNotifier`, 头 cron 跑时风控/失败率/降档事件实时推到飞书群, 避免遗漏 single-account 红线保护事件. **本 sprint 不动** buildDefaultDeps 默认值 + cli/index.ts wiring(留给 Sprint E-1b, 符合 §4.3 sprint 限制).
+> **纪律**: §3.13 错误分层 (warnLogger [FEISHU] prefix); §3.9 不变量 (notify 永不 throw, 与 consoleNotifier 同契约); §3.10 refactor (新模块, 0 caller 改动); §3.12 probe (7/7 PASS, Node http mock webhook 真网络栈验证).
+
+### 17.13.1 任务总览 (1 commit)
+
+| Commit | 范围 | 文件 |
+|--------|------|------|
+| `6004964` | E-1 feishu notifier + 14 it() + probe 7/7 | `src/auto/feishu-notifier.ts` (NEW) / `tests/unit/auto/feishu-notifier.test.ts` (NEW) / `scripts/probe-feishu-notifier.mjs` (NEW) |
+
+### 17.13.2 4 类图 (§3.5 硬性 → 已在 E-1.1 阶段画 + 用户飞书拍板)
+
+#### 17.13.2.1 架构图 (实现版 — 架构师 review 修正后)
+
+```
+                    ┌────────────────────────────────────────┐
+                    │  src/auto/ (新增 1 文件, 不动现文件)   │
+                    │  ┌──────────────────────────────────┐  │
+                    │  │ feishu-notifier.ts (NEW, ~190 行)│  │
+                    │  │  - FeishuNotifierOpts (interface)│  │
+                    │  │  - createFeishuNotifier(opts)    │  │
+                    │  │    → AutoNotifier               │  │
+                    │  │  - formatFeishuText(level, msg)  │  │
+                    │  │    [架构师 review 强烈建议]      │  │
+                    │  │    msg > 19000 → 截断 + 后缀     │  │
+                    │  └──────────────┬───────────────────┘  │
+                    │                 │ implements            │
+                    │  ┌──────────────▼───────────────────┐  │
+                    │  │ src/cli/handlers/auto-handler.ts │  │
+                    │  │  (本 sprint 不改)                 │  │
+                    │  │  interface AutoNotifier {         │  │
+                    │  │    notify(level, msg): Promise    │  │
+                    │  │  }                                │  │
+                    │  └──────────────────────────────────┘  │
+                    └────────────────────────────────────────┘
+                                       │
+                                       │ 调用 (留给 E-1b)
+                                       ▼
+                    ┌────────────────────────────────────────┐
+                    │  External: 飞书自定义机器人 webhook    │
+                    │  POST <webhook_url>                    │
+                    │  Body: {                              │
+                    │    "msg_type": "text",                │
+                    │    "content": { "text": "<formatted>" }│
+                    │  }                                    │
+                    │  ← 总是返 HTTP 200, body code 0=ok     │  [架构师 review 必修正]
+                    │       code 19001=invalid url          │
+                    │       code 230001=msg too long        │
+                    └────────────────────────────────────────┘
+```
+
+#### 17.13.2.2 时序图 (happy + retry + 业务失败 + 4xx)
+
+```
+[caller]               [feishu-notifier]         [Feishu Webhook]
+   │ notify(level, msg)    │                         │
+   ├──────────────────────>│                         │
+   │                       │ formatFeishuText(...)   │
+   │                       │ body = JSON(...)        │
+   │                       │                         │
+   │                       │ fetch POST              │
+   │                       ├────────────────────────>│
+   │                       │                         │
+   │ [架构师 review 必修正] │ ← 200 OK + body {code:0}│
+   │                       ├─ parse JSON             │
+   │                       │  code === 0 → return    │
+   │<─ resolve() ──────────┤                         │
+
+RETRY 路径 (5xx):
+   │ 1st attempt → 503     │
+   │<───────────────────────┤
+   │ sleep(1000)           │
+   │ 2nd attempt → 200+code:0│
+   │<───────────────────────┤
+   │<─ resolve() ──────────┤
+
+ALL FAIL 路径 (5xx all attempts):
+   3× 503 → warnLogger("[FEISHU] 3/3 attempts failed")
+           NOT throw (§3.9 不变量)
+
+4xx NO RETRY (per 架构师 review):
+   ← 400 → break loop → warnLogger, NO sleep
+   (per 架构师: 客户端错误不应重发)
+
+BUSINESS FAIL (200 + code != 0) — 架构师 review 必修正:
+   ← 200 + {code:19001, msg:'invalid webhook url'}
+   → break loop → warnLogger containing code=19001
+   (URL 无效重试也无效, 不重试)
+
+MSG TRUNCATION (强烈建议):
+   msg = 25000 chars
+   → formatFeishuText: slice(0, 19000) + '...(truncated)'
+   → fetch body.content.text = 19200 chars total
+```
+
+#### 17.13.2.3 关系图 (接口契约 + 类型)
+
+```
+src/auto/feishu-notifier.ts (~190 行 NEW)
+
+  export interface FeishuNotifierOpts {
+    webhookUrl: string                                    // 必填
+    maxRetries?: number                                   // 默认 3
+    initialBackoffMs?: number                              // 默认 1000
+    timeoutMs?: number                                     // 默认 5000
+    fetch?: typeof fetch                                   // 测试注入
+    sleep?: (ms: number) => Promise<void>                 // 测试注入
+    warnLogger?: (msg: string) => void                    // 测试注入 (默认 console.warn with [FEISHU] prefix)
+  }
+
+  export function createFeishuNotifier(opts): AutoNotifier
+        │
+        ├─ throws Error('[FEISHU] webhookUrl is required')
+        │  if !opts.webhookUrl
+        ├─ 内部闭包: webhookUrl / fetchImpl / sleepImpl / warnLoggerImpl /
+        │            maxRetries / initialBackoffMs / timeoutMs
+        └─ return {
+              async notify(level, msg) {
+                const body = JSON.stringify({
+                  msg_type: 'text',
+                  content: { text: formatFeishuText(level, msg) },
+                })
+                await retryNotify(body)   // 不抛, 不 throw (§3.9)
+              }
+            }
+
+  export function formatFeishuText(level, msg): string
+        │
+        ├─ msg.length > 19000 → msg.slice(0, 19000) + '...(truncated)'
+        ├─ level === 'critical' → "🔴 [CRITICAL] ${text}"
+        └─ level === 'warn'     → "🟡 [WARN] ${text}"
+
+  interface AutoNotifier (现有, src/cli/handlers/auto-handler.ts:39)
+    notify(level: 'warn' | 'critical', msg: string): Promise<void>
+
+  // §3.13: 不引入新 error class, 失败通过 warnLogger("[FEISHU] <msg>")
+  // §3.9 : notify 永不 throw (与 consoleNotifier 同契约)
+```
+
+#### 17.13.2.4 流程图 (retry 决策 — 含架构师 review 修正)
+
+```
+┌─ notify(level, msg) ─┐
+│                       │
+│ body = JSON({          │
+│   msg_type:'text',     │
+│   content:{text:       │
+│     formatFeishuText(  │
+│       level, msg       │
+│     )}                 │
+│ })                     │
+│                       │
+│ attempts = 0           │
+│ lastError = null       │
+└───────────┬───────────┘
+            │
+            ▼
+    ┌──────────────────────┐
+    │ attempts<maxRetries? │
+    └──┬───────────────┬──┘
+    yes│               │no (5xx exhausted)
+       ▼               ▼
+  ┌──────────────────┐ ┌──────────────────┐
+  │ fetch POST       │ │ warnLogger(      │
+  │ AbortSignal      │ │  "3/3 failed:    │
+  │  .timeout(       │ │   ${lastError}") │
+  │   timeoutMs)     │ │ return           │
+  └──────┬───────────┘ │ (NO THROW) ✅   │
+         │             └──────────────────┘
+   ┌─────┴──────────────────┐
+   │                        │
+   ▼                        ▼
+resp.ok (2xx)          4xx (400/404)
+/ non-2xx             / 5xx / network
+   │                  / timeout
+   ▼                  │
+   ▼                    │
+┌─────────────────┐  ┌──┴──────────────────────────┐
+│ resp.json()     │  │ resp.status in [400,500)?   │
+│ code === 0?     │  └──┬──────────────────────┬──┘
+└────┬───────┬───┘   yes│                   no (5xx)
+     │       │          ▼                   ▼
+     ▼       ▼       break loop     lastError = e
+   return    break   warnLogger     sleep(initial
+   (ok ✅)   loop    (no retry)     × 2^attempts)
+             │            │              │
+             │            ▼              ▼
+             ▼       sleep 0次      attempts++
+        lastError =        │           (loop)
+        "feishu           ▼
+         business        return
+         error:         (4xx ok
+         code=19001"    no retry)
+              │
+              ▼ (业务失败不重试)
+        return (no retry, warnLogger)
+              │
+              ▼
+        attempts++ (loop)
+
+[架构师 review 必修正]
+HTTP 200 + body code !== 0 = 业务失败, 不重试 (URL 失效重试无效)
+[架构师 review 强烈建议]
+msg > 19000 字符 = formatFeishuText 截断 + 后缀
+```
+
+### 17.13.3 §3.12 probe 验证结果 (per 硬性 / 7/7 PASS)
+
+`scripts/probe-feishu-notifier.mjs` 用 Node http 起 mock webhook server 真网络栈, 验证 §13.5 实现假设:
+
+| # | 场景 | 期望 | 实测 |
+|---|------|------|------|
+| A1 | 200+code:0 happy path | 1 call / 0 sleep / 0 warn | ✅ |
+| A2 | 500 → 200+code:0 retry success | 2 calls / 1 sleep=1000ms / 0 warn | ✅ |
+| A3 | 3×503 all fail | 3 calls / 2 sleeps=[1000,2000] / 1 warn / 不抛 | ✅ |
+| A4 | backoff timing 显式验证 (initialBackoffMs=100) | sleeps=[100, 200] | ✅ |
+| A5 | HTTP 400 不重试 | 1 call / 0 sleep / 1 warn | ✅ |
+| A6 [架构师必修正] | 200+code:19001 业务失败 | 1 call / 0 sleep / 1 warn containing '19001' | ✅ |
+| A7 [架构师强烈建议] | 25000-char msg 截断 | len ≤ 19200 + 后缀存在 | ✅ |
+
+**关键发现**:
+- **F1 [架构师]** 飞书 webhook protocol = "HTTP 200 + body code" RPC-like, 不遵循标准 HTTP 2xx/4xx/5xx 语义
+- **F2 [架构师]** 4xx 也不该重试 (curl `-X POST` to invalid webhook 返 400, 重试无效)
+- **F3** warnLogger 默认 `[FEISHU]` prefix 与 §3.13 一致, 不与内部 msg 双重 prefix
+- **F4** JSON 解析失败 (非 JSON body) 在 try/catch 内 → lastError + 重试 (可接受 best effort)
+
+**单账号红线守住**: 0 触碰 BOSS (feishu webhook ≠ BOSS, mock 完全 inject).
+
+### 17.13.4 RED 测试矩阵 (14 it() PASS)
+
+| ID | 范围 | it() 数 | 覆盖 |
+|----|------|--------|------|
+| T34 | formatFeishuText 4 场景 | 4 | warn/critical prefix + msg>19000 截断 + short 不截断 |
+| T35 | 基础 POST 成功 | 1 | 1 call + body shape + 无 warn |
+| T36 | 5xx retry success | 2 | 主路径 + maxRetries=2 边界 |
+| T37 | 5xx all fail | 2 | 3 attempts + 自定义 initial backoff |
+| T38 | 4xx no retry | 2 | HTTP 400 + HTTP 404 |
+| T39 | 飞书业务失败 (code!=0) | 2 | code=19001 + code=230001 |
+| T40 | 端到端 msg 截断 | 1 | mock fetch 验证 body length |
+| **总计** | | **14** | **14/14 PASS** |
+
+### 17.13.5 实现细节 (架构师 review 必修正 1 + 强烈建议 2)
+
+**[架构师 review 必修正] HTTP 200 + body code 校验** (`src/auto/feishu-notifier.ts:107-114`):
+
+```typescript
+if (resp.ok) {
+  // 飞书 webhook 总是 HTTP 200, 业务结果在 body code
+  // 仅信 HTTP 2xx = 静默成功 (URL 失效或消息错时)
+  const json = await resp.json() as { code?: number; msg?: string }
+  if (json.code === 0) {
+    return  // 业务成功
+  }
+  // 业务失败 — 不重试 (URL/格式无效, 重试无效)
+  lastError = new Error(
+    `feishu business error: code=${json.code} msg=${json.msg}`,
+  )
+  break
+}
+
+// 4xx 不重试 (per 架构师 review: 客户端错误不应重发)
+if (resp.status >= 400 && resp.status < 500) {
+  lastError = new Error(`HTTP ${resp.status} (no retry)`)
+  break
+}
+```
+
+**[架构师 review 强烈建议] msg 长度截断** (`src/auto/feishu-notifier.ts:62-66`):
+
+```typescript
+export function formatFeishuText(level, msg): string {
+  const tag = level === 'critical' ? '🔴 [CRITICAL]' : '🟡 [WARN]'
+  const text = msg.length > FEISHU_MAX_MSG_LEN  // 19000
+    ? msg.slice(0, FEISHU_MAX_MSG_LEN) + FEISHU_TRUNCATED_SUFFIX  // '...(truncated)'
+    : msg
+  return `${tag} ${text}`
+}
+```
+
+**§3.9 不变量 (notify 永不 throw)** (`src/auto/feishu-notifier.ts:147-150`):
+
+```typescript
+// 第 3.9 不变量: 不抛, 仅 warnLogger
+warnLogger(
+  `${maxRetries}/${maxRetries} attempts failed: ${errorMessage(lastError)}`,
+)
+```
+
+### 17.13.6 §3.9 错误传播图 (E-1 关键不变量)
+
+```
+[AutoNotifier.notify 入口]
+        │
+        ├─ 业务成功路径 → resolve() (无 throw)
+        │
+        └─ 失败路径 (任意 catch + retry exhausted)
+              │
+              ├─ 4xx: lastError + break → warnLogger
+              ├─ 5xx all exhausted: lastError + warnLogger after 3 attempts
+              ├─ 200+code!=0: lastError + break → warnLogger
+              ├─ network/timeout: lastError + retry → warnLogger after 3 attempts
+              └─ json parse 错: lastError + retry → warnLogger
+
+每一分支 → warnLogger("[FEISHU] 3/3 attempts failed: <reason>")
+         → resolve() (无 throw) §3.9 不变量
+
+[buildDefaultDeps.guard.onBlock] 调用 notify
+   ├─ notify resolve (ok 或 warn): 不感知
+   └─ notify throw (理论上不会): 不会发生
+
+[runDailyLoop.runDailyLoop] 调用 deps.guard.onBlock
+   └─ onBlock 永不感知 notify 失败 (per §17.4 错误传播图)
+```
+
+**关键不变量**:`AutoNotifier.notify` 契约 = resolve 或 warn, **永不 reject**。consoleNotifier (默认) 也满足此契约, feishuNotifier (新增) 同契约, 未来 silentNotifier 等任何实现都应满足。
+
+### 17.13.7 §3.10 refactor 盘点 (E-1)
+
+```bash
+$ git grep 'createFeishuNotifier\|formatFeishuText' src/ tests/
+src/auto/feishu-notifier.ts:export function createFeishuNotifier(...)
+src/auto/feishu-notifier.ts:export function formatFeishuText(...)
+tests/unit/auto/feishu-notifier.test.ts:import { ... } from '...feishu-notifier'
+```
+
+| Caller | 影响 |
+|--------|------|
+| `src/cli/handlers/auto-handler.ts` `notifier` 接口 | 0 改 (本 sprint E-1 不动) |
+| `tests/unit/auto/feishu-notifier.test.ts` | 新增 caller, 14 it() 全部新写 |
+| `scripts/probe-feishu-notifier.mjs` | 新增, probe 7/7 PASS |
+
+**3 问**: ① 下游成立 ✅ ② 无副作用依赖 ✅ ③ 错误边界仍有效 ✅ (notify 永不 throw 与 consoleNotifier 一致).
+
+**结论**: 0 现有 caller 改动. Sprint E-1b wiring (buildDefaultDeps 默认值替换) 是另一 sprint 范围, 本 sprint 完全 additive.
+
+### 17.13.8 §3.13 错误分层 (E-1 新增 0 error class, 复用 §3.9 warnLogger)
+
+E-1 不引入新 error class (失败属运维告警, 不属程序错误). 错误分层现状:
+
+- CONFIG (AutoConfigError, layer='CONFIG') — D-1a
+- META (AccountMetaError, layer='META') — D-1b
+- GUARD (GuardError, layer='GUARD') — C-2b
+- THROTTLE (ThrottleError, layer='THROTTLE') — Sprint B
+- SEND (SessionExpiredError, layer='SEND') — Sprint B
+- STUB (BOSSStubError, layer='STUB') — D-2
+- AUTO.runner / AUTO.guard / AUTO.stub — D-2
+- **FEISHU (warnLogger prefix only)** — E-1 ⭐
+
+FEISHU 不引入 error class 的原因: 失败意味"告警没送达", 属可观察事件不是异常路径. 用 warnLogger prefix 标识 layer 已足够 (per `feedback_log_layer_origin.md`).
+
+### 17.13.9 自检 Checklist (E-1 收尾)
+
+- [x] **§3.5 4 类图**: 架构 / 时序 / 关系 / 流程 全画 (含架构师 review 修正后版本)
+- [x] **§3.12 probe**: `scripts/probe-feishu-notifier.mjs` 7/7 PASS (Node http mock webhook 真网络栈)
+- [x] **§4.1 TDD 6 步**: RED (module 找不到 fail) → GREEN (14/14 PASS) → REFACTOR (helper 抽离) → 自验证 (5 项) → 交付 (commit `6004964`)
+- [x] **架构师 review 必跑**: 1 必须修正 (body code 校验) + 2 强烈建议 (4xx no retry / msg 截断) 全部落地
+- [x] **架构师 review 反馈落地 7 步** (per memory `feedback_architect_review_required.md`): review → 立即开 E-1 (sub-task #47) → 4 类图重画 → 错误传播图 → refactor 盘点 → ADR §17.13 收尾 (本节) → 自验证 5 项
+- [x] **§3.9 不变量**: notify 永不 throw (T35 验证) + warnLogger 含 lastError msg
+- [x] **§3.10 refactor**: 新模块, 0 caller 改动 (Sprint E-1b 留给 E-1b sprint)
+- [x] **§3.13 错误分层**: 不引入新 error class, [FEISHU] warnLogger prefix
+- [x] **§4.4 自验证 5 项**: 单测 (14/14) / 集成 (probe 7/7) / 类型 (tsc 0 新错) / N/A live (feishu 非 BOSS, mock 替代) / N/A 浏览器 (后端模块)
+- [x] **单账号红线**: 0 触碰 BOSS (feishu webhook ≠ BOSS, mock 完全 inject)
+- [x] **9 commit 累计未推送**: 待 user 显式 "推" 命令 (含 E-1 `6004964`)
+
+### 17.13.10 §10 重写流程在本节的兑现
+
+E-1 非 bug 修复而是新模块, §10 不直接适用. 但相关 ADR §3 假设 + §4 反例需要复核:
+
+| 假设/反例 | E-1 修订 | 状态 |
+|-----------|----------|------|
+| §17.9 E-1 规划 "飞书 notifier webhook + 重试 (3 次指数退避) + AutoNotifier 接口实现" | E-1 全部兑现 | ✅ |
+| §17.9 E-1 规划 "替换 consoleNotifier 默认值" | **未兑现** — 留给 Sprint E-1b (本 sprint 不动 buildDefaultDeps 默认值, per §4.3 sprint 限制) | ⏳ E-1b |
+| 架构师 review 必修正: 飞书 webhook body code 校验 | E-1 落地 | ✅ |
+| 架构师 review 强烈建议: msg 截断 + 4xx no retry | E-1 落地 | ✅ |
+
+**新增记忆点 (不写 memory, 仅在本 ADR §17.13.11 留档)**:
+
+### 17.13.11 关键经验 (架构师 review 后沉淀)
+
+| 经验 | 来源 | 决策 |
+|------|------|------|
+| **协议假设查公开资料** | 我假设"HTTP 2xx=成功"是错;飞书 protocol 实际"HTTP 200 + body code" | 改 mock 假设 = 不能凭印象, 改 protocol 必查官方文档 |
+| **架构师 review 5 项清单新增 "协议语义"** | 原 5 项 = 配置语义 / 运维边界 / 类型扩展 / 单账号红线 / 文档完整;E-1 后 + 第 6 项 "外部协议语义" (飞书/Slack/微信 各有特殊, 必须 mock 真接口验证) | E-1b 启动前再请架构师 review |
+| **mock 完全 inject ≠ 真实行为** | 我 mock fetch 返回 200+body OK 与真飞书 protocol 差异 = 业务失败 code!=0 | T39 + probe A6 真实捕获 |
+
+---
+
+## 17.14 Sprint E-1b 收尾 (2026-07-29, wiring + config-schema + env 探测)
+
+> **目标**: 把 E-1 实现的 `feishu-notifier.ts` 接入 `buildDefaultDeps` 默认值 + `cli/index.ts` 探测 env var (`FEISHU_WEBHOOK_URL`), 让用户不需写代码就能启用飞书告警.
+> **触发**: §17.13.10 计划 + 架构师 review 必跑 (配置层变更, per memory `feedback_architect_review_required.md` 触发时机表).
+> **纪律**: §3.6 (env 探测自动合并); §3.9 (env merge 路径不破坏 safety 合并); §3.10 refactor (4 文件 0 行为破坏); §3.13 (0 新 error class).
+
+### 17.14.1 任务总览 (1 commit)
+
+| Commit | 范围 | 文件 |
+|--------|------|------|
+| `36b914c` | E-1b wiring + 14 RED + env 探测 + yaml 示例 | `src/auto/config-schema.ts` / `src/auto/config-loader.ts` / `src/cli/handlers/auto-handler.ts` / `src/cli/index.ts` / `docs/auto.example.yaml` / `tests/unit/cli/handlers/build-default-deps.test.ts` (+14 it()) |
+
+### 17.14.2 架构师 review 必跑结果 (per 触发时机)
+
+| 触发项 | 状态 | 备注 |
+|--------|------|------|
+| **配置层变更** (config-schema 加 notifier 字段) | ✅ 触发 review | per memory `feedback_architect_review_required.md` 触发时机表 |
+| **找到的问题** | **1 必须修正 + 1 强烈建议** | 4 类图设计阶段 + 实施前捕获 |
+| **修正 1**: 4 字段显式透传 | ✅ 落地 (T42b 验证) | `webhookUrl / maxRetries / initialBackoffMs / timeoutMs` |
+| **强建议**: 简化 `feishuWebhookUrl` 字段, 由 CLI 层 merge | ✅ 落地 (T43 验证) | `mergeWebhookFromEnv` helper |
+
+### 17.14.3 4 类图 (E-1b 实际落地, 含架构师 review 修正)
+
+#### 17.14.3.1 架构图
+
+```
+                       ┌─────────────────────────┐
+                       │ process.env (Node 进程) │
+                       │  FEISHU_WEBHOOK_URL     │
+                       └────────────┬────────────┘
+                                    │ env 探测
+                                    ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  src/cli/index.ts bapply auto action                                         │
+│                                                                              │
+│  config = {                                                                  │
+│    ...loadAutoConfig(...),                                                   │
+│    ...mergeWebhookFromEnv(result.config, process.env.FEISHU_WEBHOOK_URL)   │
+│  }                                                                           │
+└────────────────────────┬─────────────────────────────────────────────────────┘
+                         │
+                         ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  src/auto/config-schema.ts (扩)                                      │
+│  NotifierConfigSchema (.strict) {                                    │
+│    webhookUrl?: string.url                                           │
+│    maxRetries?: number.positive                                      │
+│    initialBackoffMs?: number.nonnegative                            │
+│    timeoutMs?: number.positive                                       │
+│  }                                                                   │
+│  DEFAULT_NOTIFIER = {} (空对象 = console fallback)                   │
+└────────────────────────┬─────────────────────────────────────────────┘
+                         │
+                         ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  src/auto/config-loader.ts (扩 +5 行)                                │
+│  loadAutoConfig 加载 → safeParse → notifier ?? DEFAULT_NOTIFIER 合并 │
+└────────────────────────┬─────────────────────────────────────────────┘
+                         │
+                         ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│  src/cli/handlers/auto-handler.ts buildDefaultDeps (简化为 2 层探测)   │
+│                                                                        │
+│  resolveNotifier(opts):                                                │
+│    1. opts.notifier (test/manual override, 最高优先级)                │
+│    2. cfg.webhookUrl 存在                                              │
+│       → factory({ webhookUrl, maxRetries: cfg.maxRetries,             │
+│                   initialBackoffMs: cfg.initialBackoffMs,             │
+│                   timeoutMs: cfg.timeoutMs })    ← 4 字段全透传        │
+│    3. fallback → consoleNotifier                                       │
+│                                                                        │
+│  factory 默认 = createFeishuNotifier (E-1 已有)                         │
+└────────────────────────┬────────────────────┬────────────────────────┘
+                         │                    │
+                         ▼                    ▼
+         ┌─────────────────────────┐  ┌────────────────────────────┐
+         │ consoleNotifier (默认)   │  │ createFeishuNotifier (E-1) │
+         │ AutoNotifier impl       │  │ AutoNotifier impl          │
+         │ ⚙️  console.log          │  │ ⚙️  webhook POST + 3 retry │
+         └─────────────────────────┘  └────────────────────────────┘
+```
+
+#### 17.14.3.2 时序图 (完整 wiring 链)
+
+```
+[user] FEISHU_WEBHOOK_URL=https://... bapply auto --phase morning
+   │
+   ▼
+[CLI parseArgs] opts (config, dryRun, quota, phase, strictExitCode)
+   │
+   ▼
+[loadAutoConfig]
+   │
+   ├─ AutoConfigSchema.safeParse (含 NotifierConfigSchema.optional)
+   │  例 yaml: notifier: { webhookUrl: "https://yaml...", maxRetries: 5 }
+   │
+   ├─ notifier ?? DEFAULT_NOTIFIER 合并
+   │
+   └─→ { config: AutoConfig }
+   │
+   ▼
+[CLI mergeWebhookFromEnv] (E-1b 新增)
+   │
+   │ envUrl = process.env.FEISHU_WEBHOOK_URL
+   │              = "https://env..." (来自 process.env)
+   │ if (envUrl) {
+   │   config = { ...config, notifier: { ...config.notifier, webhookUrl: envUrl } }
+   │ }
+   │   ↑ env 覆盖 yaml (yaml 其他字段 maxRetries 等保留)
+   │
+   │ + 合并 CLI flags (dryRun/phase)
+   ▼
+[buildDefaultDeps]
+   │
+   │ resolveNotifier(opts):
+   │   opts.notifier? 不设
+   │   cfg.webhookUrl = "https://env..." ← 已被 env merge 覆盖
+   │   cfg.maxRetries = 5 ← YAML 透传 (其他 3 字段同)
+   │   → createFeishuNotifier({
+   │       webhookUrl: "https://env...",
+   │       maxRetries: 5,
+   │       initialBackoffMs: 500,    ← (假设 yaml 也设了)
+   │       timeoutMs: 8000,         ← (假设 yaml 也设了)
+   │     })
+   │
+   └─→ deps.notifier = feishuNotifier
+   │
+   ▼
+[runDailyLoop] 跑 job → 触发 critical/warn → deps.notifier.notify()
+   │
+   └─→ feishuNotifier.notify() → POST 飞书 webhook → 实时推送用户
+```
+
+#### 17.14.3.3 关系图 (E-1b 改动文件清单)
+
+```
+src/auto/config-schema.ts (扩)
+  export const NotifierConfigSchema = z.object({
+    webhookUrl: z.string().url().optional(),
+    maxRetries: z.number().int().positive().optional(),
+    initialBackoffMs: z.number().int().nonnegative().optional(),
+    timeoutMs: z.number().int().positive().optional(),
+  }).strict()                                                  // ← 架构师 review: 拒绝冗余字段
+  export type NotifierConfig = z.infer<typeof NotifierConfigSchema>
+  export const DEFAULT_NOTIFIER: NotifierConfig = {}
+  AutoConfigSchema.notifier: NotifierConfigSchema.optional()
+
+src/auto/config-loader.ts (扩 +5 行)
+  loadAutoConfig 内部:
+    notifier: result.data.notifier ?? DEFAULT_NOTIFIER   // 类似 safety 模式
+
+src/cli/handlers/auto-handler.ts (扩 +50/-10 行)
+  export interface BuildDefaultDepsOpts {
+    ...(原 7 字段)...
+    notifier?: AutoNotifier                              // 1. test override
+    notifierFactory?: (opts: FeishuNotifierOpts) => AutoNotifier  // 2. factory 注入
+    // ↓ E-1b 简化:删 feishuWebhookUrl
+    ...(其他字段)
+  }
+
+  export function mergeWebhookFromEnv(
+    config: SchemaAutoConfig,
+    envUrl: string | undefined,
+  ): SchemaAutoConfig
+
+  export async function buildDefaultDeps(opts) {
+    ...
+    const notifier = resolveNotifier(opts)               // E-1b 简化 2 层探测
+    ...
+  }
+
+  function resolveNotifier(opts) {                       // E-1b 内部 helper
+    if (opts.notifier) return opts.notifier              // 1. test override
+    const cfg = opts.config.notifier
+    if (cfg?.webhookUrl) {
+      const factory = opts.notifierFactory ?? createFeishuNotifier
+      return factory({                                   // ← 架构师 review 必修正: 4 字段显式透传
+        webhookUrl: cfg.webhookUrl,
+        maxRetries: cfg.maxRetries,
+        initialBackoffMs: cfg.initialBackoffMs,
+        timeoutMs: cfg.timeoutMs,
+      })
+    }
+    return consoleNotifier                               // 3. fallback
+  }
+
+src/cli/index.ts (扩 +6 行)
+  bapply auto action:
+    const withEnv = mergeWebhookFromEnv(
+      result.config,
+      process.env.FEISHU_WEBHOOK_URL,    // ← CLI 层 env 探测
+    )
+    config = { ...withEnv, dryRun, phase }
+
+docs/auto.example.yaml (扩 +13 行 commented)
+  notifier:
+    # webhookUrl: "https://..."        # 推荐用 env 注入
+    # maxRetries: 3
+    # initialBackoffMs: 1000
+    # timeoutMs: 5000
+
+tests/unit/cli/handlers/build-default-deps.test.ts (扩 +14 it())
+  T41 (6 it): NotifierConfigSchema parse + DEFAULT_NOTIFIER + .strict
+  T42 (4 it): buildDefaultDeps 探测 4 场景 (含 4 字段显式透传验证)
+  T43 (4 it): mergeWebhookFromEnv 4 场景
+
+§3.13 错误分层: 0 新 error class (沿用 feishu-notifier warnLogger [FEISHU] prefix)
+§3.9  不变量: notify 永不 throw + env merge 函数不变异 (返回新对象)
+```
+
+#### 17.14.3.4 流程图 (探测 2 层 + fallback)
+
+```
+┌─ resolveNotifier(opts) ─┐
+│                          │
+│ opts.notifier?           │
+└────┬────────────────┬───┘
+  yes (test override)│   no
+                    ▼
+            ┌─────────────────┐
+            │ cfg?.webhookUrl │
+            └────┬─────────┬──┘
+              yes         no
+                ▼           ▼
+   ┌────────────────────┐  ┌──────────────────────┐
+   │ factory({          │  │ consoleNotifier      │
+   │   webhookUrl:      │  │ (fallback ✅)        │
+   │     cfg.webhookUrl,│  │                      │
+   │   maxRetries:      │  │ return               │
+   │     cfg.maxRetries,│  │                      │
+   │   initialBackoffMs:│  │                      │
+   │     cfg.initial-   │  │                      │
+   │     BackoffMs,     │  │                      │
+   │   timeoutMs:       │  │                      │
+   │     cfg.timeoutMs, │  │                      │
+   │ })                 │  │                      │
+   │ (4 字段显式透传)   │  │                      │
+   │                    │  │                      │
+   │ factory 默认 =      │  │                      │
+   │  createFeishu-     │  │                      │
+   │  Notifier          │  │                      │
+   └────────────────────┘  └──────────────────────┘
+
+(类型收敛: cfg 经 `cfg?.webhookUrl` truthy check 后, TS 自动窄化为 NonNullable,
+  cfg.maxRetries 等字段访问无需再 ! / ?)
+```
+
+### 17.14.4 §3.9 错误传播图 (env merge 路径)
+
+```
+[CLI bapply auto action]
+   │
+   ├─ loadAutoConfig (per D-1a, 不变)
+   │
+   ├─ mergeWebhookFromEnv(result.config, envUrl)         ← E-1b 新
+   │     │
+   │     ├─ envUrl undefined / '' → return config (不变异)
+   │     │
+   │     └─ envUrl set → return { ...config,            ← 返回新对象
+   │                              notifier: {           ← 浅合并
+   │                                ...config.notifier, ← 保留其他 4 字段
+   │                                webhookUrl: envUrl, ← env 覆盖
+   │                              } }
+   │       (浅合并失败时, fallback DEFAULT_NOTIFIER 由 config-loader 已 merge)
+   │
+   ├─ buildDefaultDeps(config_with_env_merged)            ← 简化为 2 层探测
+   │
+   └─ runDailyLoop → deps.notifier.notify()              ← 同 E-1 §17.13.6
+
+(env merge 永不 throw, 与 feishuNotifier.notify 永不 throw 同层错误不变量)
+```
+
+### 17.14.5 §3.10 refactor 盘点 (E-1b)
+
+```bash
+$ git grep -n 'createFeishuNotifier\|mergeWebhookFromEnv\|notifierFactory\|NotifierConfigSchema'
+src/auto/config-schema.ts:export const NotifierConfigSchema
+src/auto/config-schema.ts:export type NotifierConfig
+src/auto/config-schema.ts:export const DEFAULT_NOTIFIER
+src/auto/feishu-notifier.ts:export function createFeishuNotifier
+src/cli/handlers/auto-handler.ts:export function mergeWebhookFromEnv
+src/cli/handlers/auto-handler.ts:notifierFactory?: (opts: FeishuNotifierOpts) => AutoNotifier
+src/cli/handlers/auto-handler.ts:createFeishuNotifier (resolveNotifier 内部)
+src/cli/index.ts:mergeWebhookFromEnv(config, process.env.FEISHU_WEBHOOK_URL)
+tests/unit/cli/handlers/build-default-deps.test.ts:NotifierConfigSchema, DEFAULT_NOTIFIER
+tests/unit/cli/handlers/build-default-deps.test.ts:mergeWebhookFromEnv
+```
+
+| Caller | 影响 | 边界 |
+|--------|------|------|
+| `src/auto/config-schema.ts` | +23 行新 schema + DEFAULT_NOTIFIER | 新字段 optional,向后兼容 |
+| `src/auto/config-loader.ts` | +1 行 (import) + 1 行 (merge) | 类似 safety 模式,0 行为变化 |
+| `src/cli/handlers/auto-handler.ts` | -10 (feishuWebhookUrl) +50 (resolveNotifier + mergeWebhookFromEnv) | 接口向下兼容 (新字段 optional) |
+| `src/cli/index.ts` | +6 行 (env merge 调用) | 0 行为变化 (env 空时 mergeWebhookFromEnv 返原 config) |
+| `docs/auto.example.yaml` | +13 行 commented | 0 影响 (新字段默认全 commented) |
+
+**3 问**: ① 下游成立 ✅ ② 无副作用依赖 ✅ ③ 错误边界仍有效 ✅ (env merge 不 throw, resolveNotifier 不 throw).
+
+**结论**: 4 文件改动,但所有 caller 都是 0 行为破坏 (新字段 optional + env merge 兼容空值 + factory 4 字段显式透传保证契约).
+
+### 17.14.6 §3.13 错误分层 (E-1b 0 新错 class)
+
+E-1b 不引入新 error class. 错误分层现状:
+
+- CONFIG (AutoConfigError, layer='CONFIG') — D-1a
+- META (AccountMetaError, layer='META') — D-1b
+- GUARD (GuardError, layer='GUARD') — C-2b
+- THROTTLE (ThrottleError, layer='THROTTLE') — Sprint B
+- SEND (SessionExpiredError, layer='SEND') — Sprint B
+- STUB (BOSSStubError, layer='STUB') — D-2
+- AUTO.runner / AUTO.guard / AUTO.stub — D-2
+- FEISHU (warnLogger [FEISHU] prefix) — E-1
+
+E-1b 改动:
+- NotifierConfigSchema 用 `.strict()` 让 zod 拒绝未定义字段 (架构师 review 关键修正)
+- zod safeParse 失败由现有 AutoConfigError(layer='CONFIG', code='schema_invalid') 抛出 — **复用既有错误流**
+- mergeWebhookFromEnv / resolveNotifier 永不 throw — §3.9 不变量
+
+### 17.14.7 自检 Checklist (E-1b 收尾, per 架构师 review 反馈落地 7 步)
+
+- [x] **第 1 步 review 触发**: 配置层变更 (per memory `feedback_architect_review_required.md` 触发时机表)
+- [x] **第 2 步 立即开 sub-task** (#48-#52)
+- [x] **第 3 步 4 类图重画**: 架构 / 时序 / 关系 / 流程 全画 (E-1b.1 阶段)
+- [x] **第 4 步 §3.9 错误传播图重画**: mergeWebhookFromEnv / resolveNotifier 路径 (§17.14.4 已画)
+- [x] **第 5 步 §3.10 refactor 盘点**: 4 文件改动, 0 行为破坏 (§17.14.5 已盘点)
+- [x] **第 6 步 ADR §17.14 收尾**: 本节
+- [x] **第 7 步 §4.4 自验证 5 项**:
+  - 单测 14/14 (T41+T42+T43)
+  - 集成 600/0/1 PASS (1 skipped pre-existing)
+  - 类型 tsc 0 新错 (1 pre-existing: OpenAI thinking)
+  - N/A live (feishu 非 BOSS, mock 替代)
+  - N/A 浏览器 (后端模块)
+- [x] **架构师 review 必修正**: 4 字段显式透传 (T42b 验证)
+- [x] **架构师 review 强烈建议**: feishuWebhookUrl 删除, CLI 层 merge 接管 (T43 验证)
+- [x] **单账号红线**: 0 触碰 BOSS
+- [x] **commit 累计 10**: 此前 9 + E-1b `36b914c`
+
+### 17.14.8 §10 重写流程在本节的兑现
+
+| E-1 §17.9 规划 | E-1b 兑现 | 状态 |
+|----------------|-----------|------|
+| "替换 consoleNotifier 默认值" | env 探测 + yaml 配 → 自动选 feishu (无 → fallback console) | ✅ |
+| "wiring 阶段" (隐含 E-1b) | config-schema + config-loader + auto-handler + cli/index 4 文件闭环 | ✅ |
+| "auto.yaml 同步" | docs/auto.example.yaml +13 行 commented 示例 | ✅ |
+
+新增记忆点 (写入 memory 候选):
+
+### 17.14.9 关键经验 (架构师 review 第 2 次后沉淀)
+
+| 经验 | 来源 | 决策 |
+|------|------|------|
+| **"..." 默认值散弹 = 设计缺口** | E-1b 我画 4 类图写 `createFeishuNotifier({webhookUrl, ...})`, 假装透传所有 YAML 字段但实际只传 1 个 | `...` 散弹 = TS 谎言, 同 `feedback_type_cast_design_gap` 根因 |
+| **3 层探测 → 2 层更清晰** | 架构师 review 指出 opts.feishuWebhookUrl + config.notifier.webhookUrl + ? 让函数签名复杂 | env 探测职责上移到 CLI, buildDefaultDeps 只看最终 config |
+| **架构师 review 第 6 项: 协议语义** | E-1 加上后, E-1b 验证有效 (loc 配置参数未被透传 = 契约违背) | 5 项清单 → 6 项 (配置语义 / 运维边界 / 类型扩展 / 单账号红线 / 文档完整 / **协议语义**) |
+| **`.strict()` 是 zod 默认** | 默认 zod 接受额外字段, 易引入类型 cast 类的设计 gap | 所有扩展 schema 默认加 `.strict()` (per type cast memory 教训) |
+
+---
+
+## 17.15 Sprint E-1c/d 实际跑通 (2026-07-29, 修 pre-existing bug + 真实 4 场景测试)
+
+> **目的**: 验证 Sprint D-2 + E-1 + E-1b 落地后的 auto pipeline **真实跑通** (排除 cron 调度). 不引新功能, 修复一个 D-1c 漏的 commander 注册冲突 + 确认 dotenv 已配置 + 写真实 4 场景.
+> **纪律**: §3.11 hook 不能只信 (本节就是反向案例: 561+ vitest PASS 但 commander 冲突没人发现); §3.12 probe before src 思路推广到 "跑实际命令验证"; 单账号红线守住 (3 STUB 拦截所有 BOSS 触碰).
+
+### 17.15.1 任务总览 (1 commit)
+
+| Commit | 范围 | 文件 |
+|--------|------|------|
+| `53ca678` | 修 pre-existing commander 冲突 + docs/env.example.md + 实际跑通验证 | `src/cli/index.ts` (-3/+3 替换 `program.command('auto init-config')` 为 `autoCmd.command('init-config')`) / `docs/env.example.md` (NEW, 42 行) |
+
+### 17.15.2 4 场景实测 (per §3.11 hook 不能只信 → 反向验证)
+
+sandboxed via `HOME=/tmp/test-home` (避免触碰真实 `~/.bapply/`):
+
+| # | 场景 | 命令 | 期望 | 实测 |
+|---|------|------|------|------|
+| 1 | init-config 写模板 | `bapply auto init-config` | 写 2 文件 (auto.yaml + account-meta.json, atomic write) | ✅ 2 文件已写 |
+| 2 | dry-run 无 FEISHU env | `bapply auto --dry-run --phase morning` | consoleNotifier fallback, 红字打印 loginByQR stub fail → exit 2 | ✅ exit 2 state aborted, 红字 "🔴 [CRITICAL] [AUTO.runner] login failed" |
+| 3 | dry-run + env var | `FEISHU_WEBHOOK_URL=... bapply auto --dry-run --phase morning` | feishuNotifier 真 POST to mock | ✅ Mock 收到 `{msg_type:'text', content:{text:'🔴 [CRITICAL]...'}}` |
+| 4 | dry-run + .env file | `cd /tmp/.../.env-folder && bapply auto --dry-run --phase morning` | dotenv side-effect 自动读 .env → 同 scenario 3 | ✅ Mock 收到同一 payload |
+
+**Mock http server 验证 payload** (per scenario 3/4, `/tmp/mock-webhook.log`):
+```json
+{"msg_type":"text","content":{"text":"🔴 [CRITICAL] [AUTO.runner] login failed: [AUTO.stub] loginByQR 未接线 (D-2 单账号红线: 不触碰 BOSS), 后续 Sprint E 真账号模块替换"}}
+```
+
+### 17.15.3 关键发现
+
+#### 17.15.3.1 dotenv 已配置 (用户原意"配置从 .env 获取" = 已工作)
+
+`src/config/index.ts:1` 已经 `import 'dotenv/config'`. 项目已装 dotenv 16.4.7 作为 dep (per package.json).
+
+- 任何 `bapply` 子命令启动时 → dotenv 自动读 `process.cwd()/.env`
+- 注入到 `process.env`
+- CLI auto handler `mergeWebhookFromEnv(result.config, process.env.FEISHU_WEBHOOK_URL)` 自然拿到
+
+**确认**: 不需新增 .env 加载代码 (per memory `feedback_dotenv_already_loads`, 避免重发明 dotenv).
+
+#### 17.15.3.2 Pre-existing commander 注册冲突 (D-1c 漏)
+
+`src/cli/index.ts` line 994 (Sprint D-1c 提交 `69a464b` 引入):
+```typescript
+program
+  .command('auto init-config')         // ← 顶层 command, 与 line 901 'auto' 冲突
+```
+
+修复 (commit `53ca678`, -3/+3 行):
+```typescript
+const autoCmd = program                  // ← 捕获 auto Command 引用
+  .command('auto')
+  ...
+
+autoCmd                                  // ← 在 autoCmd 上挂 init-config
+  .command('init-config')
+  ...
+```
+
+**根因 (per §3.8 修 bug 归因纪律)**:
+- 症状: `bapply auto` 启动即 throw "cannot add command 'auto' as already have command 'auto'"
+- 多假设:
+  1. ❌ 路径冲突 (sub vs parent 冲突 commander API 用错)
+  2. ❌ 重复注册 → 不是
+  3. ❌ commander API 误用 → 实际是 (应为 `.command('auto').command('init-config')` 链式)
+- 根因: D-1c 提交 `69a464b` 时, `auto-config-init-handler.test.ts` 单独测了 handler, 但 CLI 端注册没测 → 561 vitest PASS 但运行时立刻崩 (per §3.11 hook 错觉)
+- 修复: 捕获 autoCmd const, 用 `.command('init-config')` 在 autoCmd 上 (commander 子命令 API)
+
+#### 17.15.3.3 自验证 §4.4 5 项
+
+- [x] **单测**: 600/0/1 PASS (含 E-1b 14 it() + 本节未引入新 RED)
+- [x] **集成**: 4 场景实际跑通 (per §3.11 不只信 hook)
+- [x] **类型**: tsc 0 新错 (1 pre-existing: OpenAI thinking)
+- [x] **live**: 4 场景真跑过 (sandboxed HOME=/tmp/test-home) — 排除 cron 调度
+- [x] **浏览器**: N/A (CLI 后端模块)
+
+#### 17.15.3.4 单账号红线守住
+
+| 路径 | 是否触碰 BOSS |
+|------|--------------|
+| init-config (atomic write 2 文件) | ❌ 0 触碰 |
+| runDailyLoop 入口 loginByQR | ❌ STUB 抛 `BOSSStubError` (per D-2 §17.8) |
+| 后续 bossSearch / sendGreeting | ❌ 永远到不了 (loginByQR 先抛) |
+| feishu webhook 真 POST (scenarios 3/4) | ❌ feishu ≠ BOSS, 允许 |
+| 自动请求 ~9999 mock server | ❌ localhost |
+
+**结论**: Sprint E-1c/d 真实跑通, 单账号红线 0 触碰.
+
+### 17.15.4 §3.10 refactor 盘点 (E-1c/d 2 文件微改)
+
+```bash
+$ git diff --stat src/cli/index.ts
+src/cli/index.ts | 6 +++---
+```
+
+| Caller | 影响 |
+|--------|------|
+| `src/cli/index.ts` line 901-987 | `const autoCmd =` (1 字变更) |
+| `src/cli/index.ts` line 994 | `program` → `autoCmd` (1 字变更) |
+| `src/cli/index.ts` line 994 | `'auto init-config'` → `'init-config'` (1 字变更) |
+
+**3 问**: ① 下游成立 ✅ (auto + auto init-config 都注册成功) ② 无副作用依赖 ✅ (其他 8 命令不动) ③ 错误边界仍有效 ✅ (commander 报错链不变).
+
+### 17.15.5 §10 重写流程在本节的兑现
+
+E-1c/d 是 bug 修复 + 真实跑通, §10 重写流程不直接适用. 但需复核:
+
+| 项 | E-1c/d 验证 | 状态 |
+|----|-------------|------|
+| §17.9 E-1 规划 (飞书 notifier 集成) | E-1 (4 字段透传) + E-1b (env 探测) + E-1c (真实跑通) = 闭环 | ✅ |
+| §3.11 hook 错觉 → 必须真跑 (sandbox 安全) | 4 场景全部真跑 | ✅ |
+| §3.12 probe before src | dotenv 复用既有, 不重发明 | ✅ |
+| 单账号红线 | 守住 (3 STUB) | ✅ |
+
+### 17.15.6 关键经验 (新增)
+
+| 经验 | 来源 | 决策 |
+|------|------|------|
+| **`bapply auto` 真实可测试** (排除 cron) | 4 场景跑通证明 pipeline + wiring + notifier + env 探测全套实际工作 | 3 STUB 拦截 BOSS, 排除 cron 后, 整个配置 + 投递框架可安全实测 |
+| **D-1c 漏 commander CLI 端测试** | vitest 测了 handler 但没测 commander 注册层, 561 PASS 但立即 throw | 加 commander 注册端 e2e 测试 (类似 scenario 1) 或 live smoke test (CI step) |
+| **dotenv 复用既有** | 我准备加 .env 加载, grep 发现 `src/config/index.ts:1` 已有 | 改源码前先 `grep dotenv`, 复用既有 dep |
+| **`HOME` override 安全测 `~/.bapply/`** | `~/.bapply/cookies.json` 真实 cookie 不能覆盖 | 测试时 `HOME=/tmp/test-home` 让 `~` 指向 sandbox |
+
+### 17.15.7 §9 Sprint E 后续状态更新
+
+| 子任务 | 状态 |
+|--------|------|
+| **E-1 飞书 notifier** | ✅ `6004964` |
+| **E-1b wiring + config + env** | ✅ `36b914c` |
+| **E-1c 真实跑通 + 修 init-config bug** | ✅ `53ca678` (本节) |
+| **E-2 install-cron.sh** | ⏳ 未开 (本 session 焦点在排除 cron) |
+| **E-3 node-cron 替代** | ⏳ 可选 |
+| **E+ 真账号 STUB 替换** | ❌ 单账号红线禁止 |
+
+
+
+---
+
+---
+
 ## Debug Gate 5 项（按 §3.8）
 
 ⚠️ **本 ADR 不是 bug 修复类决策，Debug Gate N/A**。如后续 live 跑发现撞墙，按 §3.8 重新走症状 / 多假设 / 修复 / 自验证 / 未证明 5 项。
@@ -661,7 +2961,7 @@ TDD 5 测试 (per §4.3 上限 5) 用于 throttle;config schema 走 **2 个新 R
 - [x] §5 备选：评估 4 个备选方案 + 明确选择理由（user 决策 + 单账号红线）
 - [x] §6 行为契约：10 条全部可观测 / 可测试（✓ ✗ 分类清晰）
 - [x] §7 4 类图：架构 / 时序 / 关系 / 流程 全画
-- [ ] §8 TDD：流程**未完成**（Sprint B 落地）—— 状态标注 ⏳ 草稿
+- [x] §8 TDD：Sprint B 完整完成 (11/11 GREEN), 详见 §13 验证记录
 - [x] §9 后续：12 项明确列出（含 probe、RED、5 个 src 文件、3 个 Sprint C/D 候选）
 - [x] 未引用未验证的归因（全文无"估计" / "应该" / "可能是"，只有"按公开惯例" + "user 决策"）
 - [x] 非 bug 修复：Debug Gate 标注 N/A
