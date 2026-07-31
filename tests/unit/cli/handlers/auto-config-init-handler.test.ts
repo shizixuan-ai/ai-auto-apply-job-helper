@@ -191,8 +191,9 @@ describe('T12: runAutoInitConfig 不传 configDir → 写项目根 (Q11 A)', () 
 
       // Assert: 写项目根路径 (Q11 A 决策)
       // 注: metaPath 路径不强制 './' 前缀 (path.join 自然正确, 避免绝对路径双斜杠)
-      expect(result.configPath).toBe('./auto.yaml')
-      expect(result.metaPath).toBe('.bapply-state/account-meta.json')
+      // Q11 v3 A: configPath 也写 .bapply-state/ (4 文件统一)
+      expect(result.configPath).toBe('./.bapply-state/auto.yaml')
+      expect(result.metaPath).toBe('./.bapply-state/account-meta.json')
     } finally {
       process.chdir(originalCwd)
       await rm(tmpDir, { recursive: true, force: true })

@@ -909,7 +909,7 @@ const autoCmd = program
   .option('--strict-exit-code', '全 reject 但 counter 走完 → exit 2 (致命软错误)', false)
   .action(async (options: RunAutoCommandOpts) => {
     const start = Date.now()
-    const configPath = options.config ?? './auto.yaml'  // Q5 A: cwd 相对 (与简历.yml 模式一致)
+    const configPath = options.config ?? './.bapply-state/auto.yaml'  // Q11 v3 A: 4 文件统一 .bapply-state/
     const configDir = './.bapply-state/'  // Q3b A: cwd 相对 (项目根, 与简历.yml 模式一致)
     const date = options.date ?? new Date().toISOString().slice(0, 10)
     const phase = options.phase ?? 'morning'
@@ -997,7 +997,7 @@ autoCmd
   .option('--force', '强制覆盖已存在文件 (默认 false, 保护用户数据)', false)
   .action(async (options: { configDir?: string; force?: boolean }) => {
     const start = Date.now()
-    const configDir = options.configDir ?? '~/.bapply/'
+    const configDir = options.configDir ?? './.bapply-state/'  // Q3b A: cwd 相对
 
     try {
       const result = await runAutoInitConfig({

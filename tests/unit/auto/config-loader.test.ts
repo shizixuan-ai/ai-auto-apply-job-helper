@@ -12,7 +12,7 @@
 // ============================================================
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import * as path from 'node:path'
 import {
@@ -155,7 +155,8 @@ describe('T11: DEFAULT_CONFIG_PATH = "./auto.yaml" (cwd 相对, Q5 A)', () => {
   it('T11a: 不传 configPath → cwd=projectRoot 时找到 ./auto.yaml (unique keyword 防假绿)', async () => {
     // Arrange: 临时目录 + auto.yaml fixture (unique keyword 防 home 软链误中)
     const tmpDir = await makeTmpDir()
-    const fixturePath = path.join(tmpDir, 'auto.yaml')
+    await mkdir(path.join(tmpDir, '.bapply-state'), { recursive: true })
+    const fixturePath = path.join(tmpDir, '.bapply-state', 'auto.yaml')
     const uniqueYAML = validYAML.replace('"Java 后端"', '"Q5A_UNIQUE_KEYWORD"')
     await writeFile(fixturePath, uniqueYAML, 'utf8')
 
@@ -165,8 +166,7 @@ describe('T11: DEFAULT_CONFIG_PATH = "./auto.yaml" (cwd 相对, Q5 A)', () => {
       // Act: 不传 configPath 触发 default
       const result = await loadAutoConfig({})
 
-      // Assert: unique keyword 匹配 (说明 default 走 cwd 相对 './auto.yaml' 找到 fixture,
-      //        不是 home 软链的 user 真实 auto.yaml)
+      // Assert: unique keyword 匹配 (说明 default 走 cwd 相对 './.bapply-state/auto.yaml' 找到 fixture)
       expect(result.config.searches[0].keyword).toBe('Q5A_UNIQUE_KEYWORD')
     } finally {
       process.chdir(originalCwd)
