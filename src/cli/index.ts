@@ -909,7 +909,7 @@ const autoCmd = program
   .option('--strict-exit-code', '全 reject 但 counter 走完 → exit 2 (致命软错误)', false)
   .action(async (options: RunAutoCommandOpts) => {
     const start = Date.now()
-    const configPath = options.config ?? '~/.bapply/auto.yaml'
+    const configPath = options.config ?? './auto.yaml'  // Q5 A: cwd 相对 (与简历.yml 模式一致)
     const configDir = './.bapply-state/'  // Q3b A: cwd 相对 (项目根, 与简历.yml 模式一致)
     const date = options.date ?? new Date().toISOString().slice(0, 10)
     const phase = options.phase ?? 'morning'
