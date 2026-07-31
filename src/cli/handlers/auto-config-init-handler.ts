@@ -151,7 +151,6 @@ export async function runAutoInitConfig(
   const configDir = expandHome(opts.configDir ?? DEFAULT_CONFIG_DIR)
   // Q11 v3 A: 4 文件统一 .bapply-state/ (auto.yaml + counter + account-meta + cookies)
   // configDir 不传 → 默认 './.bapply-state/' (Q3b A), 写 .bapply-state/auto.yaml
-  const configDir = expandHome(opts.configDir ?? DEFAULT_CONFIG_DIR)
   const configPath = path.join(configDir, 'auto.yaml')
   // Q3b A + Q11 A: account-meta.json 写 state 子目录
   // 注: 不加 './' 前缀 (path.join 自然正确, 避免绝对路径变成 './/var/...' 双斜杠)
